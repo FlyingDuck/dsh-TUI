@@ -108,6 +108,7 @@ const GATES = [
   'verify:background-extraction',
   'verify:plugin-catalog-extraction',
   'verify:session-reset',
+  'verify:rollover',
   'verify:channel-ui',
   'verify:adapter-detection',
   'verify:adapter-replay-harness',

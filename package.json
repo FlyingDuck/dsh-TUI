@@ -250,6 +250,7 @@
     "verify:model-lifecycle-fences": "node --import tsx/esm scripts/verify-model-lifecycle-fences.ts",
     "verify:reports-metadata": "node --import tsx/esm scripts/verify-reports-metadata.ts",
     "verify:session-reset": "node --import tsx/esm scripts/verify-session-reset.ts",
+    "verify:rollover": "node --import tsx/esm scripts/verify-rollover-command.ts && node --import tsx/esm scripts/verify-rollover-screen.tsx",
     "verify:adapter-channel-conformance": "node --import tsx/esm scripts/verify-adapter-channel-conformance.ts",
     "verify:win32-protocol": "node --import tsx/esm scripts/verify-win32-protocol.ts",
     "verify:selection-resize": "node --import tsx/esm scripts/verify-selection-viewport-resize.ts",

@@ -333,6 +333,7 @@ CI 回归都要跑。窄改动还要跑最近的聚焦脚本：
 | Goal/todo 投影与渲染 | `node scripts/verify-channel-goal-todo.mjs` + `node scripts/verify-goal-todo.mjs` + `node --import tsx/esm scripts/verify-goal-display.mjs`（目标文本展示：悬停全文、裸 `/goal` 转录块） |
 | Compaction 与折叠 transcript 行 | `node scripts/verify-compact.mjs` |
 | 命令能力事实（compaction / plan / 问卷 / 剪枝的路由与 Help + `/` 的不可用标注） | `pnpm verify:agent-capabilities` |
+| `/rollover` 命令（结转命名与当日序号、回合中拒绝先于改名、屏幕的结转→新开会话顺序） | `pnpm verify:rollover` |
 | 压缩 × 会话切换生命周期（取消先于 fork 快照、persistence 分类提示） | `node --import tsx/esm scripts/verify-compact-switch.tsx` |
 | 主题加载、持久化与运行时插件接缝 | `node --import tsx/esm scripts/verify-themes.mjs`、`node --import tsx/esm scripts/verify-runtime-themes.ts` |
 | 默认推理强度等偏好链（effortPrefs / settings 默认值） | `node --import tsx/esm scripts/verify-effort-default.ts` |
