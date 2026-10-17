@@ -26,6 +26,24 @@ declare module '@deepseek-ai/dsh-llm' {
 
 const PREVIEW_ENTRIES = 8
 
+/** `/rollover` outcome: the rolled-over title, plus the user title a successor keeps. */
+type RolloverSessionResult = { ok: true; title: string; inherit?: string } | { ok: false; reason: string }
+
+/**
+ * The `<项目名>` of an archive name: the working directory's basename, the same
+ * last-resort title `sessions/digest.ts` and `agent-view.ts` fall back to.
+ */
+function projectNameOf(cwd: string | undefined): string {
+  const base = typeof cwd === 'string' ? cwd.split(/[\\/]/u).filter(Boolean).at(-1) ?? '' : ''
+  return base === '' ? 'session' : base
+}
+
+/** The `<日期>` of an archive name: the LOCAL calendar day, `YYYY-MM-DD`. */
+function localDateStamp(now = new Date()): string {
+  const pad = (value: number): string => String(value).padStart(2, '0')
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
+}
+
 type Capture = DshBindingCapture
 type Binding = Pick<DshChannelBinding, 'agent' | 'capture' | 'isCurrent'>
 
@@ -40,6 +58,9 @@ export function createSessionMetadataActions(ctx: Context, deps: {
   emit(): void
   sessionTitle(): string
   setSessionTitle(title: string): void
+  /** The live-turn flag `/new` refuses on: `/rollover` reads it BEFORE it renames. */
+  working(): boolean
+  notify(message: string, options?: { color?: 'error' | 'warning' | 'success'; timeoutMs?: number }): void
   setSessionColor(color: string): void
   forgetAgentView(sessionId: string): void
   setPersistedSessions(rows: readonly SessionSummary[]): void
@@ -250,6 +271,57 @@ export function createSessionMetadataActions(ctx: Context, deps: {
     deps.setSessionTitle(title)
     deps.emit()
   }
+  /**
+   * `/rollover`: rename the live session to `<cwd basename>-<local date>-<NN>`
+   * and report the title its successor inherits.
+   *
+   * The rename happens HERE rather than in the screen so the mid-turn
+   * refusal — `/rollover` ends in the same fresh-session transaction `/new`
+   * runs — lands BEFORE any title is written: a session renamed and then
+   * left open is exactly the state this command exists to avoid.
+   *
+   * "Custom" is the log's own provenance, not the title's shape: automatic
+   * title generation records 'provider' (the first-prompt LLM) or 'fallback'
+   * (the free heuristic that runs with it), and only an explicit /rename
+   * records 'user' — the split `sessions/digest.ts` folds into its
+   * `auto`/`renamed` title sources.
+   *
+   * @returns `{ ok: true, title, inherit? }` once the log is renamed;
+   *   `{ ok: false, reason }` when the turn is running, the binding moved, or
+   *   the session went away mid-scan.
+   */
+  const rolloverSession = async (): Promise<RolloverSessionResult> => {
+    const capture = deps.binding.capture()
+    if (!current(capture)) return { ok: false, reason: 'cancelled' }
+    if (deps.working()) {
+      deps.notify(t('new-session-while-working'), { color: 'warning' })
+      return { ok: false, reason: 'working' }
+    }
+    let liveTitle = ''
+    let custom = false
+    for (const event of snapshotLiveSessionEvents(capture.agent.session)) {
+      if (event.type !== 'session/title') continue
+      const data = event.data
+      const text = typeof data?.title === 'string' ? data.title.trim() : ''
+      if (text === '') continue
+      liveTitle = text
+      custom = data?.source?.kind === 'user'
+    }
+    const prefix = `${projectNameOf(deps.cwd?.())}-${localDateStamp()}-`
+    const rows = await listing.listSessions()
+    if (!current(capture)) return { ok: false, reason: 'cancelled' }
+    let last = 0
+    for (const row of Array.isArray(rows) ? rows : []) {
+      const text = row?.title?.text
+      if (typeof text !== 'string' || !text.startsWith(prefix)) continue
+      const ordinal = text.slice(prefix.length)
+      if (!/^\d+$/u.test(ordinal)) continue
+      last = Math.max(last, Number(ordinal))
+    }
+    const title = `${prefix}${String(last + 1).padStart(2, '0')}`
+    renameSession(title)
+    return { ok: true, title, inherit: custom && liveTitle !== '' ? liveTitle : undefined }
+  }
   const setSessionColor = (color: string): void => {
     const capture = deps.binding.capture()
     if (!current(capture)) return
@@ -281,6 +353,6 @@ export function createSessionMetadataActions(ctx: Context, deps: {
   return {
     cachedSessions, listSessions: listing.listSessions, previewSession: preview, listSkills, describeCredential,
     sideQuestion, recapRecent, setResumeTarget: writeResumeTarget,
-    renameSession, setSessionColor, deleteSession, renameSessionTo,
+    renameSession, setSessionColor, deleteSession, renameSessionTo, rolloverSession,
   }
 }

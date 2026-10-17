@@ -61,6 +61,7 @@ const metadata = createSessionMetadataActions(ctx as never, {
   owner, binding: binding as never,
   provider: () => 'deepseek', model: () => 'model', emit: () => undefined,
   sessionTitle: () => '', setSessionTitle: () => undefined, setSessionColor: () => undefined,
+  working: () => false, notify: () => undefined,
   forgetAgentView: () => undefined, setPersistedSessions: () => undefined,
   skillRegistryFor: () => undefined, skillViewOptions: () => ({ scope: agent as never, cwd: '/repo' }),
 })
@@ -102,6 +103,7 @@ const cancellationMetadata = createSessionMetadataActions(cancellationCtx as nev
   owner: owner2, binding: binding2 as never,
   provider: () => 'deepseek', model: () => 'model', emit: () => undefined,
   sessionTitle: () => '', setSessionTitle: () => undefined, setSessionColor: () => undefined,
+  working: () => false, notify: () => undefined,
   forgetAgentView: () => undefined, setPersistedSessions: () => undefined,
   skillRegistryFor: () => undefined, skillViewOptions: () => ({ scope: owner2Agent as never, cwd: '/repo' }),
 })
@@ -133,6 +135,7 @@ const recapMetadata = createSessionMetadataActions({ get: (name: string) => name
   owner: recapOwner, binding: recapBinding as never,
   provider: () => 'deepseek', model: () => 'model', emit: () => undefined,
   sessionTitle: () => '', setSessionTitle: () => undefined, setSessionColor: () => undefined,
+  working: () => false, notify: () => undefined,
   forgetAgentView: () => undefined, setPersistedSessions: () => undefined,
   skillRegistryFor: () => undefined, skillViewOptions: () => ({ scope: recapAgent as never, cwd: '/repo' }),
 })
@@ -210,6 +213,7 @@ const metadataErrors = createSessionMetadataActions({
   owner: metadataOwner, binding: metadataBinding as never,
   provider: () => 'deepseek', model: () => 'model', emit: () => undefined,
   sessionTitle: () => '', setSessionTitle: () => undefined, setSessionColor: () => undefined,
+  working: () => false, notify: () => undefined,
   forgetAgentView: () => undefined, setPersistedSessions: rows => { persistedSnapshots.push(rows) },
   skillRegistryFor: () => undefined, skillViewOptions: () => ({ scope: oldAgent as never, cwd: '/repo' }),
 })
@@ -218,6 +222,7 @@ const noCredentials = createSessionMetadataActions({ get: () => undefined } as n
   owner: metadataOwner, binding: metadataBinding as never,
   provider: () => 'deepseek', model: () => 'model', emit: () => undefined,
   sessionTitle: () => '', setSessionTitle: () => undefined, setSessionColor: () => undefined,
+  working: () => false, notify: () => undefined,
   forgetAgentView: () => undefined, setPersistedSessions: rows => { persistedSnapshots.push(rows) },
   skillRegistryFor: () => undefined, skillViewOptions: () => ({ scope: oldAgent as never, cwd: '/repo' }),
 })
@@ -230,6 +235,7 @@ const noPersistence = createSessionMetadataActions({ get: () => undefined } as n
   owner: metadataOwner, binding: metadataBinding as never,
   provider: () => 'deepseek', model: () => 'model', emit: () => undefined,
   sessionTitle: () => '', setSessionTitle: () => undefined, setSessionColor: () => undefined,
+  working: () => false, notify: () => undefined,
   forgetAgentView: () => undefined, setPersistedSessions: rows => { persistedSnapshots.push(rows) },
   skillRegistryFor: () => undefined, skillViewOptions: () => ({ scope: oldAgent as never, cwd: '/repo' }),
 })

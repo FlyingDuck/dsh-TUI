@@ -723,6 +723,13 @@ export interface ChannelUi {
   /** Rename the current session (`/rename`): appends a `session/title`
    *  event, which the status line and the /resume picker both read. */
   renameSession(title: string): void
+  /** Roll the live session over (`/rollover`): rename it to
+   *  `<cwd basename>-<local date>-<NN>` (that day's next ordinal among the
+   *  stored sessions about that directory) and report the title a successor
+   *  should inherit. A running turn refuses BEFORE the rename, so a refused
+   *  rollover leaves the session untouched. `inherit` is set only when the
+   *  title came from the user, not from automatic title generation. */
+  rolloverSession(): Promise<{ ok: true; title: string; inherit?: string } | { ok: false; reason: string }>
   /** Set the current session's accent color (`/color <name>`): appends a
    *  `session/color` event; '' clears it back to the theme default. */
   setSessionColor(color: string): void

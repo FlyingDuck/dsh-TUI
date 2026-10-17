@@ -68,6 +68,7 @@ export const LOCAL_COMMANDS: LocalCommand[] = [
   { name: 'compact', description: 'Summarize earlier turns to free context space' },
   { name: 'resume', description: 'Continue a saved session' },
   { name: 'rename', description: 'Rename the current session' },
+  { name: 'rollover', description: 'Roll this session over as project-date-NN and start a new one' },
   { name: 'recap', description: 'Generate a recap of recent session activity' },
   { name: 'rewind', description: 'Return the session to an earlier message' },
   { name: 'tree', description: 'Browse the session family tree (rewind / fork / adopt)' },
@@ -209,6 +210,11 @@ const LOCAL_COMMAND_REQUIREMENTS: ReadonlyMap<string, LocalCommandRequirement> =
   ['model', 'models'], ['effort', 'effort'], ['agents', 'subagents'], ['jobs', 'tasks'], ['mcp', 'mcp'],
   ['context', 'context'], ['login', 'login'], ['logout', 'login'], ['init', 'init'],
   ['recap', 'sideQuery'], ['btw', 'sideQuery'], ['rename', 'rename'], ['color', 'color'],
+  // /rollover rewrites the live session's title AND swaps the session in one
+  // transaction (channel.rolloverSession + /new), so it rides the DSH channel
+  // layer rather than the per-backend `rename` capability: stated here rather
+  // than inherited from the unlisted fallback.
+  ['rollover', 'dsh'],
   // /trace opens on every backend; one without trajectory data shows the
   // unsupported state (channel.trajectorySource() decides, not this table).
   ['trace', 'any'],
@@ -334,6 +340,10 @@ export function localizedDescription(command: LocalCommand & { descriptionKey?: 
  */
 export const WORKING_GATE_NOTICES = {
   new: 'new-session-while-working',
+  // /rollover ends in the same fresh-session transaction /new runs, so it is
+  // refused mid-turn for the same reason — and the rename must not land
+  // before that refusal, which `channel.rolloverSession` enforces itself.
+  rollover: 'new-session-while-working',
   compact: 'compact-while-working',
   fork: 'fork-while-working',
   model: 'model-switch-while-working',

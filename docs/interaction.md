@@ -781,6 +781,7 @@ Claude 后端的审批来自 CLI：CLI 给出建议时多一个「始终允许�
 - `/resume`、`/home`、`/agentview`：三者打开同一个会话管理界面。
 - `/bg`（别名 `/background`）：打开会话管理界面；DSH 内核先将当前会话转入后台，Claude/Codex 内核保持当前会话运行。
 - `/rename`。
+- `/rollover`：把当前会话改名为 `<项目名>-<日期>-<序号>` 并新开一个；你自己改过的标题会带到新会话。回合运行中先拒绝，不会先改名。
 - `/recap`：最近活动摘要 + 建议标题一键应用。
 - 设置 `recapOnOpen` 开启时打开会话自动出分隔线 + `回顾：` 摘要行，发送新消息后消失，默认开。
 - `/workspace resume|rename|open`。

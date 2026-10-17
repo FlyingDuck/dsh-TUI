@@ -174,6 +174,7 @@ try {
     binding: { capture: () => ({ agent, generation: 1 }), isCurrent: () => owner.current() },
     provider: () => 'deepseek', model: () => 'model', cwd: () => '/proj', emit: () => undefined,
     sessionTitle: () => '', setSessionTitle: () => undefined, setSessionColor: () => undefined,
+    working: () => false, notify: () => undefined,
     forgetAgentView: () => undefined, setPersistedSessions: rows => pushed.push(rows),
     skillRegistryFor: () => undefined, skillViewOptions: () => ({ scope: agent, cwd: '/proj' }),
   })

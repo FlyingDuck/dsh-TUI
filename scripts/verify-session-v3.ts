@@ -324,6 +324,7 @@ try {
       owner, binding: { agent, capture: () => ({ agent, generation: 1 }), isCurrent: () => true } as never,
       provider: () => 'deepseek', model: () => 'model', emit: noop, sessionTitle: () => '',
       setSessionTitle: noop, setSessionColor: noop, forgetAgentView: noop, setPersistedSessions: noop,
+      working: () => false, notify: noop,
       skillRegistryFor: noop, skillViewOptions: () => ({ scope: agent, cwd }) as never,
     })
     await actions.sideQuestion('question')

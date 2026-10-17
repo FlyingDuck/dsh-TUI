@@ -2852,6 +2852,30 @@ export function Chat({
   })
 
   /**
+   * A new session is a fresh terminal page, not merely an emptied
+   * transcript: reset view-local state, return the ScrollBox to the top,
+   * then clear native scrollback and repaint the whale homepage. Shared by
+   * `/new` and `/rollover`, which differ only in what they say afterwards.
+   */
+  const settleFreshSession = (): void => {
+    setExpanded(false)
+    setExpandedRows(new Set())
+    setStreamViewToggledRows(new Set())
+    setSelectedId(null)
+    setSelectionActive(false)
+    setShowAllMessages(false)
+    setLoadedContextOpen(false)
+    handle?.scrollTo(0)
+    const ink = instances.get(process.stdout) ?? instances.values().next().value
+    // Wait one task so React commits the empty transcript/homepage tree;
+    // clearing before that would immediately repaint the old session.
+    setTimeout(() => {
+      handle?.scrollTo(0)
+      ink?.clearScrollbackAndRedraw()
+    }, 0)
+  }
+
+  /**
    * The screen's command dispatcher. Every entry point reaches this one
    * closure — PromptInput's `onRunCommand`, the completion menu, this screen's
    * own `/` cases, and the launchpad handoff above. There is deliberately no
@@ -3119,25 +3143,36 @@ export function Chat({
         setHelpOpen(false)
         void channel.newSession().then((ok) => {
           if (!ok) return
-          // A new session is a fresh terminal page, not merely an emptied
-          // transcript. Reset view-local state, return the ScrollBox to the
-          // top, then clear native scrollback and repaint the whale homepage.
-          setExpanded(false)
-          setExpandedRows(new Set())
-          setStreamViewToggledRows(new Set())
-          setSelectedId(null)
-          setSelectionActive(false)
-          setShowAllMessages(false)
-          setLoadedContextOpen(false)
-          handle?.scrollTo(0)
+          settleFreshSession()
           channel.notify(t('new-session-started'))
-          const ink = instances.get(process.stdout) ?? instances.values().next().value
-          // Wait one task so React commits the empty transcript/homepage tree;
-          // clearing before that would immediately repaint the old session.
-          setTimeout(() => {
-            handle?.scrollTo(0)
-            ink?.clearScrollbackAndRedraw()
-          }, 0)
+        })
+        return true
+      }
+      case 'rollover': {
+        // `/rollover` = `/rename` to `<cwd basename>-<date>-<NN>` + `/new`:
+        // the log on disk keeps a name that finds its project and its day
+        // again, while the successor carries on under the name the user
+        // gave the session (a provider-generated title is not the user's
+        // and is not carried over). The rename itself lives in
+        // `channel.rolloverSession`, which refuses a running turn before
+        // writing anything — so a refused rollover leaves the live session
+        // untouched instead of renamed-but-open.
+        setHelpOpen(false)
+        void channel.rolloverSession().then((result) => {
+          if (result?.ok !== true) return
+          void channel.newSession().then((ok) => {
+            if (!ok) {
+              // The switch was vetoed or lost a race after the rename
+              // landed: say so rather than leaving a silent rename.
+              channel.notify(t('rollover-switch-failed', { title: result.title }), { color: 'warning', timeoutMs: 8000 })
+              return
+            }
+            settleFreshSession()
+            if (result.inherit !== undefined) channel.renameSession(result.inherit)
+            channel.notify(result.inherit === undefined
+              ? t('rollover-done', { title: result.title })
+              : t('rollover-done-inherited', { title: result.title, inherit: result.inherit }))
+          })
         })
         return true
       }

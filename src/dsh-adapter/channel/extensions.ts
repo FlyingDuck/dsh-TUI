@@ -492,6 +492,10 @@ export function attachDshExtensions(
     emit: () => state.emit(),
     sessionTitle: () => state.sessionTitle,
     setSessionTitle: title => { state.sessionTitle = title },
+    // `/rollover` gates its rename on the running turn before it writes
+    // anything, so it reads the same `working` flag `/new` refuses on.
+    working: () => state.working,
+    notify: (...args) => notify(...args),
     setSessionColor: color => { state.sessionColor = color },
     forgetAgentView: sessionId => agentView.forget(sessionId),
     setPersistedSessions: rows => agentView.setPersisted(rows),
@@ -790,6 +794,7 @@ export function attachDshExtensions(
     backgroundCurrent: agentView.backgroundCurrent,
     setResumeTarget: sessionMetadataActions.setResumeTarget,
     renameSession: sessionMetadataActions.renameSession,
+    rolloverSession: sessionMetadataActions.rolloverSession,
     setSessionColor: sessionMetadataActions.setSessionColor,
     recapRecent: sessionMetadataActions.recapRecent,
     deleteSession: sessionMetadataActions.deleteSession,

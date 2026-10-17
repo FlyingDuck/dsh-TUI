@@ -58,6 +58,7 @@ export type ChannelActionDelegates = Pick<ChannelState,
   | 'backgroundCurrent'
   | 'setResumeTarget'
   | 'renameSession'
+  | 'rolloverSession'
   | 'setSessionColor'
   | 'recapRecent'
   | 'deleteSession'
@@ -141,6 +142,7 @@ export function createChannelActionMethods(
     backgroundCurrent: () => getReadyActions().backgroundCurrent(),
     setResumeTarget: sessionId => getReadyActions().setResumeTarget(sessionId),
     renameSession: title => getReadyActions().renameSession(title),
+    rolloverSession: () => getReadyActions().rolloverSession(),
     setSessionColor: color => getReadyActions().setSessionColor(color),
     recapRecent: options => getReadyActions().recapRecent(options),
     deleteSession: sessionId => getReadyActions().deleteSession(sessionId),
@@ -263,6 +265,7 @@ export function createUnavailableActionDelegates(
     backgroundCurrent: () => refuseAsync('bg', { ok: false } as const),
     setResumeTarget: () => { unavailable('resume') },
     renameSession: () => { unavailable('rename') },
+    rolloverSession: () => refuseAsync('rollover', { ok: false, reason: 'unavailable' } as const),
     setSessionColor: () => { unavailable('color') },
     recapRecent: () => {
       unavailable('recap')

@@ -118,6 +118,7 @@ export const CHANNEL_UI_EFFECTS = Object.freeze({
   'importForeignSession': 'mutate',
   'setResumeTarget': 'mutate',
   'renameSession': 'mutate',
+  'rolloverSession': 'mutate',
   'setSessionColor': 'mutate',
   'recapRecent': 'mutate',
   'deleteSession': 'mutate',

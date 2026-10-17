@@ -1666,6 +1666,9 @@ const dict = {
 
   'rename-current': { zh: '当前名称  {{title}}', en: 'Current title  {{title}}' },
   'rename-done': { zh: '已重命名为「{{title}}」', en: 'Renamed to "{{title}}"' },
+  'rollover-done': { zh: '已结转为「{{title}}」并新开会话', en: 'Rolled over to "{{title}}" — a new session started' },
+  'rollover-done-inherited': { zh: '已结转为「{{title}}」，新会话沿用「{{inherit}}」', en: 'Rolled over to "{{title}}" — the new session keeps "{{inherit}}"' },
+  'rollover-switch-failed': { zh: '已结转为「{{title}}」，但新会话没有打开；当前会话仍在，可 /rename 改回', en: 'Rolled over to "{{title}}", but the new session did not open; this one is still live — /rename to change it back' },
   'compact-summary-folded': { zh: '摘要已折叠', en: 'Summary folded' },
   'new-message': { zh: '↓ {{n}} 条新消息', en: '↓ 1 new message' },
   'new-messages': { zh: '↓ {{n}} 条新消息', en: '↓ {{n}} new messages' },
@@ -2188,6 +2191,7 @@ const dict = {
   'cmd-desc-bg': { zh: '打开会话总览（DSH 先转后台）' },
   'cmd-desc-background': { zh: '打开会话总览（DSH 先转后台）' },
   'cmd-desc-rename': { zh: '重命名当前会话' },
+  'cmd-desc-rollover': { zh: '结转当前会话（项目名-日期-序号）并新开一个' },
   'cmd-desc-recap': { zh: '生成最近会话活动摘要（可应用建议标题）' },
   'cmd-desc-quit': { zh: '退出 dsh-tui' },
   'cmd-desc-q': { zh: '退出 dsh-tui' },
