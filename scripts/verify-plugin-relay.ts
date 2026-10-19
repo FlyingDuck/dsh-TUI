@@ -74,6 +74,10 @@ const check = (name: string, ok: boolean, detail = ''): void => {
 // spliced` 也走这条。它经 `tuiRenderers` 接缝渲染 —— **没有为这个 nativeType
 // 注册渲染器时什么都不画**。所以真正要钉的是：不产 `user.message`，且投影不落行。
 {
+  // 真实日志里同一条消息的两个阶段**都**带 transcript（收件箱那条带在
+  // `data.inserted[0].source` 里），而只有 user/message 阶段该出转录行。
+  const staged = (splicedRow.row.data.inserted as readonly { readonly source?: { readonly transcript?: unknown } }[] | undefined)?.[0]?.source?.transcript
+  check('A spliced 那一阶段本身就带 payload（同一条消息的两个阶段）', typeof staged === 'object' && staged !== null, JSON.stringify(staged))
   const events = translate(splicedRow.row)
   check('A spliced 不产 user.message（转录行只由 user/message 产出）', userMessages(events).length === 0, JSON.stringify(events.slice(0, 1)))
   check('A spliced 兜底成 custom 事件（所以判据不能写成「不产事件」）',
