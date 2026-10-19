@@ -111,6 +111,7 @@ const GATES = [
   'verify:rollover',
   'verify:version',
   'verify:plugin-relay',
+  'verify:git-status',
   'verify:channel-ui',
   'verify:adapter-detection',
   'verify:adapter-replay-harness',

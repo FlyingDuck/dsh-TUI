@@ -383,8 +383,8 @@ export const SETTING_DEFINITIONS = {
   'statusBar.gitBranch': {
     label: 'Show git branch',
     descriptions: { zh: '显示 Git 分支' },
-    hint: 'Show the current git branch when available.',
-    hintDescriptions: { zh: '可用时显示当前 Git 分支。' },
+    hint: 'Show the current git branch when available, with how far it is from its upstream (↑ahead ↓behind) and how many files are changed (●dirty).',
+    hintDescriptions: { zh: '可用时显示当前 Git 分支，并带上与上游的差距（↑领先 ↓落后）与改动数量（●有改动）。' },
     kind: 'boolean',
     group: 'status-bar',
   },

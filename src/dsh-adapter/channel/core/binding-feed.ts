@@ -76,6 +76,9 @@ export function createSessionBatchRouter(deps: {
   ownsCompactionProgress?(): boolean
   warn(message: string): void
   taskCompletion?: ReturnType<typeof createTaskCompletion>
+  /** A live turn just settled (working true→false): the footer refreshes the
+  *  git facts it cannot otherwise notice while the directory stays put. */
+  onTurnSettled?(): void
 }) {
   const reconcileRetiredProjection = (status: 'idle' | 'disposed'): void => {
     if (!deps.state.working) return
@@ -133,6 +136,7 @@ export function createSessionBatchRouter(deps: {
     // summary stream that outlived the binding it started under) must never
     // write the replacement session's transcript.
     if (!current()) return
+    const wasWorking = deps.state.working
     let admitted: AgentEvent[] | undefined
     let progressOnly = batch.length > 0
     for (const [index, event] of batch.entries()) {
@@ -186,6 +190,7 @@ export function createSessionBatchRouter(deps: {
     if (meta.wake === 'frame') deps.state.emitStream()
     else if (meta.wake !== 'none') deps.state.emit()
     deps.taskCompletion?.(events, meta, current)
+    if (wasWorking && !deps.state.working) deps.onTurnSettled?.()
   }
 
   return { route, reconcileRetiredProjection, turnStarts: (): number => turnStarts }
@@ -281,6 +286,8 @@ export function createBindingFeed(ctx: { readonly logger: ChannelHostLogger }, d
   binding: ChannelBinding
   state: ChannelState
   options: Pick<ChannelLaunchOptions, 'interaction' | 'onTaskComplete'>
+  /** A live turn just settled (see createSessionBatchRouter). */
+  onTurnSettled?(): void
   inputConvergence: InputConvergence
   /** The projector's channel-side dependencies; `jobs` and `pricingWindow`
    *  stay writable until the channel starts (`configureProjection`). */
@@ -310,6 +317,7 @@ export function createBindingFeed(ctx: { readonly logger: ChannelHostLogger }, d
     ...(deps.onReset === undefined ? {} : { onReset: deps.onReset }),
     warn: message => ctx.logger.warn(message),
     taskCompletion: deps.options.onTaskComplete === undefined ? undefined : createTaskCompletion(state, owner, deps.options.onTaskComplete),
+    ...(deps.onTurnSettled === undefined ? {} : { onTurnSettled: deps.onTurnSettled }),
   })
 
   /** Forget every per-session projection ledger: the projector's and the

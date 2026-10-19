@@ -14,6 +14,7 @@ import { getHostGrantStore } from '../../host-grants.js'
 import { getHostRenderers, type TuiRendererRuntime } from '../../renderers.js'
 import { getHostSceneRuntime, type TuiSceneRuntime } from '../../scenes.js'
 import { getHostSettingsSections, type TuiSettingsSectionsRuntime } from '../../settings-sections.js'
+import { GIT_STATUS_COMMAND, parseGitStatus } from '../../../utils/gitStatus.js'
 import { getHostThemes, type TuiThemeRuntime } from '../../themes.js'
 import { createLocalWorkspaceRuntime, getHostWorkspaceRuntime, type TuiWorkspaceRuntime } from '../../workspaces.js'
 import type { ChannelHost, ServiceLookup } from '../channel-host.js'
@@ -149,38 +150,47 @@ export function startHostSubscriptions(
  */
 export function createGitBranchRefresher(ctx: ServiceLookup, deps: {
   owner: Pick<ChannelOwner, 'current'>
-  state: Pick<ChannelState, 'cwd' | 'gitBranch' | 'emit'>
+  state: Pick<ChannelState, 'cwd' | 'gitBranch' | 'gitStatus' | 'emit'>
   /** Record the resolved branch against the bound session (the session
    *  browser's branch column); absent = nothing records it. */
   noteBranch?(branch: string): void
 }): () => void {
+  // Every refresh takes a ticket: a turn-end query landing after a cwd change
+  // must not write the old workspace's answer over the new one (issue #96's
+  // cwd comparison, generalised to same-cwd refreshes).
+  let sequence = 0
+  let currentCwd: string | undefined
   return () => {
     const { state } = deps
-    state.gitBranch = undefined
-    const shell = ctx.get('shell') as ForegroundShell | undefined
-    if (!shell) return
-    // Capture the requested cwd: a /resume landing while this query is in
-    // flight refreshes the branch for the new cwd, so a late reply from the
-    // old workspace must be dropped (stale statusline, issue #96).
     const requestedCwd = state.cwd
+    const ticket = ++sequence
+    const shell = ctx.get('shell') as ForegroundShell | undefined
+    // A different directory invalidates what is on screen immediately; a
+    // same-cwd refresh keeps it until the answer lands (no blank flash).
+    if (requestedCwd !== currentCwd) {
+      state.gitBranch = undefined
+      state.gitStatus = undefined
+    }
+    currentCwd = requestedCwd
+    if (!shell) return
     void runForegroundShell(shell, {
-      command: 'git branch --show-current',
+      command: GIT_STATUS_COMMAND,
       workdir: requestedCwd,
       timeoutMs: 3000,
     })
       .then((result) => {
-        if (!deps.owner.current() || state.cwd !== requestedCwd) return
-        const branch = result.stdout.text.trim()
-        if (branch !== '') {
-          state.gitBranch = branch
-          deps.noteBranch?.(branch)
-          state.emit()
-        }
+        if (!deps.owner.current() || state.cwd !== requestedCwd || ticket !== sequence) return
+        const status = parseGitStatus(result.stdout.text)
+        state.gitStatus = status
+        state.gitBranch = status === undefined || status.branch === '' ? undefined : status.branch
+        if (state.gitBranch !== undefined) deps.noteBranch?.(state.gitBranch)
+        state.emit()
       })
       .catch(() => {
-        // Git branch detection is best-effort; on Windows the sandbox
-        // backend may be unavailable (no confinement yet) or the cwd may
-        // not be a git repo. Either way the statusline simply stays blank.
+        // Git detection is best-effort: on Windows the sandbox backend may be
+        // unavailable (no confinement yet), or the cwd may not be a git repo.
+        // Either way the statusline simply stays blank.
       })
   }
 }
+

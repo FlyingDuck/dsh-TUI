@@ -39,6 +39,7 @@ export function projectChannelState(channel: Channel): HostChannelStateSnapshot 
     cwd: channel.cwd,
     displayCwd: channel.displayCwd,
     ...(channel.gitBranch === undefined ? {} : { gitBranch: channel.gitBranch }),
+    ...(channel.gitStatus === undefined ? {} : { gitStatus: channel.gitStatus }),
     working: channel.working,
     cancelPending: channel.cancelPending,
     spinnerMode: channel.spinnerMode,

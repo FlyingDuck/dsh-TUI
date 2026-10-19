@@ -543,6 +543,7 @@ dsh-TUI 不预装通用技能；`/skills` 浏览 DSH 发现的技能，可直调
   hover 拆「主会话 ¥ / 子代理 ¥ / 未计价 N tok」；非官方/未收录模型只显示 token 并标注未计价；
   **估算是参考，以平台账单为准**）
 - 右组：git 分支 → 工作目录（紧凑模式仅 basename）→ 会话标题 → 短会话 ID（`#` + 前 8 位，方便 `--resume` 定位）
+- git 段在分支名后按需带上三个后缀，**为 0 一律不画**（不会出现 `↑0 ↓0`）：`↑N` 领先上游、`↓N` 落后上游、`●N` 有改动（**含未跟踪文件**，只计数不列清单）。hover 展开上游全名、领先/落后与「改动 N · 未跟踪 M」；工作区改动过多时扫描会截断，此时脏数带 `+` 且 hover 说明是下限。detached HEAD 显示短 sha，无上游不画 `↑↓`，非 git 目录整段留白。
 - `statusBar.compact` 时左右合并为单行。
 - 默认开：compact、model、thinking、cwd、contextUsage、cache、cost、goal、contextBar。
 - 默认关：tokens、tps、gitBranch、sessionTitle、sessionId、mode、activity、trajectory。
@@ -591,7 +592,7 @@ dsh-tui 自身区块在 0.1.7 写入当前 profile 的 `cordis.patch.yml`，旧�
 | pageMargin | 页边距：整屏相对终端四边向里缩。预设 none / slim / normal（默认）/ roomy，或自定义 `NxM`（细节见下）。立即生效 |
 | foldTerminalCommand | 折叠终端命令（默认关）：终端卡（Bash/PowerShell）多行命令折成首行 + 计数；`Ctrl+O` 或点击卡片展开 |
 | expandEditor | 全屏草稿编辑（默认开）：输入行尾 `⛶` 或 `Ctrl+Shift+E` 展开成整屏编辑器；`Ctrl+Enter` 发送、`Esc` 收起（草稿还在）；关掉后入口不显示 |
-| statusBar.* | 上表全部状态栏开关（compact/model/thinking/cwd/contextUsage/cache/tokens/cost/tps/gitBranch/sessionTitle/sessionId/mode/contextBar/activity/trajectory；statusBar.sessionId 是底栏显示开关，与 cordis 的启动 sessionId 无关） |
+| statusBar.* | 上表全部状态栏开关（compact/model/thinking/cwd/contextUsage/cache/tokens/cost/tps/gitBranch（分支 + ↑领先/↓落后/●改动）/sessionTitle/sessionId/mode/contextBar/activity/trajectory；statusBar.sessionId 是底栏显示开关，与 cordis 的启动 sessionId 无关） |
 
 **effortDefault**：模型没有该档时自动就近降级并弹提示；优先级 settings 用户层 > 上次 `/effort`
 （effort.json，即上次实际运行的档位）> cordis `effort`（部署默认值）> 模型默认。

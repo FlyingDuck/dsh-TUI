@@ -253,6 +253,7 @@
     "verify:rollover": "node --import tsx/esm scripts/verify-rollover-command.ts && node --import tsx/esm scripts/verify-rollover-screen.tsx",
     "verify:version": "node --import tsx/esm scripts/verify-version-command.mjs",
     "verify:plugin-relay": "node --import tsx/esm scripts/verify-plugin-relay.ts",
+    "verify:git-status": "node --import tsx/esm scripts/verify-git-status.ts",
     "verify:adapter-channel-conformance": "node --import tsx/esm scripts/verify-adapter-channel-conformance.ts",
     "verify:win32-protocol": "node --import tsx/esm scripts/verify-win32-protocol.ts",
     "verify:selection-resize": "node --import tsx/esm scripts/verify-selection-viewport-resize.ts",

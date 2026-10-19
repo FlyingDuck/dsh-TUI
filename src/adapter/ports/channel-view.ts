@@ -1351,3 +1351,24 @@ export interface TeamView {
    *  last valid state. */
   readonly failure?: string
 }
+
+/**
+ * The git facts behind the footer's branch segment: which branch, how far it
+ * is from its upstream, and whether the work tree has uncommitted changes.
+ * Counts only — the footer answers "is there anything to say", it never lists
+ * the tree (see `utils/gitStatus`).
+ */
+export interface GitStatusSummary {
+  /** The branch name; the short oid on a detached HEAD. */
+  readonly branch: string
+  readonly ahead: number
+  readonly behind: number
+  /** Tracked entries with staged or unstaged changes (porcelain v2 `1`/`2`/`u`). */
+  readonly changed: number
+  /** Untracked entries (`?` lines). */
+  readonly untracked: number
+  readonly upstream?: string
+  readonly detached: boolean
+  /** The scan hit its line budget: every count is a floor, not the truth. */
+  readonly truncated: boolean
+}

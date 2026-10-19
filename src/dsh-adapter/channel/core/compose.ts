@@ -439,6 +439,8 @@ export function createCoreChannel(
       (command, includeInContext) => getReadyActions().runLocalCommand(command, includeInContext),
       sessionId => { extension.touchSession?.(sessionId) }),
     subscribe: emitter.subscribe,
+    // Filled by the git refresher: on a cwd change, then once per settled turn.
+    gitStatus: undefined,
     emit: emitter.emit,
     emitStream: emitter.emitStream,
     ...createSettingsHosts(ctx, owner.assertActive),
@@ -784,6 +786,10 @@ export function createCoreChannel(
     },
     resetTrajectory: () => { if (trajectoryOwned()) agentTrajectory.reset() },
     retireAttachment: inputDelivery.retireAttachment,
+    // The footer cannot poll: a turn that edits files is the moment its git
+    // facts changed, and the cwd did not move. Deferred so the const below can
+    // be declared after the feed (it is only called from a live turn).
+    onTurnSettled: () => refreshGitBranch(),
     controls,
     hooks: () => extension.bind ?? {},
     onReset: event => { resetConversation(event) },

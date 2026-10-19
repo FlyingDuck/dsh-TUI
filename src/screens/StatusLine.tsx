@@ -2,6 +2,7 @@ import React from 'react'
 import { Box, Text, useTerminalSize, useTheme } from '../ui.js'
 import type { Color } from '../ink/styles.js'
 import { formatTokens } from '../terminal-utils/format.js'
+import { gitStatusSuffix } from '../utils/gitStatus.js'
 import { t } from '../i18n.js'
 import { formatContextUsage, DEFAULT_STATUS_BAR, normalizeStatusBar, type StatusBarConfig } from '../tuiDisplayPrefs.js'
 import { estimateSessionCostSnapshotCny, isDeepSeekOfficialProvider, isPeakHour } from '../deepseekPricing.js'
@@ -514,6 +515,9 @@ const selectionBadge = formatSelectionBadge(channel.selection)
       : []),
   ]
 
+  // The git segment carries its own suffixes: ahead / behind / dirty, all
+  // dropped when zero so a clean checkout draws no arithmetic at all.
+  const gitSuffix = channel.gitStatus === undefined ? {} : gitStatusSuffix(channel.gitStatus)
   const rightFields: FieldPart[] = [
     // Live IDE-selection badge first: it tracks the user's in-editor gesture,
     // the freshest signal in the footer (T-FIX-02). Absent without an IDE —
@@ -539,7 +543,14 @@ const selectionBadge = formatSelectionBadge(channel.selection)
           {
             key: 'git',
             id: 'git' as const,
-            node: <Text color="professionalBlue">{channel.gitBranch}</Text>,
+            node: (
+              <Text color="professionalBlue">
+                {channel.gitBranch}
+                {gitSuffix.ahead === undefined ? null : <Text color="success">{` ${gitSuffix.ahead}`}</Text>}
+                {gitSuffix.behind === undefined ? null : <Text color="warning">{` ${gitSuffix.behind}`}</Text>}
+                {gitSuffix.dirty === undefined ? null : <Text color="warning">{` ${gitSuffix.dirty}`}</Text>}
+              </Text>
+            ),
           },
         ]
       : []),
@@ -1022,9 +1033,18 @@ function buildHoverDetail(
     }
     case 'git': {
       if (channel.gitBranch === undefined) return null
+      const status = channel.gitStatus
       return (
         <Text wrap="truncate">
           {dim('git ')}{channel.gitBranch}
+          {status?.upstream === undefined ? null : <> · {dim(t('status-detail-git-upstream', { name: status.upstream }))}</>}
+          {status === undefined || (status.ahead === 0 && status.behind === 0)
+            ? null
+            : <> · {dim(t('status-detail-git-ab', { ahead: status.ahead, behind: status.behind }))}</>}
+          {status === undefined || status.changed + status.untracked === 0
+            ? null
+            : <> · {dim(t('status-detail-git-changes', { changed: status.changed, untracked: status.untracked }))}</>}
+          {status?.truncated === true ? <> · {dim(t('status-detail-git-truncated'))}</> : null}
         </Text>
       )
     }

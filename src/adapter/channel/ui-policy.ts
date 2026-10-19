@@ -184,6 +184,7 @@ export const CHANNEL_UI_PROPERTIES = [
   'cwd',
   'displayCwd',
   'gitBranch',
+  'gitStatus',
   'working',
   'compaction',
   'cancelPending',

@@ -21,7 +21,7 @@
  */
 
 import type { ChannelUi } from './channel-ui.js'
-import type { ComposerSubmission } from './channel-view.js'
+import type { ComposerSubmission, GitStatusSummary } from './channel-view.js'
 import type { HostDisposer } from './owner.js'
 
 // ── projection ────────────────────────────────────────────────────────────
@@ -106,6 +106,8 @@ export interface HostChannelStateSnapshot {
   readonly cwd: string
   readonly displayCwd: string
   readonly gitBranch?: string
+  /** Git facts behind the footer branch segment; absent outside a work tree. */
+  readonly gitStatus?: GitStatusSummary
   readonly working: boolean
   readonly cancelPending: boolean
   readonly spinnerMode: string
