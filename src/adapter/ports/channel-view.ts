@@ -110,6 +110,10 @@ export interface ChatRow {
   /** `user` rows another agent sent (an Agent Teams peer message or a plugin
    *  relay): the sender's name. */
   sender?: string
+  /** `plugin-relay` rows: the sanitized head preceding the sender
+   *  (`intercom · receive ← `), composed from the relay payload. Absent when the
+   *  plugin declared no usable plugin+action pair. */
+  senderLead?: string
   /** Interrupt rows: backend name, kept separate from localized transcript text. */
   interruptBackend?: string
   /** Actual execution location for `!command` rows. */

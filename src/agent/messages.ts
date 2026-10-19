@@ -78,6 +78,22 @@ export function agentRelaySourceOf(source: unknown): AgentRelaySource | undefine
 }
 
 /**
+ * The relay actions the transcript understands. Frozen vocabulary, shared with
+ * the sending side's card (`send` / `ask` / `reply`): the transcript prints the
+ * token as written — the plugin cards are not localized either, so localizing
+ * one half would break the symmetry rather than help.
+ */
+export const PLUGIN_RELAY_ACTIONS = ['receive', 'ask', 'reply'] as const
+
+export type PluginRelayAction = (typeof PLUGIN_RELAY_ACTIONS)[number]
+
+/** The display half of a relay: both fields present and understood, or nothing. */
+export interface PluginRelayDisplay {
+  readonly plugin: string
+  readonly action: PluginRelayAction
+}
+
+/**
  * A third-party plugin's OPTED-IN relay attribution: the plugin writes a
  * `transcript` payload into its own producer-owned message source when the
  * message should render as a transcript bubble instead of staying
@@ -90,11 +106,22 @@ export function agentRelaySourceOf(source: unknown): AgentRelaySource | undefine
  * named. `text` is the load-bearing field (a relay with nothing to show is
  * not a bubble); `sender`/`sessionId` are read when present so a plugin that
  * omits them still renders.
+ *
+ * `plugin` + `action` are the optional DECORATION: both must be present and the
+ * action must be one of {@link PLUGIN_RELAY_ACTIONS} for the transcript to show
+ * `✉ <plugin> · <action> ← <sender>`; otherwise the bubble shows the bare sender
+ * — an arrow needs a verb, and an unvetted token is never printed.
  */
 export interface PluginRelaySource {
   readonly sender: string
   readonly sessionId: string
   readonly text: string
+  readonly display?: PluginRelayDisplay
+}
+
+/** A relay action this build understands; anything else is not displayable. */
+function pluginRelayActionOf(value: unknown): PluginRelayAction | undefined {
+  return PLUGIN_RELAY_ACTIONS.find(action => action === value)
 }
 
 /** Narrow a durable message source to an opted-in plugin relay, or undefined. */
@@ -102,13 +129,22 @@ export function pluginRelaySourceOf(source: unknown): PluginRelaySource | undefi
   if (typeof source !== 'object' || source === null) return undefined
   const shape = source as { readonly kind?: unknown; readonly form?: unknown; readonly transcript?: unknown }
   if (typeof shape.kind !== 'string' || !shape.kind.startsWith('plugin:') || shape.form !== 'relay') return undefined
-  const transcript = shape.transcript as { readonly sender?: unknown; readonly sessionId?: unknown; readonly text?: unknown } | null | undefined
+  const transcript = shape.transcript as {
+    readonly sender?: unknown
+    readonly sessionId?: unknown
+    readonly text?: unknown
+    readonly plugin?: unknown
+    readonly action?: unknown
+  } | null | undefined
   if (typeof transcript !== 'object' || transcript === null) return undefined
   if (typeof transcript.text !== 'string' || transcript.text === '') return undefined
+  const plugin = typeof transcript.plugin === 'string' && transcript.plugin !== '' ? transcript.plugin : undefined
+  const action = pluginRelayActionOf(transcript.action)
   return {
     sender: typeof transcript.sender === 'string' ? transcript.sender : '',
     sessionId: typeof transcript.sessionId === 'string' ? transcript.sessionId : '',
     text: transcript.text,
+    ...(plugin === undefined || action === undefined ? {} : { display: { plugin, action } }),
   }
 }
 

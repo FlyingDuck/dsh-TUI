@@ -153,12 +153,10 @@ const dict = {
   'export-dir': { zh: '- 目录: {{cwd}}', en: '- Directory: {{cwd}}' },
   'mentions-attached': { zh: '已附加 {{count}} 个文件引用', en: { one: 'Attached {{count}} file reference', other: 'Attached {{count}} file references' } },
   'mentions-missing': { zh: '未找到引用: {{paths}}', en: 'References not found: {{paths}}' },
-  // Agent Teams: the tag after the sender of a peer message bubble.
+  // Agent Teams: the tag after the sender of a peer message bubble. A plugin
+  // relay has no tag: its head is composed from the plugin's own payload
+  // (`intercom · receive ← `), which is not localized on either side.
   'team-message-label': { zh: '团队消息', en: 'team message' },
-  // A plugin's opted-in relay (an inbound dsh-intercom message): the tag after
-  // the sender of its bubble. Generic on purpose — the plugin's own name is not
-  // the TUI's business; the sender it wrote is what the reader needs.
-  'plugin-relay-label': { zh: '中继消息', en: 'relayed message' },
   // T06 (PR-B · AC-5): transcript indicator above a user bubble whose send
   // consumed the live IDE selection. The ⧉ glyph lives in MessageList, not here.
   'selection-attached': {

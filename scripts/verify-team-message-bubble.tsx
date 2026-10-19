@@ -66,7 +66,9 @@ async function frame(cols: number, sender: string, text: string, hosted = false,
     ref() { return this }
     unref() { return this }
   }
-  const node = <bubble.TeamMessageBubble sender={sender} text={text} marginTopOnTurn={false} />
+  // The default node is the Agent Teams shape (its caption is a prop now: a
+  // plugin relay has no caption, its head carries the plugin and the action).
+  const node = <bubble.TeamMessageBubble sender={sender} text={text} marginTopOnTurn={false} captionKey="team-message-label" />
   const instance = await render(
     content ?? (hosted ? <Hosted>{node}</Hosted> : node),
     { stdout: new FakeStdout(), stdin: new FakeStdin(), stderr: new Sink(), exitOnCtrlC: false, patchConsole: false },
@@ -82,12 +84,19 @@ try {
   check('sender line carries mark, name and tag', wide[0] === '✉ reviewer · team message', JSON.stringify(wide[0]))
   check('body lines hang under the sender', wide[1] === '  diff ok' && wide[2] === '  second line of the report', JSON.stringify(wide.slice(1)))
 
-  // A plugin's opted-in relay (an inbound dsh-intercom message) uses the same
-  // bubble with its own caption; the tag is what tells the two apart.
+  // A plugin's opted-in relay (an inbound dsh-intercom message): same bubble,
+  // but its head names the plugin and the action — symmetric with the sending
+  // side's card (`intercom · send → X`) — and it carries NO caption.
   const relayed = await frame(80, 'peer', '', false,
-    <bubble.TeamMessageBubble sender="dsh-peer" text="the peer's message body" marginTopOnTurn={false} captionKey="plugin-relay-label" />)
-  check('relayed bubble carries its own tag', relayed[0] === '✉ dsh-peer · relayed message', JSON.stringify(relayed[0]))
+    <bubble.TeamMessageBubble sender="dsh-peer" text="the peer's message body" marginTopOnTurn={false} lead="intercom · receive ← " />)
+  check('relayed bubble leads with plugin · action ← sender', relayed[0] === '✉ intercom · receive ← dsh-peer', JSON.stringify(relayed[0]))
+  check('relayed bubble carries no caption', !relayed[0]?.includes('· relayed') && !relayed[0]?.includes('team message'), JSON.stringify(relayed[0]))
   check('relayed body matches the team bubble layout', relayed[1] === "  the peer's message body", JSON.stringify(relayed.slice(1)))
+  // A relay that declared no usable plugin+action pair (the payload that was
+  // written before those fields existed) falls back to the bare sender.
+  const bare = await frame(80, 'dsh-peer', '', false,
+    <bubble.TeamMessageBubble sender="dsh-peer" text="the peer's message body" marginTopOnTurn={false} />)
+  check('relay without a head shows the bare sender and no caption', bare[0] === '✉ dsh-peer', JSON.stringify(bare[0]))
 
   // A long peer body folds to the collapsed tool card's budget — three lines plus
   // the shared expand hint — instead of flooding the screen. The hint names the
@@ -133,16 +142,16 @@ try {
     { id: 0, kind: 'user', text: 'human prompt' },
     { id: 1, kind: 'assistant', text: 'spawning teammates' },
     { id: 2, kind: 'user', label: 'team-message', sender: 'reviewer', text: 'reviewer report' },
-    { id: 3, kind: 'user', label: 'plugin-relay', sender: 'dsh-peer', text: 'peer report' },
+    { id: 3, kind: 'user', label: 'plugin-relay', sender: 'dsh-peer', senderLead: 'intercom · receive ← ', text: 'peer report' },
     { id: 4, kind: 'assistant', text: 'noted' },
   ] as never[]
   const list = await frame(60, 'reviewer', '', false,
     <MessageList rows={chatRows} expanded={false} expandedRows={new Set()} selectedId={null} onToggleRow={() => {}}
       model="test" showAll onToggleAll={() => {}} historyPaintEnabled={false} scrollHandle={null}
       registerRowRef={() => {}} onTimeline={(next: Timeline) => { timeline = next }} />)
-  check('list: the peer row renders as its bubble', list.some(line => line.startsWith('✉ reviewer')), JSON.stringify(list))
-  check('list: the relay row renders as its bubble with the relay tag',
-    list.some(line => line.startsWith('✉ dsh-peer') && line.includes('relayed message')), JSON.stringify(list))
+  check('list: the peer row renders as its bubble', list.some(line => line.startsWith('✉ reviewer') && line.includes('team message')), JSON.stringify(list))
+  check('list: the relay row renders its composed head and no caption',
+    list.some(line => line.startsWith('✉ intercom · receive ← dsh-peer')), JSON.stringify(list))
   const turns = (timeline as Timeline | null)?.turns.map(turn => turn.id)
   check('list: only the human prompt is a turn (rail, pinned header)', JSON.stringify(turns) === '[0]', JSON.stringify(turns))
 

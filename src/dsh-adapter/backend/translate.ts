@@ -334,7 +334,16 @@ export function createDshTranslator(deps: DshTranslatorDeps) {
     // stays injected context (below): writing the payload IS the opt-in.
     const relay = pluginRelaySourceOf(data.source)
     if (relay !== undefined) {
-      return [{ type: 'user.message', ...base, source: 'plugin-relay', sender: relay.sender, text: relay.text }]
+      return [{
+        type: 'user.message',
+        ...base,
+        source: 'plugin-relay',
+        sender: relay.sender,
+        text: relay.text,
+        // The decoration is optional by contract: the projector shows the bare
+        // sender when either half is missing.
+        ...(relay.display === undefined ? {} : { plugin: relay.display.plugin, action: relay.display.action }),
+      }]
     }
     // Injected context (plugin/skill source) is model-facing only; it has no
     // transcript-facing text.

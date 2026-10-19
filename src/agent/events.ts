@@ -13,6 +13,7 @@
  * (the UI's own vocabulary), never a vendor package.
  */
 import type { AgentMessageView, ChannelGoal, TodoPanelItem, TranscriptImage } from '../adapter/ports/channel-view.js'
+import type { PluginRelayAction } from './messages.js'
 import type { ToolCallPresentation, ToolResultPresentation } from './presentation.js'
 
 /**
@@ -230,7 +231,7 @@ export type AgentEvent =
    * (plugin/skill context) never render as bubbles; a `plugin-relay` one does
    * (the plugin opted in with a `transcript` payload).
    */
-  | { readonly type: 'user.message'; readonly id: string; readonly anchor: string; readonly seq: number; readonly turn?: number; readonly time: number; readonly source: 'user' | 'injected' | 'goal' | 'compaction' | 'command-output' | 'notification' | 'team-message' | 'plugin-relay'; readonly text: string; readonly blocks: readonly ContentBlockView[]; readonly images?: readonly ImageRef[]; readonly label?: string; /** The sending peer's name: `team-message` (a teammate) or `plugin-relay` (a plugin's opted-in relay). */ readonly sender?: string }
+  | { readonly type: 'user.message'; readonly id: string; readonly anchor: string; readonly seq: number; readonly turn?: number; readonly time: number; readonly source: 'user' | 'injected' | 'goal' | 'compaction' | 'command-output' | 'notification' | 'team-message' | 'plugin-relay'; readonly text: string; readonly blocks: readonly ContentBlockView[]; readonly images?: readonly ImageRef[]; readonly label?: string; /** The sending peer's name: `team-message` (a teammate) or `plugin-relay` (a plugin's opted-in relay). */ readonly sender?: string; /** `plugin-relay` only: the plugin's own display name, printed as written. */ readonly plugin?: string; /** `plugin-relay` only: the relay action, always one of the frozen tokens. */ readonly action?: PluginRelayAction }
   /**
    * Snapshot of the backend's queue of unclaimed user inputs (replaces the
    * previous one). `claimed`/`discarded` name the ids that left the queue in

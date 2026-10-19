@@ -1,7 +1,9 @@
 /** Backend-neutral transcript limits and text helpers shared by the projector,
  *  the fold pass and the local-output paths. */
 import type { ChatRow } from '../adapter/ports/channel-view.js'
+import type { PluginRelayAction } from '../agent/messages.js'
 import type { I18nKey } from '../i18n.js'
+import { cleanRenderText, NOTICE_CELLS } from './sanitize.js'
 
 export const ARGS_PREVIEW_LIMIT = 160
 
@@ -27,28 +29,48 @@ export function preview(text: string, limit: number): string {
 
 /**
  * The `user` rows that are NOT the human's prompt, keyed by their row label,
- * mapped to the caption their bubble shows after the sender. Membership IS
- * the definition: every site that asks "is this the human speaking?" reads
- * this map instead of comparing one label string, so the next relay flavor is
- * added once, here — `team-message` (an Agent Teams peer) and `plugin-relay`
- * (an opted-in plugin relay, see `pluginRelaySourceOf`).
+ * mapped to the caption their bubble shows after the sender (`null`: the head
+ * is composed from the row's own payload instead — see {@link relayLeadOf}).
+ * Membership IS the definition: every site that asks "is this the human
+ * speaking?" reads this map instead of comparing one label string, so the next
+ * relay flavor is added once, here — `team-message` (an Agent Teams peer) and
+ * `plugin-relay` (an opted-in plugin relay, see `pluginRelaySourceOf`).
  */
-export const PEER_MESSAGE_LABELS: ReadonlyMap<string, I18nKey> = new Map<string, I18nKey>([
+export const PEER_MESSAGE_LABELS: ReadonlyMap<string, I18nKey | null> = new Map<string, I18nKey | null>([
   ['team-message', 'team-message-label'],
-  ['plugin-relay', 'plugin-relay-label'],
+  ['plugin-relay', null],
 ])
 
-/** The part of a row the peer predicates read (both fields are optional there). */
-type PeerRow = Pick<ChatRow, 'kind'> & { readonly label?: string; readonly sender?: string }
+/**
+ * The head a plugin relay's bubble shows before its sender, symmetric with the
+ * sending side's card (`intercom · send → X`): `intercom · receive ← ` for one
+ * of the frozen action tokens. Empty — the bubble then shows the bare sender —
+ * when either half is missing, so an unvetted token is never printed. Both
+ * halves are plugin-authored text, so the plugin name goes through the
+ * render-path contract (single line, control sequences stripped).
+ */
+export function relayLeadOf(plugin: string | undefined, action: PluginRelayAction | undefined): string {
+  if (plugin === undefined || action === undefined) return ''
+  const head = cleanRenderText(plugin, NOTICE_CELLS)
+  return head === '' ? '' : `${head} · ${action} ← `
+}
+
+/** The part of a row the peer predicates read (all fields are optional there). */
+type PeerRow = Pick<ChatRow, 'kind'> & { readonly label?: string; readonly sender?: string; readonly senderLead?: string }
 
 /** Whether a `user` row is a peer message rather than the human's own prompt. */
 export function isPeerMessageRow(row: PeerRow): boolean {
   return row.kind === 'user' && row.label !== undefined && PEER_MESSAGE_LABELS.has(row.label)
 }
 
-/** What a peer row's bubble shows: the sender name and its caption key. */
-export function peerMessageOf(row: PeerRow): { readonly sender: string; readonly captionKey: I18nKey } | undefined {
+/** What a peer row's bubble shows: the head, the sender name and its caption. */
+export function peerMessageOf(row: PeerRow): { readonly sender: string; readonly lead: string; readonly captionKey?: I18nKey } | undefined {
   if (row.kind !== 'user' || row.label === undefined) return undefined
+  if (!PEER_MESSAGE_LABELS.has(row.label)) return undefined
   const captionKey = PEER_MESSAGE_LABELS.get(row.label)
-  return captionKey === undefined ? undefined : { sender: row.sender ?? '', captionKey }
+  return {
+    sender: row.sender ?? '',
+    lead: row.senderLead ?? '',
+    ...(captionKey === undefined || captionKey === null ? {} : { captionKey }),
+  }
 }

@@ -1567,6 +1567,7 @@ export function MessageList({
               selectionAttached={row.selectionAttached}
               sender={peer?.sender}
               senderCaptionKey={peer?.captionKey}
+              senderLead={peer?.lead}
               streaming={displayStreaming}
               thinkingOpen={row.thinkingOpen === true}
               durationMs={row.durationMs}
@@ -1652,6 +1653,8 @@ type MemoRowProps = {
   sender: ChatRow['sender']
   /** A peer row's caption after the sender (see `PEER_MESSAGE_LABELS`). */
   senderCaptionKey?: I18nKey
+  /** A plugin relay row's sanitized head before the sender (`intercom · receive ← `). */
+  senderLead?: string
   /** Session cwd for the indicator's display-path relativization (T-FIX-01). */
   sessionCwd: string | undefined
   streaming: boolean
@@ -1760,6 +1763,7 @@ function TranscriptRow({
   selectionAttached,
   sender,
   senderCaptionKey,
+  senderLead,
   sessionCwd,
   streaming,
   thinkingOpen,
@@ -1893,6 +1897,7 @@ function TranscriptRow({
               // (not the whole row) carries the click target.
               verbose={isExpanded || expanded}
               onClick={foldOnClick}
+              lead={senderLead}
               {...(senderCaptionKey === undefined ? {} : { captionKey: senderCaptionKey })}
             />
           )}

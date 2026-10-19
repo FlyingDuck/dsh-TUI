@@ -19,7 +19,13 @@
  *      **模型面** 的 `blocks` 计（用两份只差 blocks 的输入对比，不依赖分词实现）；
  *   F. 「不是人说的话」只有一个真源：`isPeerMessageRow` / `peerMessageOf` 覆盖
  *      `team-message` 与 `plugin-relay`（带 label 的 steering 不在内），并且 `/export`
- *      真的按这个谓词换分节标题。
+ *      真的按这个谓词换分节标题；
+ *   G. 装饰 `plugin` + `action`（**构造数据**：真实抓取早于这两个字段）—— 两半都在、
+ *      且 `action` 是冻结的三个 token 之一，才用 `✉ <plugin> · <action> ← <sender>`；
+ *      缺一半或 token 不认识一律退回裸 `✉ <sender>`（箭头需要一个动词，未知 token
+ *      绝不原样印）；
+ *   H. 清洗：插件写的名字（`sender` / `plugin`）折成单行并剥掉转义 —— 否则一个换行
+ *      就能把头部拆成两行；**正文的换行保留**（消息是散文）。
  *
  * 运行：node --import tsx/esm scripts/verify-plugin-relay.ts
  */
@@ -139,7 +145,11 @@ const relayEvent = userMessages(translate(payloadRow.row))[0]
   check('E 行的正文是展示正文（不是框架文本）', row?.text === payload.text, JSON.stringify(row?.text))
   check('E 行的 sender 是 payload.sender', row?.sender === payload.sender, String(row?.sender))
   check('E 该行被认作 peer（不是人类 prompt）', row !== undefined && isPeerMessageRow(row))
-  check('E 该行带上自己的分节标题键', row !== undefined && peerMessageOf(row)?.captionKey === 'plugin-relay-label')
+  // 真实抓取早于 plugin/action 两个字段：所以这份 payload 走的**就是降级路径** ——
+  // 没有 head、没有 caption，只剩 `✉ <sender>`。
+  check('E 老 payload（无 plugin/action）：行上没有 head', row?.senderLead === undefined, JSON.stringify(row?.senderLead))
+  check('E 老 payload：peer 不带 caption 键', row !== undefined && peerMessageOf(row)?.captionKey === undefined)
+  check('E 老 payload：lead 为空串（气泡显示裸 sender）', row !== undefined && peerMessageOf(row)?.lead === '')
   check('E 上下文占用按模型面记了（> 0）', harness.state.contextSegments.prompt > 0, String(harness.state.contextSegments.prompt))
 
   // 两份输入只差 `content`（一份是框架文本，一份只有展示正文），展示正文相同：
@@ -193,10 +203,72 @@ const relayEvent = userMessages(translate(payloadRow.row))[0]
   }
 }
 
+// ── G. 装饰 plugin/action（构造数据）+ 降级 ───────────────────────────────
+// 真实抓取那份 payload 只有 {sender, sessionId, text}（C/E 已经钉住它的降级形状）；
+// 带 plugin/action 的真实样本还没产出，所以这一段按**冻结契约**构造，明确标记为构造。
+const decorated = (transcript: Record<string, unknown>): unknown => withSource({
+  kind: 'plugin:dsh-intercom',
+  form: 'relay',
+  transcript: { sender: payload.sender, sessionId: payload.sessionId, text: payload.text, ...transcript },
+})
+const decoratedRow = (source: unknown) => {
+  const harness = createProjectorHarness()
+  harness.apply([...translate(source)])
+  return { harness, row: harness.state.rows.filter(candidate => candidate.kind === 'user').at(-1) }
+}
+{
+  const source = decorated({ plugin: 'intercom', action: 'receive' })
+  const [event] = userMessages(translate(source))
+  check('G 装饰：事件带上 plugin', event?.plugin === 'intercom', String(event?.plugin))
+  check('G 装饰：事件带上 action', event?.action === 'receive', String(event?.action))
+  const { row } = decoratedRow(source)
+  check('G 装饰：head 是冻结形状（对称发送方卡片）', row?.senderLead === 'intercom · receive ← ', JSON.stringify(row?.senderLead))
+  check('G 装饰：caption 键消失（head 取代了它）', row !== undefined && peerMessageOf(row)?.captionKey === undefined)
+  check('G 装饰：lead 原样透给气泡', row !== undefined && peerMessageOf(row)?.lead === 'intercom · receive ← ')
+
+  // 降级：两半缺一不可 —— 箭头需要一个动词，没见过的 token 也绝不原样印。
+  const negatives = [
+    { name: 'action 是没见过的 token', transcript: { plugin: 'intercom', action: 'ping' } },
+    { name: '只有 plugin 没有 action', transcript: { plugin: 'intercom' } },
+    { name: '只有 action 没有 plugin', transcript: { action: 'receive' } },
+    { name: 'plugin 是空串', transcript: { plugin: '', action: 'receive' } },
+    { name: 'action 不是字符串', transcript: { plugin: 'intercom', action: 7 } },
+  ]
+  for (const entry of negatives) {
+    const [event] = userMessages(translate(decorated(entry.transcript)))
+    const { row } = decoratedRow(decorated(entry.transcript))
+    check(`G ${entry.name}：事件不带 plugin/action`,
+      event?.plugin === undefined && event?.action === undefined, `${String(event?.plugin)}/${String(event?.action)}`)
+    check(`G ${entry.name}：退回裸 sender 头`, row?.senderLead === undefined && row !== undefined && peerMessageOf(row)?.lead === '',
+      JSON.stringify(row?.senderLead))
+  }
+
+  // 三个 token 都要能用（不只是 receive）。
+  for (const action of ['receive', 'ask', 'reply'] as const) {
+    const { row } = decoratedRow(decorated({ plugin: 'intercom', action }))
+    check(`G action=${action}：head 用该 token`, row?.senderLead === `intercom · ${action} ← `, JSON.stringify(row?.senderLead))
+  }
+}
+
+// ── H. 清洗：插件写的名字不能把头部拆行、也不能带转义上屏 ──────────────────
+{
+  const dirty = decorated({
+    plugin: 'inter\ncom\u001b[31m',
+    action: 'ask',
+    sender: 'peer\nname\u001b[31m',
+    text: 'line1\nline2',
+  })
+  const { row } = decoratedRow(dirty)
+  check('H sender 折成单行且剥掉转义', row?.sender === 'peer name', JSON.stringify(row?.sender))
+  check('H plugin 折成单行且剥掉转义', row?.senderLead === 'inter com · ask ← ', JSON.stringify(row?.senderLead))
+  check('H 正文的换行不被折掉（消息是散文）', row?.text === 'line1\nline2', JSON.stringify(row?.text))
+}
+
+
 if (failures.length > 0) {
   console.error(`plugin-relay FAILED (${failures.length}/${checks}):`)
   for (const failure of failures) console.error(`  - ${failure}`)
   process.exit(1)
 }
-console.log(`plugin-relay OK (${checks} checks: spliced 不产行、无 payload 不显示、带 payload 落气泡、opt-in 负例、投影落行与模型面占用、/export 分节)`)
+console.log(`plugin-relay OK (${checks} checks: spliced 不产行、无 payload 不显示、带 payload 落气泡、opt-in 负例、投影落行与模型面占用、/export 分节、plugin+action 装饰与降级、名字清洗)`)
 process.exit(0)

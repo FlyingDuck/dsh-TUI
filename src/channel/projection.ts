@@ -24,7 +24,7 @@ import { buildQuestionRecord, parseQuestionRecordAnswers, parseQuestionRecordQue
 import { cleanRenderText, NOTICE_CELLS } from './sanitize.js'
 import { appendLiveOutput, type LiveOutputTail } from './live-output.js'
 import { replaySelectionAttachment } from './selection-record.js'
-import { ARGS_PREVIEW_LIMIT, LOCAL_OUTPUT_LIMIT, preview, RESULT_PREVIEW_LIMIT } from './transcript.js'
+import { ARGS_PREVIEW_LIMIT, LOCAL_OUTPUT_LIMIT, preview, relayLeadOf, RESULT_PREVIEW_LIMIT } from './transcript.js'
 import { addUsageToBucket, emptyCostBuckets, estimateTokens, estimateTokensFraction, usageOutputTokens, type PricingWindow } from './usage.js'
 
 type Mutable<T> = { -readonly [K in keyof T]: T[K] }
@@ -95,6 +95,16 @@ const NO_IMAGES: readonly ImageRef[] = []
 export function textOfBlocks(blocks: readonly ContentBlockView[] | undefined): string {
   // Unknown block kinds are skipped, never fatal (v1 renders text blocks only).
   return (blocks ?? []).map(block => (block.type === 'text' ? block.text : '')).join('').trim()
+}
+
+/**
+ * A peer row's sender field. The name comes from a teammate's framing or a
+ * plugin's payload — another process's text — so it goes through the render-path
+ * contract (single line, C0/C1 stripped, cell-capped) before it can become a
+ * header line. Omitted when the event named none, exactly as before.
+ */
+function peerSenderFields(sender: string | undefined): { readonly sender?: string } {
+  return sender === undefined ? {} : { sender: cleanRenderText(sender, NOTICE_CELLS) }
 }
 
 /** Create the shared projector over one channel state. */
@@ -782,7 +792,7 @@ export function createChannelProjection(state: ProjectionState, deps: ChannelPro
     // the sender, never the human's last prompt.
     if (event.source === 'team-message') {
       if (event.text === '') return
-      appendRow({ id: deps.rowIds.value, kind: 'user', label: 'team-message', text: event.text, ...(event.sender === undefined ? {} : { sender: event.sender }), seq: event.seq })
+      appendRow({ id: deps.rowIds.value, kind: 'user', label: 'team-message', text: event.text, ...peerSenderFields(event.sender), seq: event.seq })
       state.contextSegments.prompt += estimateTokens(textOfBlocks(event.blocks))
       deps.rowIds.value += 1
       return
@@ -790,10 +800,13 @@ export function createChannelProjection(state: ProjectionState, deps: ChannelPro
     // A plugin's opted-in relay (an inbound dsh-intercom message): its own
     // bubble, labelled with the sender, never the human's last prompt. Both the
     // display text and the sender come from the plugin's durable `transcript`
-    // payload (translate.ts), not from the model-facing framing it wrote.
+    // payload (translate.ts), not from the model-facing framing it wrote; the
+    // optional head (`intercom · receive ← `) is composed here, once per row,
+    // from that same payload.
     if (event.source === 'plugin-relay') {
       if (event.text === '') return
-      appendRow({ id: deps.rowIds.value, kind: 'user', label: 'plugin-relay', text: event.text, ...(event.sender === undefined ? {} : { sender: event.sender }), seq: event.seq })
+      const lead = relayLeadOf(event.plugin, event.action)
+      appendRow({ id: deps.rowIds.value, kind: 'user', label: 'plugin-relay', text: event.text, ...peerSenderFields(event.sender), ...(lead === '' ? {} : { senderLead: lead }), seq: event.seq })
       // The model saw the framing plus the body (`blocks`), so the context
       // occupancy counts that, not the display text.
       state.contextSegments.prompt += estimateTokens(textOfBlocks(event.blocks))
