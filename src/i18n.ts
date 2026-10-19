@@ -668,6 +668,18 @@ const dict = {
   'doctor-user-config': { zh: '用户配置  {{path}}', en: 'User config  {{path}}' },
   'doctor-launch-hint': { zh: '启动方式  dsh-tui.cmd / dsh --profile dsh-tui', en: 'Launch      dsh-tui.cmd / dsh --profile dsh-tui' },
   'doctor-route-hint': { zh: '模型路由  由 cordis.yml 的 llm-deepseek 段决定（/model 仅提示重启生效）', en: 'Model route  set by the llm-deepseek block in cordis.yml (/model only hints at restart)' },
+  // `/version`（本 fork 的构建身份命令，见 src/buildInfo.ts）。无构建信息时按运行
+  // 方式分两种降级文案：源码运行（tsx）说「开发运行」，装好的包说「官方构建」。
+  'version-line-build': { zh: 'dsh-tui {{version}}（自用构建 {{describe}}）', en: 'dsh-tui {{version}} (self-built {{describe}})' },
+  'version-line-git': { zh: '  分支/提交  {{branch}} @ {{commit}} · 构建于 {{builtAt}}', en: '  branch/commit  {{branch}} @ {{commit}} · built {{builtAt}}' },
+  'version-line-source': { zh: '  安装来源   {{source}}', en: '  installed from  {{source}}' },
+  'version-degraded-dev': { zh: 'dsh-tui {{version}} · 开发运行（无构建信息）', en: 'dsh-tui {{version}} · development run (no build info)' },
+  'version-degraded-package': { zh: 'dsh-tui {{version}} · 官方构建（无构建信息）', en: 'dsh-tui {{version}} · official build (no build info)' },
+  'version-source-tarball': { zh: '本地 tarball：{{path}}', en: 'local tarball: {{path}}' },
+  'version-source-directory': { zh: '本地目录：{{path}}', en: 'local directory: {{path}}' },
+  'version-source-link': { zh: '源码链接：{{path}}', en: 'source link: {{path}}' },
+  'version-source-registry': { zh: 'registry 官方', en: 'official registry' },
+  'version-source-unknown': { zh: '未知', en: 'unknown' },
   'export-failed': { zh: '导出失败（无法写入工作目录）', en: 'Export failed (cannot write to working directory)' },
   // 导出/调试快照都落在会话工作区根：同步盘（Dropbox/网盘）或共享目录
   // 会把含完整对话的文件带出本机，提示语提醒用户及时清理。
@@ -2208,6 +2220,7 @@ const dict = {
   'cmd-desc-reload': { zh: '重读偏好文件并立即生效' },
   'cmd-desc-settings': { zh: '查看和编辑插件设置' },
   'cmd-desc-doctor': { zh: '运行环境检查' },
+  'cmd-desc-version': { zh: '显示当前构建的身份与来源' },
   'cmd-desc-migrate': { zh: '从其他编程代理导入对话（claude-code/codex/omp/zcode/grok-build）' },
   'cmd-desc-init': { zh: '在工作目录创建 AGENTS.md' },
   'cmd-desc-agents': { zh: '查看本会话的子代理' },

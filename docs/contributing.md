@@ -334,6 +334,7 @@ CI 回归都要跑。窄改动还要跑最近的聚焦脚本：
 | Compaction 与折叠 transcript 行 | `node scripts/verify-compact.mjs` |
 | 命令能力事实（compaction / plan / 问卷 / 剪枝的路由与 Help + `/` 的不可用标注） | `pnpm verify:agent-capabilities` |
 | `/rollover` 命令（结转命名与当日序号、回合中拒绝先于改名、屏幕的结转→新开会话顺序） | `pnpm verify:rollover` |
+| `/version` 命令（有/无构建 stamp 的两种文案、安装来源探测矩阵、命令声明与 Chat 分发接线） | `pnpm verify:version` |
 | 压缩 × 会话切换生命周期（取消先于 fork 快照、persistence 分类提示） | `node --import tsx/esm scripts/verify-compact-switch.tsx` |
 | 主题加载、持久化与运行时插件接缝 | `node --import tsx/esm scripts/verify-themes.mjs`、`node --import tsx/esm scripts/verify-runtime-themes.ts` |
 | 默认推理强度等偏好链（effortPrefs / settings 默认值） | `node --import tsx/esm scripts/verify-effort-default.ts` |

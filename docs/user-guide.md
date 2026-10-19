@@ -329,6 +329,7 @@ dsh-tui
 | `/balance` | 无 | DeepSeek 官方账户余额（免费只读接口）：摘要行 + hover 明细（同款本会话估算拆解：主会话/子代理/未计价），点击刷新、`×` 关闭 |
 | `/config` | 无 | 配置来源：`cordis.patch.yml` 路径、启动方式、模型路由 |
 | `/doctor` | 无 | 环境自检 |
+| `/version` | 无 | 当前构建的身份与来源：版本、git 描述（工作区脏时带 `-dirty`）、分支@提交、构建时间、profile 的安装来源（本地 tarball / 本地目录 / 源码链接 / registry）。**自用构建专属** —— 官方包没有这条命令 |
 | `/migrate` | `[agent] [--dry-run]` | 从其他编程代理（claude-code/codex/omp/zcode/grok-build）导入对话历史，子进程运行不卡界面，详见[会话迁移](migrate.md) |
 | `/init` | 无 | 在工作目录创建 `AGENTS.md`（created / exists / failed 三态提示） |
 | `/agents` | 无 | 本会话子代理列表 |

@@ -89,6 +89,11 @@ export const LOCAL_COMMANDS: LocalCommand[] = [
   { name: 'setup', description: 'Re-run the first-run guide (API key / language + theme / model + workspace / shortcuts)' },
   { name: 'star', description: 'Star this project on GitHub (one-key via the gh CLI)' },
   { name: 'doctor', description: 'Run environment checks' },
+  // Fork-only: the CLI `dsh-tui version` reads package.json through the global
+  // launcher and cannot tell a self-built profile from an official one; this
+  // slash command runs inside the profile and reads its build stamp. See
+  // src/buildInfo.ts.
+  { name: 'version', description: 'Show the build this copy was made from' },
   { name: 'migrate', description: 'Import conversations from other coding agents (claude-code / codex / omp / zcode / grok-build)' },
   { name: 'init', description: 'Create AGENTS.md in the working directory' },
   { name: 'agents', description: 'Show subagents of this session' },
@@ -198,7 +203,7 @@ export type LocalCommandRequirement =
 
 const LOCAL_COMMAND_REQUIREMENTS: ReadonlyMap<string, LocalCommandRequirement> = new Map<string, LocalCommandRequirement>([
   ['new', 'any'], ['clear', 'any'], ['status', 'any'], ['cost', 'any'], ['tokens', 'any'],
-  ['settings', 'any'], ['star', 'any'], ['doctor', 'any'], ['help', 'any'], ['tips', 'any'],
+  ['settings', 'any'], ['star', 'any'], ['doctor', 'any'], ['version', 'any'], ['help', 'any'], ['tips', 'any'],
   ['exit', 'any'], ['quit', 'any'], ['q', 'any'], ['theme', 'any'], ['lang', 'any'],
   ['activity', 'any'], ['thinking', 'any'], ['vim', 'any'], ['terminal-setup', 'any'],
   ['connect', 'any'], ['update', 'any'], ['export', 'any'], ['panel', 'any'],

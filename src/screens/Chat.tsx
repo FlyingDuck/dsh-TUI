@@ -1,6 +1,7 @@
 import React from 'react'
 import { t, getLang, setLang, isLang, writeLangPref, readLangPref, subscribeLang, LANGS, type Lang } from '../i18n.js'
 import { checkForTuiUpdate, installedTuiVersion } from '../update.js'
+import { versionReportLines } from '../buildInfo.js'
 import { installedKernelVersion } from '../dsh-adapter/contract.js'
 import { readThemePref } from '../themePrefs.js'
 import { presetOverrideFromEnv, readPresetPref } from '../presetPrefs.js'
@@ -3681,6 +3682,14 @@ export function Chat({
       case 'doctor':
         setHelpOpen(false)
         channel.pushLocal('/doctor', channel.doctorInfo())
+        return true
+      case 'version':
+        // Fork-only identity: the build stamp this copy was compiled with and
+        // where the profile got it. The CLI `dsh-tui version` cannot answer
+        // this — it runs in the global launcher and reads package.json, which
+        // a self-built copy keeps aligned with upstream. See src/buildInfo.ts.
+        setHelpOpen(false)
+        channel.pushLocal('/version', versionReportLines())
         return true
       case 'migrate': {
         // Double entry points with the CLI. BARE `/migrate` opens the
