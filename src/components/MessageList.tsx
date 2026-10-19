@@ -1,9 +1,10 @@
 import React, { useState } from 'react'
-import { getLang, subscribeLang, t, type Lang } from '../i18n.js'
+import { getLang, subscribeLang, t, type I18nKey, type Lang } from '../i18n.js'
 import { Box, Text, useTerminalSize, type ScrollBoxHandle } from '../ui.js'
 import type { ClickEvent } from '../ink/events/click-event.js'
 import type { ChatRow, ToolRow, ToolCallView, ToolResultView, SubagentRow, JobGroupRow, JobRow } from '../dsh-adapter/channel.js'
 import type { TurnUsageSummary } from '../adapter/ports/channel-view.js'
+import { isPeerMessageRow, peerMessageOf } from '../channel/transcript.js'
 import type { JobGroupFoldMode } from '../tuiDisplayPrefs.js'
 import { normalizeIdePath } from '../dsh-adapter/ide-channel.js'
 import type { TranscriptImage } from '../dsh-adapter/transcript-images.js'
@@ -93,15 +94,9 @@ const NOOP_TOGGLE_STREAM_VIEW = (_rowId: number): void => {}
 // "non-streaming delivery becomes a smooth flow" contract).
 
 /** A row that opens a turn on the rail and the pinned header: a user row,
- *  but not an Agent Teams peer message (never the human's prompt). */
+ *  but not a peer message (never the human's prompt). */
 function isTurnRow(row: ChatRow): boolean {
-  return row.kind === 'user' && row.label !== 'team-message'
-}
-
-/** The sender a team-message row shows (empty when the event named none);
- *  undefined for every other row, which renders as the human's prompt. */
-function teamSenderOf(row: ChatRow): string | undefined {
-  return row.label === 'team-message' ? row.sender ?? '' : undefined
+  return row.kind === 'user' && !isPeerMessageRow(row)
 }
 
 function assistantRevealText(row: ChatRow, enabled: boolean): string {
@@ -339,8 +334,8 @@ function signatureParts(
         row.selectionAttached === undefined ? 0 : 1,
         stringWidth(displaySelectionPath(row.selectionAttached?.path ?? '', sessionCwd)),
         String(row.selectionAttached?.lines ?? ''),
-        // A team message adds its sender line above the body.
-        teamSenderOf(row) ?? '',
+        // A peer message adds its sender (and caption) line above the body.
+        peerMessageOf(row)?.sender ?? '',
       )
       // Long-line fold: expanding a folded row swaps the folded preview for
       // the raw line (thousands of rows), so both expansion switches are
@@ -1534,6 +1529,9 @@ export function MessageList({
           const subagent = row.kind === 'subagent' ? row.subagent : undefined
           const job = row.kind === 'job' ? row.job : undefined
           const jobGroup = row.kind === 'job' ? row.jobGroup : undefined
+          // Primitives, not the object: MemoRow's shallow compare must stay
+          // value-based or every user row re-renders on every frame.
+          const peer = peerMessageOf(row)
           const revealVersion = smoothStreaming && row.kind === 'tool' && row.fresh === true &&
             row.tool?.status === 'running' && row.tool.resultView === undefined
             ? getRevealVersion()
@@ -1567,7 +1565,8 @@ export function MessageList({
               textFull={row.kind === 'reasoning' ? row.text : undefined}
               executionTarget={row.executionTarget}
               selectionAttached={row.selectionAttached}
-              sender={teamSenderOf(row)}
+              sender={peer?.sender}
+              senderCaptionKey={peer?.captionKey}
               streaming={displayStreaming}
               thinkingOpen={row.thinkingOpen === true}
               durationMs={row.durationMs}
@@ -1651,6 +1650,8 @@ type MemoRowProps = {
   /** IDE selection indicator (user rows): rendered above the prompt bubble. */
   selectionAttached: ChatRow['selectionAttached']
   sender: ChatRow['sender']
+  /** A peer row's caption after the sender (see `PEER_MESSAGE_LABELS`). */
+  senderCaptionKey?: I18nKey
   /** Session cwd for the indicator's display-path relativization (T-FIX-01). */
   sessionCwd: string | undefined
   streaming: boolean
@@ -1758,6 +1759,7 @@ function TranscriptRow({
   executionTarget,
   selectionAttached,
   sender,
+  senderCaptionKey,
   sessionCwd,
   streaming,
   thinkingOpen,
@@ -1887,6 +1889,7 @@ function TranscriptRow({
               text={displayText}
               marginTopOnTurn={marginTopOnTurn}
               isSelected={isSelected}
+              {...(senderCaptionKey === undefined ? {} : { captionKey: senderCaptionKey })}
             />
           )}
           {text !== '' && sender === undefined && (

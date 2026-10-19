@@ -227,9 +227,10 @@ export type AgentEvent =
    * A user-role message reached the durable record. `text` is the
    * transcript-facing text (the first text block for `user`, the summary for
    * `compaction`); `blocks` is everything the model saw. `injected` messages
-   * (plugin/skill context) never render as bubbles.
+   * (plugin/skill context) never render as bubbles; a `plugin-relay` one does
+   * (the plugin opted in with a `transcript` payload).
    */
-  | { readonly type: 'user.message'; readonly id: string; readonly anchor: string; readonly seq: number; readonly turn?: number; readonly time: number; readonly source: 'user' | 'injected' | 'goal' | 'compaction' | 'command-output' | 'notification' | 'team-message'; readonly text: string; readonly blocks: readonly ContentBlockView[]; readonly images?: readonly ImageRef[]; readonly label?: string; /** `team-message`: the sending member's name. */ readonly sender?: string }
+  | { readonly type: 'user.message'; readonly id: string; readonly anchor: string; readonly seq: number; readonly turn?: number; readonly time: number; readonly source: 'user' | 'injected' | 'goal' | 'compaction' | 'command-output' | 'notification' | 'team-message' | 'plugin-relay'; readonly text: string; readonly blocks: readonly ContentBlockView[]; readonly images?: readonly ImageRef[]; readonly label?: string; /** The sending peer's name: `team-message` (a teammate) or `plugin-relay` (a plugin's opted-in relay). */ readonly sender?: string }
   /**
    * Snapshot of the backend's queue of unclaimed user inputs (replaces the
    * previous one). `claimed`/`discarded` name the ids that left the queue in

@@ -82,6 +82,13 @@ try {
   check('sender line carries mark, name and tag', wide[0] === '✉ reviewer · team message', JSON.stringify(wide[0]))
   check('body lines hang under the sender', wide[1] === '  diff ok' && wide[2] === '  second line of the report', JSON.stringify(wide.slice(1)))
 
+  // A plugin's opted-in relay (an inbound dsh-intercom message) uses the same
+  // bubble with its own caption; the tag is what tells the two apart.
+  const relayed = await frame(80, 'peer', '', false,
+    <bubble.TeamMessageBubble sender="dsh-peer" text="the peer's message body" marginTopOnTurn={false} captionKey="plugin-relay-label" />)
+  check('relayed bubble carries its own tag', relayed[0] === '✉ dsh-peer · relayed message', JSON.stringify(relayed[0]))
+  check('relayed body matches the team bubble layout', relayed[1] === "  the peer's message body", JSON.stringify(relayed.slice(1)))
+
   const narrow = await frame(24, '审阅者', '这是一条需要在窄终端里换行的团队消息内容')
   check('narrow: the sender line stays one row', narrow[0]?.startsWith('✉ 审阅者') === true, JSON.stringify(narrow[0]))
   const body = narrow.slice(1)
@@ -106,13 +113,16 @@ try {
     { id: 0, kind: 'user', text: 'human prompt' },
     { id: 1, kind: 'assistant', text: 'spawning teammates' },
     { id: 2, kind: 'user', label: 'team-message', sender: 'reviewer', text: 'reviewer report' },
-    { id: 3, kind: 'assistant', text: 'noted' },
+    { id: 3, kind: 'user', label: 'plugin-relay', sender: 'dsh-peer', text: 'peer report' },
+    { id: 4, kind: 'assistant', text: 'noted' },
   ] as never[]
   const list = await frame(60, 'reviewer', '', false,
     <MessageList rows={chatRows} expanded={false} expandedRows={new Set()} selectedId={null} onToggleRow={() => {}}
       model="test" showAll onToggleAll={() => {}} historyPaintEnabled={false} scrollHandle={null}
       registerRowRef={() => {}} onTimeline={(next: Timeline) => { timeline = next }} />)
   check('list: the peer row renders as its bubble', list.some(line => line.startsWith('✉ reviewer')), JSON.stringify(list))
+  check('list: the relay row renders as its bubble with the relay tag',
+    list.some(line => line.startsWith('✉ dsh-peer') && line.includes('relayed message')), JSON.stringify(list))
   const turns = (timeline as Timeline | null)?.turns.map(turn => turn.id)
   check('list: only the human prompt is a turn (rail, pinned header)', JSON.stringify(turns) === '[0]', JSON.stringify(turns))
 } finally {

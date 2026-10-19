@@ -42,7 +42,8 @@ export interface HostChannelRowProjection {
   readonly kind: string
   readonly text: string
   readonly label?: string
-  /** `label: 'team-message'`: the sending team member's name. */
+  /** A peer bubble's sender: `label: 'team-message'` (a teammate) or
+   *  `label: 'plugin-relay'` (an opted-in plugin relay). */
   readonly sender?: string
   readonly streaming?: boolean
   readonly time?: number

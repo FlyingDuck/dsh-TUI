@@ -2,6 +2,7 @@ import React from 'react'
 import { t, getLang, setLang, isLang, writeLangPref, readLangPref, subscribeLang, LANGS, type Lang } from '../i18n.js'
 import { checkForTuiUpdate, installedTuiVersion } from '../update.js'
 import { versionReportLines } from '../buildInfo.js'
+import { isPeerMessageRow } from '../channel/transcript.js'
 import { installedKernelVersion } from '../dsh-adapter/contract.js'
 import { readThemePref } from '../themePrefs.js'
 import { presetOverrideFromEnv, readPresetPref } from '../presetPrefs.js'
@@ -1533,7 +1534,7 @@ export function Chat({
     recapAbortRef.current?.abort()
     const controller = new AbortController()
     recapAbortRef.current = controller
-    const lastUserId = channel.rows.filter(row => row.kind === 'user').at(-1)?.id ?? -1
+    const lastUserId = channel.rows.filter(row => row.kind === 'user' && !isPeerMessageRow(row)).at(-1)?.id ?? -1
     setRecap({ raw: '', summary: '', error: undefined, done: false, titleApplied: false, auto: true, expanded: false, rowsAtTrigger: lastUserId })
     void channel.recapRecent({
       signal: controller.signal,
@@ -1553,8 +1554,8 @@ export function Chat({
   }, [autoRecapSessionId])
   // The user starts a new message → the auto recap has served its purpose
   // (catching them up) and bows out. A newer user row is the signal; the
-  // assistant's own streamed rows (and a teammate's message) don't count.
-  const lastUserRowId = channel.rows.filter(row => row.kind === 'user' && row.label !== 'team-message').at(-1)?.id ?? -1
+  // assistant's own streamed rows (and a peer message) don't count.
+  const lastUserRowId = channel.rows.filter(row => row.kind === 'user' && !isPeerMessageRow(row)).at(-1)?.id ?? -1
   React.useEffect(() => {
     if (
       recap !== null &&

@@ -155,6 +155,10 @@ const dict = {
   'mentions-missing': { zh: '未找到引用: {{paths}}', en: 'References not found: {{paths}}' },
   // Agent Teams: the tag after the sender of a peer message bubble.
   'team-message-label': { zh: '团队消息', en: 'team message' },
+  // A plugin's opted-in relay (an inbound dsh-intercom message): the tag after
+  // the sender of its bubble. Generic on purpose — the plugin's own name is not
+  // the TUI's business; the sender it wrote is what the reader needs.
+  'plugin-relay-label': { zh: '中继消息', en: 'relayed message' },
   // T06 (PR-B · AC-5): transcript indicator above a user bubble whose send
   // consumed the live IDE selection. The ⧉ glyph lives in MessageList, not here.
   'selection-attached': {
@@ -231,6 +235,7 @@ const dict = {
   'interrupt-unconfirmed': { zh: '无法确认排队消息已撤回：它们仍会在下一回合发送，不再暂存', en: 'Could not confirm the queued messages were withdrawn: they will still run next turn and are no longer held' },
   'cmd-unavailable-backend': { zh: '/{{cmd}} 在 {{backend}} 内核下不可用', en: '/{{cmd}} is not available on the {{backend}} kernel' },
   'export-user-section': { zh: '## 用户', en: '## User' },
+  'export-peer-section': { zh: '## 对端消息', en: '## Peer message' },
   'export-thinking-section': { zh: '## 思考', en: '## Thinking' },
   'export-assistant-section': { zh: '## 助手', en: '## Assistant' },
   'export-tool-section': { zh: '## 工具 · {{name}}', en: '## Tool · {{name}}' },

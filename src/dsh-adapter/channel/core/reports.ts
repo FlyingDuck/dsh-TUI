@@ -7,16 +7,27 @@
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { AgentSession } from '../../../agent/session.js'
+import { isPeerMessageRow } from '../../../channel/transcript.js'
 import { t } from '../../../i18n.js'
 import type { ChannelBinding } from '../binding.js'
 import type { ChannelOwner } from '../owner.js'
 import type { ChannelState, ChatRow } from '../types.js'
 
+/**
+ * The heading a peer row gets in the export. A peer message (a teammate's or a
+ * plugin relay's) is not the human speaking, so it never lands under `## User`;
+ * the sender is appended when the event named one.
+ */
+function peerHeading(row: ChatRow): string {
+  const sender = row.sender ?? ''
+  return sender === '' ? t('export-peer-section') : `${t('export-peer-section')} · ${sender}`
+}
+
 /** One transcript row as an export section; undefined = not exported. */
 function exportSection(row: ChatRow): string | undefined {
   switch (row.kind) {
     case 'user':
-      return row.text === '' ? undefined : `${t('export-user-section')}\n\n${row.text}\n`
+      return row.text === '' ? undefined : `${isPeerMessageRow(row) ? peerHeading(row) : t('export-user-section')}\n\n${row.text}\n`
     case 'reasoning':
       return row.text === '' ? undefined : `${t('export-thinking-section')}\n\n${row.text}\n`
     case 'assistant':

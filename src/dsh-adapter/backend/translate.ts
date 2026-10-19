@@ -21,6 +21,7 @@ import { NO_EVENTS, type AgentEvent, type AgentEventOf, type AgentEventType, typ
 import type { SuppressedToolPresentation, ToolCallPresentation, ToolResultPresentation } from '../../agent/presentation.js'
 import type { PricingWindow } from '../../channel/usage.js'
 import { isPeakHour } from '../../deepseekPricing.js'
+import { pluginRelaySourceOf } from '../../agent/messages.js'
 import { BACKGROUND_START_ACK, isSubagentToolName, parseJobOutputId, todoPanelItems, toolCommandOf } from '../channel/projection-helpers.js'
 import { harnessToolResultView, prepareReplayEvents, toolErrorText } from '../channel/transcript.js'
 import type { ToolCallView, ToolResultView, ToolsRegistryLike } from '../channel/types.js'
@@ -325,6 +326,15 @@ export function createDshTranslator(deps: DshTranslatorDeps) {
     const team = teamMessageOf(data.source, data.content)
     if (team !== undefined) {
       return [{ type: 'user.message', ...base, blocks: team.blocks, source: 'team-message', sender: team.sender, text: team.text }]
+    }
+    // A third-party plugin's opted-in relay (dsh-intercom's inbound agent
+    // messages): its own producer-owned kind carries a `transcript` payload, so
+    // the display text and sender come from the durable source rather than from
+    // the model-facing framing the plugin wrote. Every other plugin source
+    // stays injected context (below): writing the payload IS the opt-in.
+    const relay = pluginRelaySourceOf(data.source)
+    if (relay !== undefined) {
+      return [{ type: 'user.message', ...base, source: 'plugin-relay', sender: relay.sender, text: relay.text }]
     }
     // Injected context (plugin/skill source) is model-facing only; it has no
     // transcript-facing text.

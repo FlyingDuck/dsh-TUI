@@ -104,9 +104,11 @@ export interface WorkingActivityView {
 export interface ChatRow {
   id: number
   kind: 'user' | 'assistant' | 'tool' | 'notice' | 'reasoning' | 'interrupt' | 'local' | 'local-output' | 'compact' | 'subagent' | 'job' | 'turn-summary'
-  /** Extra label for non-human user rows (e.g. `steering`). */
+  /** Extra label for non-human user rows (`steering`, `team-message`,
+   *  `plugin-relay`); see `PEER_MESSAGE_LABELS`. */
   label?: string
-  /** `user` rows another agent sent (an Agent Teams peer message): its name. */
+  /** `user` rows another agent sent (an Agent Teams peer message or a plugin
+   *  relay): the sender's name. */
   sender?: string
   /** Interrupt rows: backend name, kept separate from localized transcript text. */
   interruptBackend?: string

@@ -77,6 +77,41 @@ export function agentRelaySourceOf(source: unknown): AgentRelaySource | undefine
   return typeof shape.senderSessionId === 'string' ? { senderSessionId: shape.senderSessionId } : undefined
 }
 
+/**
+ * A third-party plugin's OPTED-IN relay attribution: the plugin writes a
+ * `transcript` payload into its own producer-owned message source when the
+ * message should render as a transcript bubble instead of staying
+ * model-facing-only context. A plugin cannot claim DSH's own `agent-message`
+ * relay ({@link agentRelaySourceOf}) — durable kinds are producer-owned — so
+ * the plugin's own kind plus this payload is the whole contract.
+ *
+ * Writing the payload IS the opt-in: a source that carries `form: 'relay'`
+ * but no non-empty `transcript.text` stays invisible, whatever the plugin is
+ * named. `text` is the load-bearing field (a relay with nothing to show is
+ * not a bubble); `sender`/`sessionId` are read when present so a plugin that
+ * omits them still renders.
+ */
+export interface PluginRelaySource {
+  readonly sender: string
+  readonly sessionId: string
+  readonly text: string
+}
+
+/** Narrow a durable message source to an opted-in plugin relay, or undefined. */
+export function pluginRelaySourceOf(source: unknown): PluginRelaySource | undefined {
+  if (typeof source !== 'object' || source === null) return undefined
+  const shape = source as { readonly kind?: unknown; readonly form?: unknown; readonly transcript?: unknown }
+  if (typeof shape.kind !== 'string' || !shape.kind.startsWith('plugin:') || shape.form !== 'relay') return undefined
+  const transcript = shape.transcript as { readonly sender?: unknown; readonly sessionId?: unknown; readonly text?: unknown } | null | undefined
+  if (typeof transcript !== 'object' || transcript === null) return undefined
+  if (typeof transcript.text !== 'string' || transcript.text === '') return undefined
+  return {
+    sender: typeof transcript.sender === 'string' ? transcript.sender : '',
+    sessionId: typeof transcript.sessionId === 'string' ? transcript.sessionId : '',
+    text: transcript.text,
+  }
+}
+
 /** First text of durable content blocks (the message body as shown). */
 export function agentMessageTextOf(content: unknown): string {
   if (!Array.isArray(content)) return ''

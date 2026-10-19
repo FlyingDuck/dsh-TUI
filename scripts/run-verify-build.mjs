@@ -110,6 +110,7 @@ const GATES = [
   'verify:session-reset',
   'verify:rollover',
   'verify:version',
+  'verify:plugin-relay',
   'verify:channel-ui',
   'verify:adapter-detection',
   'verify:adapter-replay-harness',

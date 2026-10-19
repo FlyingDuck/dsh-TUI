@@ -787,6 +787,19 @@ export function createChannelProjection(state: ProjectionState, deps: ChannelPro
       deps.rowIds.value += 1
       return
     }
+    // A plugin's opted-in relay (an inbound dsh-intercom message): its own
+    // bubble, labelled with the sender, never the human's last prompt. Both the
+    // display text and the sender come from the plugin's durable `transcript`
+    // payload (translate.ts), not from the model-facing framing it wrote.
+    if (event.source === 'plugin-relay') {
+      if (event.text === '') return
+      appendRow({ id: deps.rowIds.value, kind: 'user', label: 'plugin-relay', text: event.text, ...(event.sender === undefined ? {} : { sender: event.sender }), seq: event.seq })
+      // The model saw the framing plus the body (`blocks`), so the context
+      // occupancy counts that, not the display text.
+      state.contextSegments.prompt += estimateTokens(textOfBlocks(event.blocks))
+      deps.rowIds.value += 1
+      return
+    }
     // Injected context (plugin/skill/goal source) is not a human bubble;
     // v1 renders direct human prompts only.
     if (event.source !== 'user') return
