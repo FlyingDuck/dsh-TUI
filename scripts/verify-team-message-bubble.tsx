@@ -89,6 +89,26 @@ try {
   check('relayed bubble carries its own tag', relayed[0] === '✉ dsh-peer · relayed message', JSON.stringify(relayed[0]))
   check('relayed body matches the team bubble layout', relayed[1] === "  the peer's message body", JSON.stringify(relayed.slice(1)))
 
+  // A long peer body folds to the collapsed tool card's budget — three lines plus
+  // the shared expand hint — instead of flooding the screen. The hint names the
+  // key (Ctrl+O) and counts what it hid.
+  const fiveLines = 'line one\nline two\nline three\nline four\nline five'
+  const folded = await frame(80, 'peer', fiveLines)
+  check('long body folds to three lines plus the hint', folded.length === 5, JSON.stringify(folded))
+  check('folded body keeps the first three lines',
+    folded[1] === '  line one' && folded[2] === '  line two' && folded[3] === '  line three', JSON.stringify(folded.slice(1)))
+  check('the hint counts the hidden lines and names the key',
+    folded[4]?.includes('+2') === true && folded[4]?.includes('expand') === true, JSON.stringify(folded[4]))
+  const unfolded = await frame(80, 'peer', '', false,
+    <bubble.TeamMessageBubble sender="peer" text={fiveLines} marginTopOnTurn={false} verbose />)
+  check('verbose shows every line and no hint',
+    unfolded.length === 6 && unfolded[5] === '  line five' && !unfolded.join('\n').includes('expand'), JSON.stringify(unfolded))
+  const almost = await frame(80, 'peer', 'line one\nline two\nline three\nline four')
+  check('hiding exactly one line is not worth a fold',
+    almost.length === 5 && !almost.join('\n').includes('expand'), JSON.stringify(almost))
+  const exact = await frame(80, 'peer', 'line one\nline two\nline three')
+  check('a body at the budget shows no hint', exact.length === 4, JSON.stringify(exact))
+
   const narrow = await frame(24, '审阅者', '这是一条需要在窄终端里换行的团队消息内容')
   check('narrow: the sender line stays one row', narrow[0]?.startsWith('✉ 审阅者') === true, JSON.stringify(narrow[0]))
   const body = narrow.slice(1)
@@ -125,6 +145,21 @@ try {
     list.some(line => line.startsWith('✉ dsh-peer') && line.includes('relayed message')), JSON.stringify(list))
   const turns = (timeline as Timeline | null)?.turns.map(turn => turn.id)
   check('list: only the human prompt is a turn (rail, pinned header)', JSON.stringify(turns) === '[0]', JSON.stringify(turns))
+
+  // The list wiring for the fold: the bubble's `verbose` comes from this row's
+  // expansion OR the global Ctrl+O, so both must reach a relay row through
+  // MessageList (the unit cases above only prove the bubble itself).
+  const longRelay = [{ id: 0, kind: 'user', label: 'plugin-relay', sender: 'dsh-peer', text: 'r1\nr2\nr3\nr4\nr5' }] as never[]
+  const listProps = { rows: longRelay, expandedRows: new Set(), selectedId: null, onToggleRow: () => {}, model: 'test', showAll: true, onToggleAll: () => {}, historyPaintEnabled: false, scrollHandle: null, registerRowRef: () => {}, onTimeline: () => {} }
+  const foldedList = await frame(60, 'peer', '', false, <MessageList {...listProps} expanded={false} />)
+  check('list: a long relay body folds with the hint',
+    foldedList.some(line => line.includes('+2 lines')) && !foldedList.some(line => line.trim() === 'r4'), JSON.stringify(foldedList))
+  const ctrlOList = await frame(60, 'peer', '', false, <MessageList {...listProps} expanded />)
+  check('list: Ctrl+O unfolds the relay body',
+    ctrlOList.some(line => line.trim() === 'r5') && !ctrlOList.join('\n').includes('expand'), JSON.stringify(ctrlOList))
+  const rowExpandedList = await frame(60, 'peer', '', false, <MessageList {...listProps} expanded={false} expandedRows={new Set([0])} />)
+  check('list: expanding that row alone unfolds it too',
+    rowExpandedList.some(line => line.trim() === 'r5'), JSON.stringify(rowExpandedList))
 } finally {
   rmSync(dataDir, { recursive: true, force: true })
 }

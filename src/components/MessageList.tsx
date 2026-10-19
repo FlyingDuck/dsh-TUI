@@ -1889,6 +1889,10 @@ function TranscriptRow({
               text={displayText}
               marginTopOnTurn={marginTopOnTurn}
               isSelected={isSelected}
+              // A long peer body folds like a collapsed tool card; the hint line
+              // (not the whole row) carries the click target.
+              verbose={isExpanded || expanded}
+              onClick={foldOnClick}
               {...(senderCaptionKey === undefined ? {} : { captionKey: senderCaptionKey })}
             />
           )}
