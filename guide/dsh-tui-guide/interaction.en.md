@@ -780,6 +780,7 @@ The command menu merges local commands with the DSH command registry. Type `/` t
 - `/new`, `/resume`, `/home`, `/agentview` — all three open the same session-management screen.
 - `/bg` — alias `/background`, opens the session manager; DSH backgrounds the session first, while Claude/Codex keep it attached.
 - `/rename`.
+- `/rollover` — rename this session to `<project>-<date>-<NN>` and start a fresh one; a title you set yourself carries over. A running turn refuses it before anything is renamed.
 - `/recap` — session recap: apply the suggested title in one key; `/settings` can enable an
   auto-summary on session open, on by default — a divider + `Recap:` line appears at the
   bottom of the transcript when resuming, and bows out once you send a new message.
