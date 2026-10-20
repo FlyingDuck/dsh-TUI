@@ -706,8 +706,8 @@ console.log('--- Chat: source stack + parent state preservation ---')
     check('C1 主转录未因消息流多出普通行', !screen().includes('flow message one'))
 
     // C2: dashboard → v → Agent View → Esc → dashboard → Esc → chat
-    stdin.write('\x01') // Ctrl+A
-    check('C2 Ctrl+A 打开代理面板', await settled(() => screen().includes('Subagent Dashboard')), lines().slice(0, 6).join('|'))
+    stdin.write('\x1ba') // Alt+A
+    check('C2 Alt+A 打开代理面板', await settled(() => screen().includes('Subagent Dashboard')), lines().slice(0, 6).join('|'))
     stdin.write('v')
     check('C2 Dashboard v 进入 Agent View（来源面板）', await settled(() => screen().includes('from agents panel')), lines().slice(0, 3).join('|'))
     stdin.write('\x1b')

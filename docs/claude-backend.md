@@ -155,7 +155,7 @@ Claude 设置 > `default`。Claude 设置里的 `defaultMode: bypassPermissions`
 ## 子代理与后台任务
 
 - 每次 `Agent` 委派在对话里是一张子代理卡片，子代理的文本、工具调用和 token 数只进
-  卡片，不进主对话。`/agents` 列出全部，`Ctrl+A` 打开子代理面板与详情，可以停止运行中
+  卡片，不进主对话。`/agents` 列出全部，`Alt+A` 打开子代理面板与详情，可以停止运行中
   的子代理。
 - Claude 在后台运行的命令（带 `run_in_background` 的 `Bash`，或运行中被转到后台的
   命令）显示为任务卡并点亮状态栏的任务标记，`/jobs` 列出全部，连按两次 `k` 停止。卡片

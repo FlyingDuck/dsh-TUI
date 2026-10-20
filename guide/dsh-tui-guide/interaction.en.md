@@ -159,7 +159,8 @@ results back to the chat screen and add no new behavior.
 | `Left/Right` | Move by character; **with a selection, collapse to the corresponding edge** |
 | `Ctrl+Left/Right` | Move by word |
 | `Home/End` | Move to the start/end of the current logical line |
-| `Ctrl+A` / `Ctrl+E` | `Ctrl+A` opens the subagent dashboard (`Mod+A` in the editor still moves to line start); `Ctrl+E` moves to line end and also expands or folds hidden older rows in long transcripts |
+| `Ctrl+A` / `Ctrl+E` | logical line start / end (readline parity) |
+| `Alt+A` / `Alt+E` | open the subagent dashboard / expand or fold hidden older rows in long transcripts |
 | `Ctrl+U` | Delete before the caret |
 | `Ctrl+K` | Delete after the caret |
 | `Ctrl+W` | Delete the preceding word |
@@ -663,7 +664,7 @@ In inline mode, the terminal emulator owns native scrollback and selection.
   prompt-input paths (geometry corrected for the gutter). The wheel scrolls the editor
   viewport (position-routed; caret moves re-engage following). The Send/Collapse buttons
   execute on click and brighten on hover. The input row's `⛶` expands.
-- **Single-click "load earlier messages" / "ctrl+e show previous N"** — Load earlier
+- **Single-click "load earlier messages" / "alt+e show previous N"** — Load earlier
   messages / expand all.
 - **Single-click the sticky header / "↓ N new messages"** — Jump back to the pinned message /
   scroll to bottom.

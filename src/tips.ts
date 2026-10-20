@@ -97,8 +97,8 @@ export const TIPS: readonly Tip[] = [
   {
     id: 'keys-ctrl-e',
     group: 'keys',
-    zh: 'Ctrl+E：输入框到行尾；转录中展开隐藏旧消息',
-    en: 'Ctrl+E: line end in input; reveals old messages in transcript',
+    zh: 'Ctrl+E 到行尾；Alt+E 展开或收起隐藏的旧消息',
+    en: 'Ctrl+E to line end; Alt+E reveals or hides old messages',
   },
   {
     id: 'keys-ctrl-l',
@@ -121,8 +121,8 @@ export const TIPS: readonly Tip[] = [
   {
     id: 'keys-ctrl-a',
     group: 'keys',
-    zh: 'Ctrl+A 子代理面板：Enter 看详情 · X 中断 · Esc 关',
-    en: 'Ctrl+A opens the subagent dashboard; Enter details, X interrupt, Esc close',
+    zh: 'Alt+A 子代理面板：Enter 看详情 · X 中断 · Esc 关',
+    en: 'Alt+A opens the subagent dashboard; Enter details, X interrupt, Esc close',
   },
   {
     id: 'keys-edit-keys',

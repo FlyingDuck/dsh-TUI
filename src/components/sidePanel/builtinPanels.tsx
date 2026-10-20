@@ -258,7 +258,7 @@ export function registerBuiltinPanels(): void {
     source: 'builtin',
     mountPolicy: 'enabled',
     defaultEnabled: true,
-    // 整屏对应物 = Ctrl+A 的 SubagentDashboard。
+    // 整屏对应物 = Alt+A 的 SubagentDashboard。
     capabilities: { scroll: true, fullscreen: true },
     component: AgentsPanelAdapter,
   }, 'builtin')

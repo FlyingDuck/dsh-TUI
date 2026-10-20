@@ -225,7 +225,7 @@ Codex 的 imageView/已完成 imageGeneration 也会显示图片：生成结果�
 
 ## 子代理与后台任务
 
-- `/agents` 或 `Ctrl+A` 打开子代理面板。子 thread 文本、工具与用量进入其卡片/
+- `/agents` 或 `Alt+A` 打开子代理面板。子 thread 文本、工具与用量进入其卡片/
   详情，不混进主对话；详情按需分页读取，可中断自己会话下正在工作的子代理。
 - 可给子代理发消息，但采用 **parent-mediated**：由父模型通过 Codex 的
   `send_input` 转达，不是直接操纵子代理 inbox。发送回执表示已发起（issued），

@@ -227,13 +227,16 @@ export const SHORTCUT_ACTIONS: readonly ShortcutActionSpec[] = [
   { id: 'editor', defaults: ['ctrl+g'] },
   { id: 'transcript', defaults: ['ctrl+o'] },
   { id: 'trajectory', defaults: ['ctrl+t'] },
-  { id: 'dashboard', defaults: ['ctrl+a'] },
+  // Ctrl+A / Ctrl+E stay with the prompt editor (readline line start/end);
+  // binding a global action to them made the editor branches unreachable
+  // (#1136). Alt keeps both actions reachable without shadowing the editor.
+  { id: 'dashboard', defaults: ['alt+a'] },
   { id: 'contextPanel', defaults: ['ctrl+p'] },
   // 落地页 Continue：alt+r（resume 语义）。占用核对（SHORTCUT_ACTIONS defaults ∪
   // FIXED_RESERVED_COMBOS）：ctrl 系 v/r/g/o/t/a/p/e/l/q/k/b/c/d/u/w/j/left/right/return
-  // 全占，alt 系只有 v/s/z/return/up 在册——alt+r 空闲，且不与输入框抢字母键。
+  // 全占，alt 系有 v/s/z/a/e/return/up 在册——alt+r 空闲，且不与输入框抢字母键。
   { id: 'continue', defaults: ['alt+r'] },
-  { id: 'showAll', defaults: ['ctrl+e'] },
+  { id: 'showAll', defaults: ['alt+e'] },
   { id: 'redraw', defaults: ['ctrl+l'] },
   { id: 'todoFold', defaults: ['ctrl+q'] },
   { id: 'questionFold', defaults: ['ctrl+k'] },
@@ -380,8 +383,8 @@ export function parseComboDraft(text: string): { combos: string[] } | undefined 
 export const FIXED_RESERVED_COMBOS: readonly string[] = [
   'ctrl+c', // interrupt / clear
   'ctrl+d', // exit on empty input
-  'ctrl+e', // editor line end (also the showAll action's default)
-  'ctrl+a', // editor line start (also the dashboard action's default)
+  'ctrl+e', // editor line end
+  'ctrl+a', // editor line start
   'ctrl+u', // kill line
   'ctrl+k', // kill to end
   'ctrl+w', // kill word
@@ -422,9 +425,9 @@ export function draftComboConflicts(action: ShortcutActionId, combos: readonly s
     if (spec.id === action) {
       // Restating a combo this action already binds — a default or the
       // current override — changes nothing about what shadows what; it must
-      // not read as a conflict. This is what lets dashboard re-save its own
-      // ctrl+a default even though that combo is also fixed-reserved for
-      // the editor line-start (the dual-use the defaults themselves encode).
+      // not read as a conflict. This is what lets questionFold restate its
+      // own ctrl+k even though that combo is fixed-reserved for the editor's
+      // kill-to-end (the dual-use the defaults themselves encode).
       for (const raw of spec.defaults) own.add(canonicalComboString(raw))
       for (const combo of effectiveCombos(spec.id)) own.add(canonicalCombo(combo))
       continue

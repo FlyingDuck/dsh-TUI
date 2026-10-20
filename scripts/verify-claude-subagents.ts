@@ -172,7 +172,7 @@ const subagentRows = (channel: ChannelState) => channel.rows.filter(row => row.k
       check('render: the transcript shows the settled subagent card (kind, tools, status)', await settled(() => screen().includes(`${t('subagent-card-prefix')}Read README.md first line`) && /general-purpose.*1 tools.*completed/u.test(screen())), screen())
       // 固定窗:pacing the prompt attaches its key handler after the first frame.
       await sleep(200)
-      stdin.write('\x01') // Ctrl+A: the subagent dashboard
+      stdin.write('\x1ba') // Alt+A: the subagent dashboard
       check('render: the dashboard lists it', await settled(() => screen().includes(t('subagent-dashboard-title').trim()) && screen().includes('Read README.md first line')), screen())
       stdin.write('\r')
       check('render: the detail scene shows its tool and conclusion', await settled(() => screen().includes('Read') && screen().includes('Fixture project')), screen())

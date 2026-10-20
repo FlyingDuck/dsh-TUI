@@ -204,7 +204,7 @@ a notice, so a cloned repository cannot silently switch off every check.
 
 - Each `Agent` delegation is a subagent card in the transcript; its text, tool
   calls and token count go into the card, never into the main conversation.
-  `/agents` lists them, `Ctrl+A` opens the subagent dashboard and its detail view,
+  `/agents` lists them, `Alt+A` opens the subagent dashboard and its detail view,
   where a running one can be stopped.
 - A command Claude runs in the background (`Bash` with `run_in_background`, or a
   running command moved to the background) is a job card with the status-line job

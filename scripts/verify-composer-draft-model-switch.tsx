@@ -139,7 +139,7 @@ function tokenIsChip(app: Harness) {
   return false
 }
 async function dashboard(app: Harness, open: boolean) {
-  app.stdin.write(open ? '\x01' : '\x1b')
+  app.stdin.write(open ? '\x1ba' : '\x1b')
   await wait(open ? 'composer parked' : 'composer remounted', () => {
     const visible = viewportLines(app.term).some(line => /^\s*─+\s*子代理面板\s*─+\s*$/u.test(line))
     return visible === open && (composer(app) === null) === open

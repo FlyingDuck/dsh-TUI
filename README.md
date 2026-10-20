@@ -333,7 +333,7 @@ ralph) keep `subagent`. A teammate shows up as a subagent row, a message between
 members as a `✉ <sender>` bubble in the receiving session (a teammate's
 received messages show on its subagent detail as agent messages), and the
 other team tools as one-line cards (`send_message` with its target and
-`sent`). The agents dashboard (Ctrl+A) and the agents side
+`sent`). The agents dashboard (Alt+A) and the agents side
 panel switch to a team view: each teammate under its member name with
 `running` / `idle` / `provisioning` / `failed` (a teammate whose turn ended
 is idle — a message wakes it — not done), the Lead line, the remaining

@@ -373,7 +373,7 @@ async function screenCase(surface: 'composer' | 'launchpad' | 'launchpad-failed'
     // 固定窗:pacing caret movement has no observable text change.
     await sleep(60)
     if (covered) {
-      stdin.write('\x01')
+      stdin.write('\x1ba')
       check(label('the composer parks its draft behind the dashboard'), await settled(() => controllerRef.current === null && screen().includes('Subagent Dashboard')), screen())
     }
     if (outcome === 'new') {

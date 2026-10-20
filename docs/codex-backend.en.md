@@ -270,7 +270,7 @@ Real model vision and image generation were not tested in this round.
 
 ## Subagents and background tasks
 
-- `/agents` or `Ctrl+A` opens the subagent panel. Child text, tools and usage stay in its
+- `/agents` or `Alt+A` opens the subagent panel. Child text, tools and usage stay in its
   card/details, not the parent transcript. Details load paginated history on demand; you can
   interrupt active subagents belonging to the current session.
 - Messaging is **parent-mediated**: the parent model relays it through Codex `send_input`,

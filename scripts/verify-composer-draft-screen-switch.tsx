@@ -77,7 +77,7 @@ const [
 const COLS = 100
 const ROWS = 36
 const ESC = '\x1b'
-const CTRL_A = '\x01'
+const ALT_A = '\x1ba'
 const BRACKET_PASTE_START = '\x1b[200~'
 const BRACKET_PASTE_END = '\x1b[201~'
 /** CSI-u Ctrl+Shift+E: the fullscreen draft editor binding (E = 69,
@@ -479,9 +479,9 @@ async function waitForMainView(
   await waitFor(scenario, `${what} (composer mounted)`, () => composerMounted(app), 8000)
 }
 
-/** Ctrl+A -> dashboard -> Esc -> main view (composer remounted). */
+/** Alt+A -> dashboard -> Esc -> main view (composer remounted). */
 async function roundTripDashboard(scenario: string, app: Harness): Promise<void> {
-  app.stdin.write(CTRL_A)
+  app.stdin.write(ALT_A)
   await waitFor(scenario, 'subagent dashboard to park the composer',
     () => dashboardVisible(app) && !composerMounted(app), 8000)
   app.stdin.write(ESC)
@@ -669,7 +669,7 @@ async function scenarioEditState(): Promise<string> {
     )
     // Expanded mode renders the editor instead of the inline composer box, so
     // the round trip waits on the editor marker (inputBlock stays null).
-    app.stdin.write(CTRL_A)
+    app.stdin.write(ALT_A)
     await waitFor(scenario, 'dashboard over the editor',
       () => dashboardVisible(app) && !screenHas(app, '草稿编辑'), 8000)
     app.stdin.write(ESC)
@@ -731,7 +731,7 @@ async function scenarioEditState(): Promise<string> {
       'phase D second capability staged and distinct',
       stageIdQueued !== stageIdD && app.channel.hasStagedImage(stageIdQueued),
     )
-    app.stdin.write(CTRL_A)
+    app.stdin.write(ALT_A)
     await waitFor(scenario, 'dashboard to park the composer',
       () => dashboardVisible(app) && !composerMounted(app), 8000)
     // Attribution lock (CodeRabbit): while parked, the capability is still

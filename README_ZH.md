@@ -264,7 +264,7 @@ DSH `0.2.1-alpha.5`、`0.2.0-rc.1` 或 `0.2.0-rc.2` 就装同版本的 `…-prof
 委派工具只剩 `spawn_teammate`；团队关闭后旧版工具回来。不是团队成员的子代理（workflow、
 ralph）保留 `subagent`。teammate 显示为子代理行，
 成员间的消息在接收方会话里显示为 `✉ <发送者>` 气泡（teammate 收到的消息在其子代理详情里显示为
-agent 消息），其余团队工具显示为单行卡片（`send_message` 带目标与 `sent`）。agents 仪表盘（Ctrl+A）与 agents 侧栏
+agent 消息），其余团队工具显示为单行卡片（`send_message` 带目标与 `sent`）。agents 仪表盘（Alt+A）与 agents 侧栏
 进入团队视图：teammate 以成员名显示，状态为运行中 / 空闲 / 准备中 / 失败（回合结束的
 teammate 是空闲而不是完成，发消息即可唤醒）；另有 Lead 行、其余子代理、只读任务板
 （状态、负责人、阻塞、写入范围警告），团队记录被拒时显示错误横幅。

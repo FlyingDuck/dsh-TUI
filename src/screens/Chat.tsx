@@ -1618,7 +1618,7 @@ export function Chat({
    * Suppress the intro on those remounts; `/deepseek` re-enables it.
    */
   const suppressLogoIntroRef = React.useRef(false)
-  /** Subagent dashboard (Ctrl+A): displays active/completed subagents. */
+  /** Subagent dashboard (Alt+A): displays active/completed subagents. */
   const [subagentDashboardOpen, setSubagentDashboardOpen] = React.useState(false)
   const [jobsPanelOpen, setJobsPanelOpen] = React.useState(false)
   /** Job id the panel should focus on open: set by a transcript card click
@@ -1660,7 +1660,7 @@ export function Chat({
     () => jobOutputWatchable ? (id: string) => jobControlRef.current?.watchOutput?.(id) ?? (() => undefined) : undefined,
     [jobOutputWatchable],
   )
-  /** Ctrl+A / detail 回退：侧栏分栏且 agents 已启用时打开右栏 Panel（内部
+  /** Alt+A / detail 回退：侧栏分栏且 agents 已启用时打开右栏 Panel（内部
    *  dashboard ↔ detail 二级路由自己管）；窄屏 / inline 保留整屏形态。 */
   const openSubagentDashboard = React.useCallback((): void => {
     const sidePanel = sidePanelRef.current
@@ -5546,11 +5546,10 @@ export function Chat({
       return
     }
     if (actionMatches('dashboard', input, key)) {
-      // The subagent dashboard key (default Ctrl+A) opens the dashboard —
+      // The subagent dashboard key (default Alt+A) opens the dashboard —
       // split mode routes it to the agents side panel instead. Consume the
-      // key: without the stop the prompt editor's readline binding ALSO
-      // fires (Ctrl+A moves the caret to line start), so one press both
-      // opens the view and jumps the cursor.
+      // alt combo so it never falls through to the composer as text;
+      // Ctrl+A stays the editor's line-start binding.
       openSubagentDashboard()
       event.stopImmediatePropagation()
       return
@@ -5692,19 +5691,19 @@ export function Chat({
       // Redraw (default Ctrl+L) — clear the physical terminal and
       // repaint.
       instances.get(process.stdout)?.forceRedraw()
-      // Consume: same readline-shadowing rule as dashboard/showAll below.
+      // Consume: one press, one meaning.
       event.stopImmediatePropagation()
     } else if (actionMatches('showAll', input, key)) {
       setShowAllMessages(previous => !previous)
-      // Ctrl+E is also the editor's line-end binding — stop the press from
-      // additionally moving the caret (one press, one meaning).
+      // Show-all is Alt+E; Ctrl+E stays the editor's line-end binding.
+      // Consume the alt combo so it never falls through as text.
       event.stopImmediatePropagation()
     } else if (actionMatches('todoFold', input, key)) {
       // Fold/unfold the GoalTodoPanel todo section (default Ctrl+Q) — works
       // mid-turn too: the collapsed line keeps the done/total count and the
       // live task preview, so long todo lists stop crowding the prompt.
       setTodoCollapsed(previous => !previous)
-      // Consume: same readline-shadowing rule as dashboard/showAll above.
+      // Consume: one press, one meaning.
       event.stopImmediatePropagation()
     } else if (actionMatches('star', input, key)) {
       // 一键 star（默认 Alt+S）——与 `/star`、开屏标语点击同一个动作。
@@ -5734,10 +5733,10 @@ export function Chat({
     }
   }, {
     // Chat's global layer must see every key before the composer and the
-    // panels it hosts (the handler's yield guards and readline shadowing
-    // both assume it), whether or not they mounted in the same
-    // commit — child effects run first, so append order would put a
-    // first-mount PromptInput ahead of Chat (#1155).
+    // panels it hosts (its yield guards and global-action precedence both
+    // assume it), whether or not they mounted in the same commit — child
+    // effects run first, so append order would put a first-mount
+    // PromptInput ahead of Chat (#1155).
     prepend: true,
   })
 

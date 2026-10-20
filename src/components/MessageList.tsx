@@ -48,7 +48,7 @@ import { primaryComboString } from '../utils/keymap.js'
  * rows; `selectedId` highlights the selected row.
  */
 /** Render cap for very long sessions: older rows fold behind a Divider until
- *  Ctrl+E expands them.
+ *  Alt+E expands them.
  *  120 (was 300): opening a long session paints the whole cap into the
  *  main-screen scrollback (historyPaint), and each row's first markdown
  *  lex + wrap costs ~2-5ms — 300 rows saturated the main thread for ~6s
