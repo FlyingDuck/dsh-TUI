@@ -465,7 +465,8 @@ completes, and may reply with a summary toast.
 
 `/btw <question>` asks a quick side question without disturbing the main task: it reuses
 the current session context (system prompt + existing history) for a single **tool-less,
-one-turn** model call, and shows the answer in a scrollable panel.
+one-turn** model call, and shows the answer in a scrollable panel (the sidebar panel, or
+an overlay in the conversation).
 
 Notes:
 
@@ -481,6 +482,8 @@ Notes:
 - Clicking the **message area** (question or answer text) only hands the column focus to the panel, exactly like clicking anywhere else in it — it never injects anything; `s` is the only way in.
 - The `⤢` full-screen scene shares the sidebar's keys and selection state (both read the same thread store); the only difference is that after sending it steps aside and returns you to the main composer.
 - Triggering `/btw` again aborts the previous side question.
+- **Which surface shows the answer** follows whether the split can actually render: under `fullscreen` at a content width of ≥93 columns, with `sidePanel.splitEnabled` on, no fullscreen draft editor open, and the btw panel enabled, it goes to the sidebar panel; otherwise it falls back to an overlay in the conversation. One exchange never shows in two places; when the split comes back, the overlay only yields while the sidebar is actually showing the **btw** panel — a split parked on another panel leaves the overlay where it is. When another overlay or fullscreen view owns the screen, the question is still sent, but the only feedback is a notice (the fullscreen draft editor covers that notice).
+- An open side-question overlay yields to a main-task questionnaire or the fullscreen draft editor. Answering the questionnaire or collapsing the editor restores the side question according to the current layout, preserving the running side question and editor draft. While the questionnaire is visible, `Enter` answers it.
 
 ### Trajectory scene (/trace / Ctrl+T)
 
