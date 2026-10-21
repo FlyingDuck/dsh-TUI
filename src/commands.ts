@@ -93,7 +93,7 @@ export const LOCAL_COMMANDS: LocalCommand[] = [
   // launcher and cannot tell a self-built profile from an official one; this
   // slash command runs inside the profile and reads its build stamp. See
   // src/buildInfo.ts.
-  { name: 'version', description: 'Show the build this copy was made from' },
+  { name: 'version', description: 'Show the build this copy was made from and the DSH kernel it runs on' },
   { name: 'migrate', description: 'Import conversations from other coding agents (claude-code / codex / omp / zcode / grok-build)' },
   { name: 'init', description: 'Create AGENTS.md in the working directory' },
   { name: 'agents', description: 'Show subagents of this session' },

@@ -6,6 +6,7 @@
  *      「开发运行」文案，仍报出版本号；
  *   B. 编译产物 + 真 stamp → 三行齐全，含 describe、8 位短 commit 与本地
  *      时间（带 UTC 偏移），并且不会自称源码运行；
+ *   B2. 内核版本行：有值才画、位于身份行之后、空白值不画、降级路径也带；
  *   C. 来源探测矩阵：`file:*.tgz` / `file:<目录>` / `link:<路径>` / 纯 semver
  *      各判定正确、路径解析成绝对路径，键缺失 / 坏 JSON / 没有 manifest
  *      一律「未知」且其余行照常（只有第 1 条那句「输出含 describe」是
@@ -14,7 +15,7 @@
  *   E. 命令面接线：声明、英文描述、zh 描述走 `cmd-desc-version`（且该键只写
  *      zh，en 回退声明原文）、归属 `any`；
  *   F. 屏幕分发接线（文本级）：Chat.tsx 分发的名字是 `version`，且调用的就是
- *      buildInfo 这一份真源，没有另起内联实现。
+ *      buildInfo 这一份真源（并把内核版本传进去），没有另起内联实现。
  *
  * 一个模块同时被导入两次是刻意的：`src/buildInfo.ts` 走的是源码运行分支
  * （无 stamp），`lib/types/buildInfo.js` 走的是装好的包那一支 —— 两者的差别
@@ -119,6 +120,23 @@ function writeProfile(dir, spec) {
     / \d{4}-\d{2}-\d{2} \d{2}:\d{2} \([+-]\d{4}\)$/u.test(lines[1] ?? ''), lines[1] ?? '(none)')
 }
 
+// ── B2. 内核行：有值才画，位置在身份行之后 ───────────────────────────────
+{
+  const dir = join(tmp, 'profile-kernel')
+  mkdirSync(dir, { recursive: true })
+  const withKernel = source.versionReportLines({ info: fakeInfo, kernelVersion: '0.2.1-rc.2', profileDir: dir })
+  check('B2 有内核：四行', withKernel.length === 4, withKernel.join(' | '))
+  check('B2 内核行在构建行之后', withKernel[1]?.includes('0.2.1-rc.2') === true, withKernel[1] ?? '(none)')
+  check('B2 内核行标签', withKernel[1]?.includes('DSH 内核') === true, withKernel[1] ?? '(none)')
+  check('B2 内核行不打乱来源行', withKernel[3]?.includes('未知') === true, withKernel[3] ?? '(none)')
+  const withoutKernel = source.versionReportLines({ info: fakeInfo, profileDir: dir })
+  check('B2 无内核：保持三行', withoutKernel.length === 3, withoutKernel.join(' | '))
+  const blankKernel = source.versionReportLines({ info: fakeInfo, kernelVersion: '   ', profileDir: dir })
+  check('B2 空白内核不画行', blankKernel.length === 3, blankKernel.join(' | '))
+  const degraded = source.versionReportLines({ info: null, kernelVersion: '0.2.1-rc.2' })
+  check('B2 降级路径也带内核：两行', degraded.length === 2 && degraded[1]?.includes('0.2.1-rc.2') === true, degraded.join(' | '))
+}
+
 // ── C. 来源探测：喂错输入必须红 ───────────────────────────────────────────
 {
   const profileDir = join(tmp, 'profile-cases')
@@ -181,9 +199,9 @@ function writeProfile(dir, spec) {
   const declared = commands.LOCAL_COMMANDS.filter(command => command.name === 'version')
   check('E 声明唯一一条 /version', declared.length === 1, JSON.stringify(declared))
   const entry = declared[0]
-  check('E 英文描述即注册表原文', entry?.description === 'Show the build this copy was made from', entry?.description)
+  check('E 英文描述即注册表原文', entry?.description === 'Show the build this copy was made from and the DSH kernel it runs on', entry?.description)
   check('E zh 描述走 cmd-desc-version',
-    entry !== undefined && commands.localizedDescription(entry) === '显示当前构建的身份与来源',
+    entry !== undefined && commands.localizedDescription(entry) === '显示当前构建的身份、来源与 DSH 内核版本',
     entry === undefined ? '(missing)' : commands.localizedDescription(entry))
   check('E cmd-desc-version 只写 zh（en 回退声明原文）', i18nDict['cmd-desc-version']?.en === undefined,
     JSON.stringify(i18nDict['cmd-desc-version']))
@@ -204,7 +222,7 @@ function writeProfile(dir, spec) {
   check('F Chat.tsx 有 case \'version\' 分发', at >= 0)
   const next = at < 0 ? -1 : chat.indexOf("\n      case '", at + 1)
   const block = at < 0 ? '' : chat.slice(at, next < 0 ? at + 400 : next)
-  check('F 分发行调用 versionReportLines()', block.includes('versionReportLines()'), block.slice(0, 200))
+  check('F 分发行调用 versionReportLines({ kernelVersion })', block.includes('versionReportLines({ kernelVersion })'), block.slice(0, 200))
   check('F 分发行把行交给 channel.pushLocal(\'/version\')', block.includes("pushLocal('/version'"), block.slice(0, 200))
 }
 
@@ -214,5 +232,5 @@ if (failures.length > 0) {
   for (const failure of failures) console.error(`  - ${failure}`)
   process.exit(1)
 }
-console.log(`version-command OK (${checks} checks: 源码运行降级、编译产物 stamp、来源矩阵 file/link/semver/坏输入、$DSH_HOME 默认目录、命令声明与 Chat 分发接线)`)
+console.log(`version-command OK (${checks} checks: 源码运行降级、编译产物 stamp、内核行、来源矩阵 file/link/semver/坏输入、$DSH_HOME 默认目录、命令声明与 Chat 分发接线)`)
 process.exit(0)

@@ -368,7 +368,7 @@ The command menu = built-in commands (aliases included) + DSH registry commands 
 | `/balance` | none | DeepSeek official account balance (free read-only API): summary line + hover detail (same session-estimate split: main/subagent/unpriced), click refresh, `×` close |
 | `/config` | none | config sources: `cordis.patch.yml` path, launch method, model routing |
 | `/doctor` | none | environment check |
-| `/version` | none | identity and provenance of this build: version, git description (a dirty worktree shows `-dirty`), branch@commit, build time, and how the profile installed it (local tarball / local directory / source link / registry). **Self-built copies only** — an official package has no such command |
+| `/version` | none | identity and provenance of this build: version, git description (a dirty worktree shows `-dirty`), branch@commit, build time, the running DSH kernel version, and how the profile installed it (local tarball / local directory / source link / registry). **Self-built copies only** — an official package has no such command |
 | `/migrate` | `[agent] [--dry-run]` | import conversation history from other coding agents (claude-code/codex/omp/zcode/grok-build); runs in a child process — see [Session migration](migrate.en.md) |
 | `/init` | none | create `AGENTS.md` in the working directory (created / exists / failed) |
 | `/agents` | none | subagent list for this session |

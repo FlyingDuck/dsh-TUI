@@ -3685,12 +3685,13 @@ export function Chat({
         channel.pushLocal('/doctor', channel.doctorInfo())
         return true
       case 'version':
-        // Fork-only identity: the build stamp this copy was compiled with and
-        // where the profile got it. The CLI `dsh-tui version` cannot answer
-        // this — it runs in the global launcher and reads package.json, which
-        // a self-built copy keeps aligned with upstream. See src/buildInfo.ts.
+        // Fork-only identity: the build stamp this copy was compiled with,
+        // the DSH kernel it runs on, and where the profile got it. The CLI
+        // `dsh-tui version` cannot answer this — it runs in the global
+        // launcher and reads package.json, which a self-built copy keeps
+        // aligned with upstream. See src/buildInfo.ts.
         setHelpOpen(false)
-        channel.pushLocal('/version', versionReportLines())
+        channel.pushLocal('/version', versionReportLines({ kernelVersion }))
         return true
       case 'migrate': {
         // Double entry points with the CLI. BARE `/migrate` opens the

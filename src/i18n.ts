@@ -674,6 +674,7 @@ const dict = {
   // `/version`（本 fork 的构建身份命令，见 src/buildInfo.ts）。无构建信息时按运行
   // 方式分两种降级文案：源码运行（tsx）说「开发运行」，装好的包说「官方构建」。
   'version-line-build': { zh: 'dsh-tui {{version}}（自用构建 {{describe}}）', en: 'dsh-tui {{version}} (self-built {{describe}})' },
+  'version-line-kernel': { zh: '  DSH 内核   {{version}}', en: '  DSH kernel  {{version}}' },
   'version-line-git': { zh: '  分支/提交  {{branch}} @ {{commit}} · 构建于 {{builtAt}}', en: '  branch/commit  {{branch}} @ {{commit}} · built {{builtAt}}' },
   'version-line-source': { zh: '  安装来源   {{source}}', en: '  installed from  {{source}}' },
   'version-degraded-dev': { zh: 'dsh-tui {{version}} · 开发运行（无构建信息）', en: 'dsh-tui {{version}} · development run (no build info)' },
@@ -2228,7 +2229,7 @@ const dict = {
   'cmd-desc-reload': { zh: '重读偏好文件并立即生效' },
   'cmd-desc-settings': { zh: '查看和编辑插件设置' },
   'cmd-desc-doctor': { zh: '运行环境检查' },
-  'cmd-desc-version': { zh: '显示当前构建的身份与来源' },
+  'cmd-desc-version': { zh: '显示当前构建的身份、来源与 DSH 内核版本' },
   'cmd-desc-migrate': { zh: '从其他编程代理导入对话（claude-code/codex/omp/zcode/grok-build）' },
   'cmd-desc-init': { zh: '在工作目录创建 AGENTS.md' },
   'cmd-desc-agents': { zh: '查看本会话的子代理' },

@@ -180,23 +180,33 @@ export interface VersionReportOptions {
   readonly info?: BuildInfo | null
   /** Profile root for the install-source probe; defaults as in {@link detectInstallSource}. */
   readonly profileDir?: string
+  /**
+   * DSH kernel version the running TUI is bound to. Omitted or blank when it
+   * could not be resolved — the report then skips the kernel line instead of
+   * inventing one.
+   */
+  readonly kernelVersion?: string
 }
 
 /**
- * The `/version` report: one line without a build stamp, three with one. The
+ * The `/version` report: one line without a build stamp, three with one, plus
+ * an optional DSH-kernel line whenever the caller resolved a version. The
  * dirty flag needs no line of its own — `git describe --dirty` puts it in the
  * description (`0.16.1+bean.1-dirty`), where a build from an unclean worktree
  * cannot hide behind a clean commit.
- * @param options - Stamp and profile overrides; both default to this copy.
+ * @param options - Stamp, profile and kernel overrides; all default to this copy.
  */
 export function versionReportLines(options: VersionReportOptions = {}): readonly string[] {
   const info = options.info === undefined ? readBuildInfo() : options.info
   const version = info?.version ?? packageVersion() ?? '?'
+  const kernel = options.kernelVersion?.trim()
+  const kernelLines = kernel === undefined || kernel === '' ? [] : [t('version-line-kernel', { version: kernel })]
   if (info === null) {
-    return [t(runningFromSource() ? 'version-degraded-dev' : 'version-degraded-package', { version })]
+    return [t(runningFromSource() ? 'version-degraded-dev' : 'version-degraded-package', { version }), ...kernelLines]
   }
   return [
     t('version-line-build', { version, describe: info.describe ?? '?' }),
+    ...kernelLines,
     t('version-line-git', {
       branch: info.branch ?? '?',
       commit: info.commit === null ? '?' : info.commit.slice(0, 8),
