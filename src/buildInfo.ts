@@ -39,6 +39,11 @@ export interface BuildInfo {
   readonly builtAt: string | null
   /** Node that ran the build. Recorded for diagnostics; `/version` omits it. */
   readonly node: string | null
+  /**
+   * Curated self-use release note, one line per entry; absent or null when the
+   * build had no note file. `/version` prints it verbatim at the end.
+   */
+  readonly notes?: readonly string[] | null
 }
 
 /** How this package reached the profile that runs it. */
@@ -76,6 +81,9 @@ export function readBuildInfo(): BuildInfo | null {
   if (parsed === null || typeof parsed !== 'object') return null
   const record = parsed as Record<string, unknown>
   const field = (key: string): string | null => (typeof record[key] === 'string' ? record[key] : null)
+  const notes = Array.isArray(record.notes)
+    ? record.notes.filter((note): note is string => typeof note === 'string' && note.trim() !== '')
+    : null
   return {
     version: field('version'),
     describe: field('describe'),
@@ -83,6 +91,7 @@ export function readBuildInfo(): BuildInfo | null {
     commit: field('commit'),
     builtAt: field('builtAt'),
     node: field('node'),
+    notes,
   }
 }
 
@@ -190,10 +199,10 @@ export interface VersionReportOptions {
 
 /**
  * The `/version` report: one line without a build stamp, three with one, plus
- * an optional DSH-kernel line whenever the caller resolved a version. The
- * dirty flag needs no line of its own — `git describe --dirty` puts it in the
- * description (`0.16.1+bean.1-dirty`), where a build from an unclean worktree
- * cannot hide behind a clean commit.
+ * optional DSH-kernel and self-use release-note blocks. The dirty flag needs no
+ * line of its own — `git describe --dirty` puts it in the description
+ * (`0.16.1+bean.1-dirty`), where a build from an unclean worktree cannot hide
+ * behind a clean commit.
  * @param options - Stamp, profile and kernel overrides; all default to this copy.
  */
 export function versionReportLines(options: VersionReportOptions = {}): readonly string[] {
@@ -204,7 +213,7 @@ export function versionReportLines(options: VersionReportOptions = {}): readonly
   if (info === null) {
     return [t(runningFromSource() ? 'version-degraded-dev' : 'version-degraded-package', { version }), ...kernelLines]
   }
-  return [
+  const identity = [
     t('version-line-build', { version, describe: info.describe ?? '?' }),
     ...kernelLines,
     t('version-line-git', {
@@ -214,4 +223,8 @@ export function versionReportLines(options: VersionReportOptions = {}): readonly
     }),
     t('version-line-source', { source: sourceText(detectInstallSource(options.profileDir)) }),
   ]
+  const notes = info.notes ?? []
+  return notes.length === 0
+    ? identity
+    : [...identity, t('version-line-notes'), ...notes.map(line => `    ${line}`)]
 }

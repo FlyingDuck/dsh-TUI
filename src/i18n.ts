@@ -675,6 +675,7 @@ const dict = {
   // 方式分两种降级文案：源码运行（tsx）说「开发运行」，装好的包说「官方构建」。
   'version-line-build': { zh: 'dsh-tui {{version}}（自用构建 {{describe}}）', en: 'dsh-tui {{version}} (self-built {{describe}})' },
   'version-line-kernel': { zh: '  DSH 内核   {{version}}', en: '  DSH kernel  {{version}}' },
+  'version-line-notes': { zh: '  版本说明', en: '  release notes' },
   'version-line-git': { zh: '  分支/提交  {{branch}} @ {{commit}} · 构建于 {{builtAt}}', en: '  branch/commit  {{branch}} @ {{commit}} · built {{builtAt}}' },
   'version-line-source': { zh: '  安装来源   {{source}}', en: '  installed from  {{source}}' },
   'version-degraded-dev': { zh: 'dsh-tui {{version}} · 开发运行（无构建信息）', en: 'dsh-tui {{version}} · development run (no build info)' },

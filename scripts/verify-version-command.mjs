@@ -6,7 +6,7 @@
  *      「开发运行」文案，仍报出版本号；
  *   B. 编译产物 + 真 stamp → 三行齐全，含 describe、8 位短 commit 与本地
  *      时间（带 UTC 偏移），并且不会自称源码运行；
- *   B2. 内核版本行：有值才画、位于身份行之后、空白值不画、降级路径也带；
+ *   B2. 内核版本行与版本说明块：有值才画、位置/降级正确；
  *   C. 来源探测矩阵：`file:*.tgz` / `file:<目录>` / `link:<路径>` / 纯 semver
  *      各判定正确、路径解析成绝对路径，键缺失 / 坏 JSON / 没有 manifest
  *      一律「未知」且其余行照常（只有第 1 条那句「输出含 describe」是
@@ -111,13 +111,18 @@ function writeProfile(dir, spec) {
   const tarball = join(tmp, 'builds', 'deepseek-harness-tui-dsh-tui-0.16.1.tgz')
   writeProfile(dir, `file:${tarball}`)
   const lines = compiled.versionReportLines({ profileDir: dir })
-  check('B 编译产物：三行齐全', lines.length === 3, lines.join(' | '))
+  const noteCount = info?.notes?.length ?? 0
+  check('B 编译产物：身份与来源行齐全', lines.length === 3 + (noteCount > 0 ? 1 + noteCount : 0), lines.join(' | '))
   check('B 编译产物：输出含 describe',
     lines[0]?.includes(info?.describe ?? '\u0000') === true, lines[0] ?? '(none)')
   check('B 编译产物：输出含 8 位短 commit',
     lines[1]?.includes(info?.commit?.slice(0, 8) ?? '\u0000') === true, lines[1] ?? '(none)')
   check('B 编译产物：构建时间是本地时间加 UTC 偏移',
     / \d{4}-\d{2}-\d{2} \d{2}:\d{2} \([+-]\d{4}\)$/u.test(lines[1] ?? ''), lines[1] ?? '(none)')
+  if (noteCount > 0) {
+    check('B 编译产物：版本说明标题', lines[3]?.includes('版本说明') === true, lines[3] ?? '(none)')
+    check('B 编译产物：版本说明首条', lines[4]?.includes(info?.notes?.[0] ?? '\u0000') === true, lines[4] ?? '(none)')
+  }
 }
 
 // ── B2. 内核行：有值才画，位置在身份行之后 ───────────────────────────────
@@ -135,6 +140,14 @@ function writeProfile(dir, spec) {
   check('B2 空白内核不画行', blankKernel.length === 3, blankKernel.join(' | '))
   const degraded = source.versionReportLines({ info: null, kernelVersion: '0.2.1-rc.2' })
   check('B2 降级路径也带内核：两行', degraded.length === 2 && degraded[1]?.includes('0.2.1-rc.2') === true, degraded.join(' | '))
+  const withNotes = source.versionReportLines({ info: { ...fakeInfo, notes: ['- one', '- two'] }, profileDir: dir })
+  check('B2 版本说明：六行', withNotes.length === 6, withNotes.join(' | '))
+  check('B2 版本说明标题在来源行之后', withNotes[3]?.includes('版本说明') === true, withNotes[3] ?? '(none)')
+  check('B2 版本说明条目原样输出', withNotes[4]?.includes('- one') === true && withNotes[5]?.includes('- two') === true,
+    `${withNotes[4] ?? ''} | ${withNotes[5] ?? ''}`)
+  check('B2 版本说明不打乱来源行', withNotes[2]?.includes('未知') === true, withNotes[2] ?? '(none)')
+  const noNotes = source.versionReportLines({ info: fakeInfo, profileDir: dir })
+  check('B2 无版本说明：保持三行', noNotes.length === 3, noNotes.join(' | '))
 }
 
 // ── C. 来源探测：喂错输入必须红 ───────────────────────────────────────────
@@ -232,5 +245,5 @@ if (failures.length > 0) {
   for (const failure of failures) console.error(`  - ${failure}`)
   process.exit(1)
 }
-console.log(`version-command OK (${checks} checks: 源码运行降级、编译产物 stamp、内核行、来源矩阵 file/link/semver/坏输入、$DSH_HOME 默认目录、命令声明与 Chat 分发接线)`)
+console.log(`version-command OK (${checks} checks: 源码运行降级、编译产物 stamp、内核行、版本说明、来源矩阵 file/link/semver/坏输入、$DSH_HOME 默认目录、命令声明与 Chat 分发接线)`)
 process.exit(0)

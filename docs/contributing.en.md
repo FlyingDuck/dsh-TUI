@@ -719,6 +719,9 @@ guide owns detailed contracts such as the toolchain and verification matrix.
   - Optional hand-written summary: commit `.github/release-notes/vX.Y.Z.md`
     before tagging, and the generated notes follow it. Without that file the
     Release carries the generated notes only.
+  - Self-use builds read their `/version` notes from
+    `.github/release-notes/self-use.md` (one line per entry, embedded into
+    `lib/build-info.json` at build time; no tag needed).
   - The generated notes start with a `<!-- dsh-tui:generated-notes -->`
     marker. If the Release already exists (a rerun, or a maintainer created it
     first), the job updates instead of failing: a body with that marker or a

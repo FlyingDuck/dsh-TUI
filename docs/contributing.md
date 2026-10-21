@@ -334,7 +334,7 @@ CI 回归都要跑。窄改动还要跑最近的聚焦脚本：
 | Compaction 与折叠 transcript 行 | `node scripts/verify-compact.mjs` |
 | 命令能力事实（compaction / plan / 问卷 / 剪枝的路由与 Help + `/` 的不可用标注） | `pnpm verify:agent-capabilities` |
 | `/rollover` 命令（结转命名与当日序号、回合中拒绝先于改名、屏幕的结转→新开会话顺序） | `pnpm verify:rollover` |
-| `/version` 命令（有/无构建 stamp 的两种文案、内核版本行、安装来源探测矩阵、命令声明与 Chat 分发接线） | `pnpm verify:version` |
+| `/version` 命令（有/无构建 stamp 的两种文案、内核版本行、版本说明块、安装来源探测矩阵、命令声明与 Chat 分发接线） | `pnpm verify:version` |
 | 底栏 git 段（porcelain v2 六态解析、超长脏树截断、后缀零值不画、真实仓库烟测） | `pnpm verify:git-status` |
 | 插件中继消息的转录显示（`agent/inbox/spliced` 不落行、payload opt-in 正负例、投影落行与模型面占用、`/export` 分节） | `pnpm verify:plugin-relay` |
 | 压缩 × 会话切换生命周期（取消先于 fork 快照、persistence 分类提示） | `node --import tsx/esm scripts/verify-compact-switch.tsx` |
@@ -545,6 +545,8 @@ TypeScript 源的脚本在头部声明 `node --import tsx/esm <script>` 形式�
   同一 run 构建并上传整合包（重跑也会补齐）。
   - 可选手写摘要：打 tag 前提交 `.github/release-notes/vX.Y.Z.md`，自动清单接在它后面；
     没有该文件就只有自动清单。
+  - 自用构建的 `/version` 版本说明来自 `.github/release-notes/self-use.md`（每行一条，
+    构建时嵌入 `lib/build-info.json`，不打 tag 也生效）。
   - 自动清单前有 `<!-- dsh-tui:generated-notes -->` 标记。Release 已存在（重跑、或维护者
     先手建）时只更新不失败：有该标记或 `## What's Changed` 就不动；否则把自动清单追加
     在原正文后面，绝不覆盖。
