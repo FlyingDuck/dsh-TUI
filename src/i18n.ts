@@ -1100,6 +1100,8 @@ const dict = {
   'diff-patch-added': { zh: '新文件', en: 'new file' },
   'diff-patch-deleted': { zh: '已删除', en: 'deleted' },
   'tool-live-omitted': { zh: '… 已省略 {{count}} 行', en: { one: '… {{count}} line omitted', other: '… {{count}} lines omitted' } },
+  // 本地 `!` 命令输出超过行预算时的收尾行（每行一条 local-output，见 transcript.ts）。
+  'local-output-omitted': { zh: '… 已省略 {{count}} 行', en: { one: '… {{count}} line omitted', other: '… {{count}} lines omitted' } },
   // 搜索结果截断行（search 卡 paths 形态）：
   'search-results-total': { zh: '…（共 {{n}} 条）', en: '… ({{n}} total)' },
   // 按行折叠的溢出提示：卡片正文行预算（capLines）、终端卡多行命令折叠

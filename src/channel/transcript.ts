@@ -3,14 +3,17 @@
 import type { ChatRow } from '../adapter/ports/channel-view.js'
 import type { PluginRelayAction } from '../agent/messages.js'
 import type { I18nKey } from '../i18n.js'
-import { cleanRenderText, NOTICE_CELLS } from './sanitize.js'
+import { cleanRenderText, NOTICE_CELLS, previewLocalLine } from './sanitize.js'
 
 export const ARGS_PREVIEW_LIMIT = 160
 
 export const RESULT_PREVIEW_LIMIT = 240
 
-/** Local `!`-command output cap (mirrors the result preview limit). */
+/** Local `!`-command output cap per line, in terminal cells. */
 export const LOCAL_OUTPUT_LIMIT = 240
+
+/** How many output lines one local `!` command may add to the transcript. */
+export const MAX_LOCAL_OUTPUT_LINES = 200
 
 /**
  * In-memory transcript window cap. Older rows beyond this count are folded:
@@ -25,6 +28,23 @@ export const MAX_ROWS = 600
 export function preview(text: string, limit: number): string {
   const flat = text.replace(/\s+/g, ' ').trim()
   return flat.length <= limit ? flat : `${flat.slice(0, limit)}…`
+}
+
+/**
+ * Split one local command's output into transcript rows: one line per row
+ * (the shape `pushLocal` and the projector already use), each sanitized as a
+ * block line (see {@link previewLocalLine}) and capped, with the overflow
+ * counted so the caller can add a single omission row. The caller passes
+ * output already trimmed at both ends.
+ */
+export function localOutputLines(
+  output: string,
+  maxCells = LOCAL_OUTPUT_LIMIT,
+  maxLines = MAX_LOCAL_OUTPUT_LINES,
+): { readonly lines: readonly string[]; readonly omitted: number } {
+  const all = output.split(/\r?\n/u)
+  const lines = all.slice(0, maxLines).map(line => previewLocalLine(line, maxCells))
+  return { lines, omitted: Math.max(0, all.length - maxLines) }
 }
 
 /**

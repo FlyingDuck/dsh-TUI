@@ -14,7 +14,7 @@ import { t } from '../../../i18n.js'
 import { runForegroundShell, type ForegroundShell } from '../../compat/shell.js'
 import type { ChannelBinding } from '../binding.js'
 import type { ChannelOwner } from '../owner.js'
-import { LOCAL_OUTPUT_LIMIT, preview } from '../transcript.js'
+import { LOCAL_OUTPUT_LIMIT, localOutputLines, preview } from '../transcript.js'
 import type { ChannelState } from '../types.js'
 import type { CoreHost } from './host.js'
 
@@ -126,7 +126,16 @@ export function createCoreLocalActions(ctx: ServiceLookup, deps: {
       output = error instanceof Error ? error.message : String(error)
     }
     if (!current()) return
-    state.rows.push({ id: rowIds.value++, kind: 'local-output', text: preview(output, LOCAL_OUTPUT_LIMIT) })
+    // One transcript row per output line, like pushLocal and the projector:
+    // folding the whole block through preview() turned `ls -al` into one
+    // whitespace-collapsed line (and cut it at the per-line cell limit).
+    const { lines, omitted } = localOutputLines(output)
+    for (const line of lines) {
+      state.rows.push({ id: rowIds.value++, kind: 'local-output', text: line })
+    }
+    if (omitted > 0) {
+      state.rows.push({ id: rowIds.value++, kind: 'local-output', text: t('local-output-omitted', { count: omitted }) })
+    }
     state.emit()
     if (includeInContext) {
       // This runs detached (`void runLocalCommand`): a session that closed

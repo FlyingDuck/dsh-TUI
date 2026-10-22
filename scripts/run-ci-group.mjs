@@ -290,6 +290,9 @@ const GROUPS = {
 // help 浮层让位、问询面板不让位（面板在转录下方且不消费这对键）、inline
 // 模式不接管（历史在终端原生 scrollback）、窄终端行为一致。
     ["verify-transcript-paging", ['node', 'scripts/verify-transcript-paging.mjs']],
+// 本地 `!` 命令输出按行成 row：`ls -al` 不被空白折叠成一行，列结构/缩进保留，
+// ANSI 剥离、按显示单元格截断，超行预算收一条省略行。
+    ["verify-local-output", ['node', 'scripts/verify-local-output.mjs']],
 // zellij 兼容回归（DECSTBM 硬件滚动撤回）：zellij 的 CSI T 只在光标位于
 // 滚动区内时移动行，而渲染器把光标停在整屏最后一行（每个 ScrollBox 之下），
 // 位移被静默吞掉而差分引擎仍当作已发生 → 上滚时旧行残留/错行；zellij 实现了

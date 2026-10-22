@@ -7,6 +7,8 @@
  * - C0/C1 control chars are stripped (replaced by a space) — plugin text
  *   must never smuggle escape sequences onto the screen;
  * - whitespace collapses to single spaces (render paths are single-line);
+ *   local `!`-command output is the exception: it is trusted terminal text and
+ *   keeps its column structure per line (see {@link previewLocalLine});
  * - width is capped in terminal CELLS (never string.length) with an
  *   ellipsis.
  *
@@ -29,6 +31,31 @@ export function cleanRenderText(value: string, maxCells: number): string {
   if (stringWidth(flat) <= maxCells) return flat
   let out = ''
   for (const ch of flat) {
+    if (stringWidth(out + ch) > maxCells - 1) break
+    out += ch
+  }
+  return `${out}…`
+}
+
+/**
+ * Sanitize one line of TRUSTED local terminal output (a `!` command) for a
+ * transcript row. Unlike {@link cleanRenderText}, leading spaces and internal
+ * column runs are terminal structure (an `ls -al` table, a `tree`), not
+ * whitespace to fold: only trailing blanks go. ANSI is stripped, tabs expand,
+ * other control bytes drop, and the result is capped in terminal CELLS.
+ */
+export function previewLocalLine(line: string, maxCells: number): string {
+  const withoutAnsi = line
+    .replace(/\u001B\][^\u0007]*(?:\u0007|\u001B\\)/gu, '')
+    .replace(/\u001B\[[0-?]*[ -/]*[@-~]/gu, '')
+  // eslint-disable-next-line no-control-regex -- deliberate: sanitize terminal output
+  const cleaned = withoutAnsi
+    .replace(/\t/gu, '        ')
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/gu, '')
+    .trimEnd()
+  if (stringWidth(cleaned) <= maxCells) return cleaned
+  let out = ''
+  for (const ch of cleaned) {
     if (stringWidth(out + ch) > maxCells - 1) break
     out += ch
   }
