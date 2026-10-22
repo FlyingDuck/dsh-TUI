@@ -1,17 +1,17 @@
 /**
  * verify-input-selection — 输入框鼠标选区编辑回归（组件级 drag 协议的
  * PromptInput 消费者）：SGR press/motion/release 逐字节注入真实 Ink 管线，
- * 断言拖选/Shift+click 扩展/双击选词/Backspace/Delete 删选区/打字替换/
- * Esc 分层/Ctrl+C 经控制器复制，以及 CJK 宽字符显示列与 fold block 侧钳制。
+ * 断言拖选（含松手即复制）/Shift+click 扩展/双击选词/Backspace/Delete 删选区/
+ * 打字替换/Esc 分层/Ctrl+C 经控制器复制，以及 CJK 宽字符显示列与 fold block 侧钳制。
  *
  * 四阶段：
  *   阶段 A（真实 PromptInput + AlternateScreen + Chat 式 useInput 持有者）：
- *     拖选→打字替换、反向拖选、Backspace/Delete 删选区、Shift+click 扩展
+ *     拖选→松手即复制→打字替换、反向拖选、Backspace/Delete 删选区、Shift+click 扩展
  *     + 控制器复制（OSC 52 断言）、Esc 仅清选区→再 Esc 清输入、双击选词
  *     （500ms/1 格自检测）、方向键坍缩、CJK 宽字符、英文整词换行与换行词上的
  *     caret/点击、fold block 选区钳制与无选区 consumeSelectionCopy=false。
- *   阶段 B（真实 Chat）：Ctrl+C 经 Chat→控制器复制选区且保留选区、再打字
- *     替换；无选区 Ctrl+C 保持既有清空语义。
+ *   阶段 B（真实 Chat）：拖选松手即复制、Ctrl+C 经 Chat→控制器复制选区且保留选区、
+ *     再打字替换；无选区 Ctrl+C 保持既有清空语义。
  *   阶段 C/D（无原生光标时的主题回退）：C = `cursor` 有值（实心主题色块、选区仍
  *     反色）；D = 旧调色板整份缺 `cursor` 键（必须仍落回反色块）。
  *
@@ -266,7 +266,8 @@ function makePromptChannel(): Record<string, unknown> {
     const c0 = p!.col
     const r0 = p!.row
 
-    // A1: 拖选 'ello'（press 'e'=1、motion 'o' 后空格=5）→ 打字替换
+    // A1: 拖选 'ello'（press 'e'=1、motion 'o' 后空格=5）→ 松手即复制 → 打字替换
+    const firstDragCopies = oscPayloads().length
     dragRange(c0 + 1, c0 + 5, r0)
     check(
       'A1 拖选高亮 [ello]，caret 在选区尾',
@@ -278,6 +279,12 @@ function makePromptChannel(): Record<string, unknown> {
           !inverseAt(c0, r0) &&
           !inverseAt(c0 + 6, r0),
       ),
+    )
+    check(
+      'A1 松开即复制 [ello]',
+      (await settled(() => oscPayloads().length === firstDragCopies + 1)) &&
+        oscPayloads().at(-1) === 'ello',
+      oscPayloads().at(-1) ?? 'no osc52',
     )
     stdin.write('X')
     check(
@@ -729,12 +736,19 @@ function makePromptChannel(): Record<string, unknown> {
     const c0 = p.col
     const r0 = p.row
 
+    const beforeDrag = oscPayloads().length
     press(c0 + 6, r0)
     motion(c0 + 11, r0)
     release(c0 + 11, r0)
     check(
       'B1 拖选 [world] 高亮',
       await settled(() => inverseAt(c0 + 6, r0) && inverseAt(c0 + 10, r0)),
+    )
+    check(
+      'B1 松开即复制 [world]',
+      (await settled(() => oscPayloads().length === beforeDrag + 1)) &&
+        oscPayloads().at(-1) === 'world',
+      oscPayloads().at(-1) ?? 'no osc52',
     )
     const before = oscPayloads().length
     stdin.write('\x03') // Ctrl+C 走 Chat → 控制器

@@ -455,7 +455,7 @@ change, also run the closest focused script:
 | Component-level mouse drag protocol (target capture, bubbling, click/selection compatibility, interrupted-session cleanup) | `node --import tsx/esm scripts/verify-drag-protocol.tsx` |
 | Mouse pointer event pipeline (wheel coords/modifier bits, click/hover dispatch, out-of-bounds clamping, pointer-state reset) | `node --import tsx/esm scripts/verify-pointer-events.ts` |
 | Hover event performance (complete interest boundaries, no-interest rect fast path, frame/multi-root invalidation) | `node --import tsx/esm scripts/verify-hover-coalesce.tsx` |
-| Prompt-input mouse selection editing (drag/Shift+click/double-click word select, delete/replace, layered Esc, Ctrl+C copy, CJK wide cells, fold-side clamping) | `node --import tsx/esm scripts/verify-input-selection.tsx` |
+| Prompt-input mouse selection editing (drag with copy-on-release/Shift+click/double-click word select, delete/replace, layered Esc, Ctrl+C copy, CJK wide cells, fold-side clamping) | `node --import tsx/esm scripts/verify-input-selection.tsx` |
 | Sixel encoding, worker cache, thumbnail/preview lifecycle | `node --import tsx/esm scripts/verify-terminal-images-sixel.tsx`, `node --import tsx/esm scripts/verify-sixel-transcript.tsx`; timing comparison `node --import tsx/esm scripts/bench-sixel-encode.tsx` |
 | Standalone Markdown nodes (tables, mermaid diagrams) and streaming block spacing | `pnpm verify:table-layout`, `pnpm verify:mermaid-diagram`, `node --import tsx/esm scripts/verify-streaming-markdown-spacing.tsx` |
 | Cross-process session mount ledger (failure behavior, strict reads, lock recovery, reservations) | `pnpm verify:session-mounts` |

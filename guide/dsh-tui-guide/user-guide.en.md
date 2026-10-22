@@ -171,7 +171,7 @@ Unrecognized keys are ignored, `Esc` does nothing, clear with `Ctrl+C`/`dd`.
 | left-drag | select text, **copy on release** (OSC 52 + system clipboard tools as fallback), keep the selection after copying; a new selection replaces it |
 | double-click / triple-click | select word / line, copy immediately |
 | wheel | scroll the message list (±3 rows/notch); **with a text selection, pan the selection with the content** |
-| in the input box | drag / Shift+click / double-click build a selection; `Backspace`/`Delete` delete it, typing replaces, `←/→` collapse, `Esc` clears only the selection, `Ctrl+C` copies it |
+| in the input box | drag builds a selection and **copies it on release**; Shift+click / double-click build one; `Backspace`/`Delete` delete it, typing replaces, `←/→` collapse, `Esc` clears only the selection, `Ctrl+C` copies it again |
 | `Esc` | clear the selection (no copy) |
 | single-click | message row = expand/collapse · hyperlink = open browser · 「加载更早消息」/StickyHeader/「↓ N new」= load/jump |
 | hover truncated content | hover ~600 ms to show full content in a popover; no popover while dragging a selection |

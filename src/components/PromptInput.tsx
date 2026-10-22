@@ -1055,6 +1055,27 @@ export function PromptInput({
   // hand-off below. A commit-time write would run BEFORE the restore effect
   // has consumed the slot, so the composer's own first (empty) value would
   // erase the draft it just came back for.
+  /**
+   * Put the prompt's active editing selection on the clipboard (OSC 52 + the
+   * native fallback) and tell the user how much landed there. The selection is
+   * KEPT: copy never clears it (Esc/typing/delete do). Returns false when
+   * nothing is selected, so callers can tell a real copy from a no-op.
+   *
+   * Shared by the explicit Ctrl+C path and copy-on-release: dragging inside
+   * the input behaves like dragging over the transcript (release = copy), and
+   * both paths must use one implementation or the native fallback can drift.
+   */
+  const copySelectionToClipboard = (): boolean => {
+    const sel = selectionRef.current
+    if (!sel) return false
+    const text = valueRef.current.slice(sel.start, sel.end)
+    if (text.length === 0) return false
+    void setClipboard(text).then(raw => {
+      if (raw) writeRaw?.(raw)
+    })
+    channel.notify(t('copied-chars', { n: text.length }), { timeoutMs: 1500 })
+    return true
+  }
   // Publish the live controller (fresh closure over `value` every render).
   // A prompt-slot panel withdraws the handle in the same commit: external
   // injection must not append/submit a hidden command draft while it waits
@@ -1107,16 +1128,7 @@ export function PromptInput({
         setCursor(next.length)
         return next
       },
-      consumeSelectionCopy: () => {
-        const sel = selectionRef.current
-        if (!sel) return false
-        const text = valueRef.current.slice(sel.start, sel.end)
-        void setClipboard(text).then(raw => {
-          if (raw) writeRaw?.(raw)
-        })
-        // The selection stays: copy never clears it (Esc/typing/delete do).
-        return true
-      },
+      consumeSelectionCopy: () => copySelectionToClipboard(),
       consumeEscape: consumeEditingEscape,
       toggleVim: () => {
         const next = !vimEnabledRef.current
@@ -4076,7 +4088,12 @@ export function PromptInput({
     placeCaret(normalizeCursorOffset(valueRef.current, caret), 'nearest')
   }
   const handleDragEnd = () => {
+    const hadAnchor = dragAnchorRef.current !== null
     dragAnchorRef.current = null
+    // Copy on release, like a transcript drag. Only a drag that actually
+    // anchored inside the editable text counts: a press that missed it (the
+    // fold chip, the gutter) must not re-copy a stale selection.
+    if (hadAnchor) copySelectionToClipboard()
   }
 
   // 浮层整体挂载条件：与内部面板可见条件精确同值。关闭时必须把整个

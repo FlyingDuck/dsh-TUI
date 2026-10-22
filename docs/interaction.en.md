@@ -650,7 +650,8 @@ In inline mode, the terminal emulator owns native scrollback and selection.
   centered image preview (image metadata when Kitty/Sixel graphics is unavailable); clicking
   outside the preview closes it.
 - **Drag inside the prompt input** — Build an in-input selection (rendered highlight, caret
-  rides the drag end). `Backspace`/`Delete` delete it, typing replaces it, `←/→` collapse it
+  rides the drag end); releasing copies it (OSC 52 + native fallback) and keeps the
+  highlight. `Backspace`/`Delete` delete it, typing replaces it, `←/→` collapse it
   to the corresponding edge, `Esc` only clears it. Drags map only visible rows (no edge
   auto-scroll yet). A folded paste block keeps the selection on the clicked side (never
   across the chip row).
@@ -658,8 +659,8 @@ In inline mode, the terminal emulator owns native scrollback and selection.
   caret) to the clicked position.
 - **Double-click a word in the prompt input** — Select the whole word (detected in the
   component, 500 ms / 1 cell; paths and punctuation runs select as one).
-- **`Ctrl+C` with a prompt selection** — Copy the selection to the clipboard (OSC 52 +
-  native fallback) and keep it for editing.
+- **`Ctrl+C` with a prompt selection** — Copy the selection again (release already copied
+  it) and keep it for editing.
 - **Fullscreen editor (expanded via `Ctrl+Shift+E`)** — Click/drag/double-click follow the
   prompt-input paths (geometry corrected for the gutter). The wheel scrolls the editor
   viewport (position-routed; caret moves re-engage following). The Send/Collapse buttons
