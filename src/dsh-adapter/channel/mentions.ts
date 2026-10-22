@@ -1,5 +1,6 @@
-import { extname, isAbsolute, join } from 'node:path'
+import { extname } from 'node:path'
 import { extractMentions } from '../../utils/mentions.js'
+import { resolveHomePath } from '../../utils/paths.js'
 import { basename } from './paths.js'
 import { COMPOSER_IMAGE_TOKEN } from './composer-images.js'
 import type { ServiceLookup } from './channel-host.js'
@@ -137,11 +138,11 @@ export async function expandMentions(
     // (issue #359) is stripped before resolution; when the stripped path
     // misses, the typed literal (suffix intact) gets ONE fallback try so
     // filenames genuinely containing `#L…` still resolve as whole files.
-    const absolute = isAbsolute(mention.path) ? mention.path : join(cwd, mention.path)
+    const absolute = resolveHomePath(mention.path, cwd)
     let resolved = await tryResolveMention(fs, absolute)
     let literalFallback = false
     if (resolved === undefined && mention.literal !== undefined) {
-      const literalPath = isAbsolute(mention.literal) ? mention.literal : join(cwd, mention.literal)
+      const literalPath = resolveHomePath(mention.literal, cwd)
       resolved = await tryResolveMention(fs, literalPath)
       literalFallback = resolved !== undefined
     }

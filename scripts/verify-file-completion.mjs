@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /** Regression coverage for `@` completion in large generated trees (#278). */
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createChannel } from '../lib/types/dsh-adapter/channel.js'
+import { createChannel, expandMentions } from '../lib/types/dsh-adapter/channel.js'
 
 const fixture = await mkdtemp(join(tmpdir(), 'dsh-tui-file-completion-'))
 
@@ -20,6 +20,17 @@ function makeAgent() {
 const fsService = {
   async resolve(path) {
     return { displayPath: path }
+  },
+  async stat(target) {
+    try {
+      const info = await stat(target.displayPath)
+      return { type: info.isDirectory() ? 'directory' : info.isFile() ? 'file' : 'other' }
+    } catch {
+      return undefined
+    }
+  },
+  async readText(target) {
+    return readFile(target.displayPath, 'utf8')
   },
   async listDir(target) {
     const entries = await readdir(target.displayPath, { withFileTypes: true })
@@ -42,6 +53,9 @@ try {
   await mkdir(cmakePresetFiles, { recursive: true })
   await mkdir(sourceDir)
   await mkdir(nestedDir)
+  const downloadsDir = join(fixture, 'Downloads')
+  await mkdir(join(downloadsDir, 'Music'), { recursive: true })
+  await mkdir(join(downloadsDir, 'Movies'), { recursive: true })
   await Promise.all([
     ...Array.from({ length: 120 }, (_, index) =>
       writeFile(join(cmakeFiles, `artifact-${String(index).padStart(3, '0')}.o`), ''),
@@ -49,6 +63,7 @@ try {
     writeFile(join(cmakePresetFiles, 'compiler_depend.make'), ''),
     writeFile(join(sourceDir, 'main.cpp'), 'int main() {}\n'),
     writeFile(join(nestedDir, 'nested.cpp'), 'int nested() {}\n'),
+    writeFile(join(downloadsDir, 'note.txt'), 'home note\n'),
   ])
 
   const ctx = {
@@ -111,6 +126,54 @@ try {
     `ordinary nested source exceeded the completion depth limit:\n${filesWithNestedSource.join('\n')}`,
   )
   console.log('PASS: ordinary nested source remains reachable in @ completion')
+
+  // `@~/` used to expand only the BARE home; accepting `Downloads/` and then
+  // typing `M` resolved `~/Downloads/M` against the workspace and listed
+  // nothing — the reported "no suggestions after picking a directory" bug.
+  // Submitted mentions share resolveHomePath(), so they get the same check.
+  const originalHome = process.env.HOME
+  const originalUserProfile = process.env.USERPROFILE
+  try {
+    // os.homedir() reads HOME on POSIX and USERPROFILE on Windows.
+    process.env.HOME = fixture
+    process.env.USERPROFILE = fixture
+    const homeListing = await channel.listFileCandidates('~/')
+    assert.ok(
+      homeListing.some(entry => entry.path === '~/Downloads/'),
+      `~/ should list the home directories:\n${homeListing.map(entry => entry.path).join('\n')}`,
+    )
+    const downloadsListing = await channel.listFileCandidates('~/Downloads/')
+    assert.ok(
+      downloadsListing.some(entry => entry.path === '~/Downloads/Music/'),
+      `~/Downloads/ should list its subdirectories:\n${downloadsListing.map(entry => entry.path).join('\n')}`,
+    )
+    const narrowed = await channel.listFileCandidates('~/Downloads/M')
+    assert.ok(
+      narrowed.some(entry => entry.path === '~/Downloads/Music/') &&
+        narrowed.some(entry => entry.path === '~/Downloads/Movies/') &&
+        narrowed.every(entry => entry.name.startsWith('M')),
+      `~/Downloads/M should keep completing:\n${narrowed.map(entry => entry.path).join('\n')}`,
+    )
+    console.log('PASS: ~/ subdirectories keep completing after a directory is accepted')
+
+    const expansion = await expandMentions(fsService, fixture, 'see @~/Downloads/note.txt')
+    assert.deepEqual(
+      expansion.missing,
+      [],
+      `a submitted ~/ mention must resolve like completion:\n${expansion.missing.join('\n')}`,
+    )
+    assert.ok(
+      expansion.attached.includes('~/Downloads/note.txt') &&
+        expansion.blocks.some(block => block.type === 'text' && block.text.includes('home note')),
+      `a submitted ~/ mention should attach the file content:\n${JSON.stringify(expansion.blocks)}`,
+    )
+    console.log('PASS: submitted ~/ mentions resolve the same home path as completion')
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME
+    else process.env.HOME = originalHome
+    if (originalUserProfile === undefined) delete process.env.USERPROFILE
+    else process.env.USERPROFILE = originalUserProfile
+  }
 } finally {
   await rm(fixture, { recursive: true, force: true })
 }
