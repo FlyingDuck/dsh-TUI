@@ -343,6 +343,7 @@ CI 回归都要跑。窄改动还要跑最近的聚焦脚本：
 | 滚动/粘底行为 | `node scripts/verify-scroll.mjs`、`node scripts/verify-resticky.mjs`、`node --import tsx/esm scripts/verify-post-shrink-anchor.tsx`、`node --import tsx/esm scripts/verify-scroll-fold-anchor.tsx`、`node --import tsx/esm scripts/verify-scroll-fold-anchor-mounted.tsx`、`node --import tsx/esm scripts/verify-scroll-anchor-invalidation.tsx`、`node --import tsx/esm scripts/verify-scroll-anchor-remeasurement.tsx`（同时覆盖 `DSH_TEST_COLUMNS=60`）及对应 `repro-*` 环境 |
 | 计划评审长正文（`exit_plan_mode` 窗口化 + 滚轮） | `node --import tsx/esm scripts/verify-plan-review-scroll.tsx` |
 | 全屏复制即选区 | `node scripts/verify-copy-on-select.mjs` |
+| 转录区边缘自动滚动拖选（跨屏复制、反向/持续拖动、视口变化与停止/隔离） | `node --import tsx/esm scripts/verify-selection-auto-scroll.tsx` |
 | 组件级鼠标拖拽协议（目标捕获、事件冒泡、点击/选区兼容与中断收尾） | `node --import tsx/esm scripts/verify-drag-protocol.tsx` |
 | 鼠标指针事件管线（滚轮坐标/修饰位、点击/hover 派发、越界 clamp、指针态重置） | `node --import tsx/esm scripts/verify-pointer-events.ts` |
 | Hover 事件性能（兴趣边界完整、无兴趣矩形快路径、帧边界/多 root 失效） | `node --import tsx/esm scripts/verify-hover-coalesce.tsx` |

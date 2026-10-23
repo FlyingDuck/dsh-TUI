@@ -1047,6 +1047,7 @@ export function shiftSelectionForViewportTranslation(
  * @param oldBottom - viewport bottom before this frame's layout.
  * @param newTop - viewport top after this frame's layout.
  * @param newBottom - viewport bottom after this frame's layout.
+ * @param screenRowOffset - current rows minus old screen rows after a layout translation.
  */
 export function shiftSelectionForViewportResize(
   s: SelectionState,
@@ -1055,6 +1056,7 @@ export function shiftSelectionForViewportResize(
   oldBottom: number,
   newTop: number,
   newBottom: number,
+  screenRowOffset = 0,
 ): void {
   if (!s.anchor) return
   // Degenerate ranges. A ScrollBox can fully collapse — chrome taller than
@@ -1085,9 +1087,9 @@ export function shiftSelectionForViewportResize(
     const drop = Math.min(oldTop - newTop, s.scrolledOffAbove.length)
     s.scrolledOffAbove.length -= drop
   }
-  if (newTop > oldTop) captureScrolledRows(s, screen, oldTop, newTop - 1, 'above')
+  if (newTop > oldTop) captureScrolledRows(s, screen, oldTop, newTop - 1, 'above', screenRowOffset)
   if (newBottom < oldBottom)
-    captureScrolledRows(s, screen, newBottom + 1, oldBottom, 'below')
+    captureScrolledRows(s, screen, newBottom + 1, oldBottom, 'below', screenRowOffset)
   if (!s.focus) {
     // Bare press (no drag motion yet, focus still null): shiftSelection
     // needs both ends — clamp the anchor alone so a chrome mount can't

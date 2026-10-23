@@ -6900,7 +6900,7 @@ export function Chat({
           and cards keep the content column). No explicit width: cross-axis
           stretch with the margin yields exactly content+margin. */}
       <Box flexDirection="row" flexGrow={1} flexShrink={1} marginRight={sidePanel.split ? 0 : -pageInsetX}>
-        <ScrollBox ref={setHandle} flexDirection="column" flexGrow={1} flexShrink={1} stickyScroll>
+        <ScrollBox ref={setHandle} flexDirection="column" flexGrow={1} flexShrink={1} stickyScroll selectionAutoScroll={fullscreen && overlay.kind === 'none' && !helpOpen && !promptEditorOpen}>
         <LogoHeader
           key={logoNonce}
           model={channel.modelDisplay ?? channel.model}

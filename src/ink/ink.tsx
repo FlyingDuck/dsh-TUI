@@ -23,7 +23,7 @@ import { KeyboardEvent } from './events/keyboard-event.js';
 import type { DragEvent } from './events/drag-event.js';
 import { FocusManager } from './focus.js';
 import { emptyFrame, type Frame, type FrameEvent } from './frame.js';
-import { dispatchClick, dispatchContextMenu, dispatchDragEvent as bubbleDragEvent, dispatchHover, dispatchWheel, findDragTarget, clearHovered, invalidateNoInterestRect } from './hit-test.js';
+import { dispatchClick, dispatchContextMenu, dispatchDragEvent as bubbleDragEvent, dispatchHover, dispatchWheel, findDragTarget, hitTestWithOverlays, clearHovered, invalidateNoInterestRect } from './hit-test.js';
 import { logMouseDebug } from '../utils/debug.js';
 import { noteTerminalFlush } from './flush-tick.js';
 import instances from './instances.js';
@@ -181,6 +181,15 @@ export default class Ink {
   // pass in onRender can read it and App.tsx can update it from mouse
   // events. Public so instances.get() callers can access.
   readonly selection: SelectionState = createSelectionState();
+  private selectionScroll: {
+    target: dom.DOMElement;
+    col: number;
+    row: number;
+    anchorCol: number;
+    span: SelectionState['anchorSpan'];
+    edge: boolean;
+  } | null = null;
+  private selectionScrollTimer: ReturnType<typeof setTimeout> | null = null;
   // Search highlight query (alt-screen only). Setter below triggers
   // scheduleRender; applySearchHighlight in onRender inverts matching cells.
   private searchHighlightQuery = '';
@@ -415,6 +424,7 @@ export default class Ink {
     this.app?.reassertRawMode();
 
     this.resetCursorIdle();
+    this.resetSelectionAutoScroll();
 
     // Alt screen: after SIGCONT, content is stale (shell may have written
     // to main screen, switching focus away) and the DEC private modes the app
@@ -788,6 +798,7 @@ export default class Ink {
     // selection is marked stale so commit-time copy refuses (see
     // refreshSelectionFingerprint below the overlay block).
     let selectionCoordinated = false;
+    let selectionScreenRowOffset: number | undefined;
     this.maybeProbeKittyGraphics(frame.images ?? []);
 
     // Viewport-shrink translation (companion to the follow block below):
@@ -821,7 +832,34 @@ export default class Ink {
         this.frontFrame.screen.height === terminalRows
       ) {
         const hadSelection = hasSelection(this.selection);
-        if (resize.kind === 'translate') {
+        const drag = this.selectionScroll;
+        if (drag?.edge && this.selection.isDragging && drag.target.scrollViewportTop === resize.top &&
+            drag.target.scrollViewportHeight === resize.bottom - resize.top + 1 &&
+            (drag.row <= resize.top || drag.row >= resize.bottom)) {
+          // Moving the viewport top translates its content, even when its
+          // height changes too. Capture hidden rows from the OLD screen by
+          // undoing that translation, then pin focus to the current pointer.
+          const offset = resize.top - resize.prevTop;
+          selectionScreenRowOffset = offset;
+          shiftAnchor(this.selection, offset, resize.top, resize.prevBottom + offset);
+          if (drag.span) drag.span = {
+            ...drag.span,
+            lo: { ...drag.span.lo, row: drag.span.lo.row + offset },
+            hi: { ...drag.span.hi, row: drag.span.hi.row + offset },
+          };
+          if (this.selection.focus) {
+            this.selection.focus = { col: drag.col, row: Math.min(resize.bottom, Math.max(resize.top, drag.row)) };
+            this.selection.virtualFocusRow = undefined;
+          }
+          shiftSelectionForViewportResize(this.selection, this.frontFrame.screen,
+            resize.top, resize.prevBottom + offset, resize.top, resize.bottom, offset);
+          const position = this.selectionScrollPosition();
+          if (position) this.updateSelectionDrag(frame.screen, position.col, position.row);
+          selectionCoordinated = true;
+          if (hadSelection && !hasSelection(this.selection)) {
+            for (const cb of this.selectionListeners) cb();
+          }
+        } else if (resize.kind === 'translate') {
           const cleared = shiftSelectionForViewportTranslation(
             this.selection,
             resize.rowDelta,
@@ -902,16 +940,46 @@ export default class Ink {
       // each shift branch so the pairing can't be broken by a new guard.
       if (this.selection.isDragging) {
         if (hasSelection(this.selection)) {
-          captureScrolledRows(this.selection, this.frontFrame.screen, firstRow, lastRow, side, follow.screenRowOffset);
+          captureScrolledRows(this.selection, this.frontFrame.screen, firstRow, lastRow, side,
+            selectionScreenRowOffset ?? follow.screenRowOffset);
           // Record the viewport bounds for finishSelection's deferred
           // commit-time check: the in-flight drag never clears (a wheel
           // must not kill the gesture), so a drag that wheeled fully
           // off-edge is dropped when it ENDS, not while it is running.
           this.selection.dragBounds = { top: viewportTop, bottom: viewportBottom };
         }
-        // allowClear=false: both ends clamp to the edge; the ghost guard
-        // runs at release via dragBounds above.
-        shiftSelectionForFollow(this.selection, shift, viewportTop, viewportBottom, false);
+        const drag = this.selectionScroll;
+        const edge = drag?.edge ? this.selectionScrollPosition() : null;
+        const target = drag?.target;
+        const ownsFollow = target?.scrollViewportTop === viewportTop &&
+          (target.scrollViewportHeight ?? 0) === viewportBottom - viewportTop + 1;
+        if (drag?.span && ownsFollow) {
+          drag.span = {
+            ...drag.span,
+            lo: { ...drag.span.lo, row: drag.span.lo.row + shift },
+            hi: { ...drag.span.hi, row: drag.span.hi.row + shift },
+          };
+        }
+        if (drag && edge && edge.direction !== 0 && ownsFollow) {
+          // Edge dragging grows toward a stationary pointer. Ordinary wheel
+          // drags keep BOTH ends text-anchored, as before.
+          const oldAnchor = this.selection.virtualAnchorRow ?? this.selection.anchor.row;
+          shiftAnchor(this.selection, shift, viewportTop, viewportBottom);
+          if (shift > 0 && oldAnchor < viewportTop) {
+            this.selection.scrolledOffAbove.splice(Math.max(0,
+              this.selection.scrolledOffAbove.length - Math.min(shift, viewportTop - oldAnchor)));
+          } else if (shift < 0 && oldAnchor > viewportBottom) {
+            this.selection.scrolledOffBelow.splice(0, Math.min(-shift, oldAnchor - viewportBottom));
+          }
+          if (!drag.span && this.selection.virtualAnchorRow === undefined) {
+            this.selection.anchor.col = drag.anchorCol;
+          }
+          this.updateSelectionDrag(frame.screen, edge.col, edge.row);
+        } else {
+          // allowClear=false: the gesture survives wheel input; the ghost
+          // guard runs at release via dragBounds above.
+          shiftSelectionForFollow(this.selection, shift, viewportTop, viewportBottom, false);
+        }
         selectionCoordinated = true;
       } else if (
       // Flag-3 guard: the anchor check above only proves ONE endpoint is
@@ -1320,6 +1388,7 @@ export default class Ink {
     this.renderNow();
     this.isPaused = true;
     this.resetCursorIdle();
+    this.resetSelectionAutoScroll();
     this.notifyTerminalImagesChange();
   }
   resume(): void {
@@ -1576,6 +1645,7 @@ export default class Ink {
     this.isDetachedForShutdown = true;
     this.isUnmounted = true;
     this.resetCursorIdle();
+    this.resetSelectionAutoScroll();
     this.terminalImageListeners.clear();
     // Cancel any pending throttled render so it doesn't fire between
     // cleanupTerminalModes() and process.exit() and write to main screen.
@@ -2399,8 +2469,122 @@ export default class Ink {
     this.selectionListeners.add(cb);
     return () => this.selectionListeners.delete(cb);
   }
+  private resetSelectionAutoScroll(): void {
+    if (this.selectionScrollTimer !== null) clearTimeout(this.selectionScrollTimer);
+    this.selectionScrollTimer = null;
+    this.selectionScroll = null;
+  }
+
+  private beginSelectionAutoScroll(col: number, row: number): void {
+    this.resetSelectionAutoScroll();
+    let target = hitTestWithOverlays(this.rootNode, col, row);
+    // The first scroll container owns the gesture; never reach through a
+    // nested panel or an overlay to an enabled transcript behind it.
+    while (target) {
+      if (target.onSelectionScroll) {
+        if (target.attributes['selectionAutoScroll'] === true) {
+          this.selectionScroll = {
+            target, col, row, anchorCol: this.selection.anchor?.col ?? col,
+            span: this.selection.anchorSpan, edge: false,
+          };
+        }
+        return;
+      }
+      target = target.parentNode ?? null;
+    }
+  }
+
+  private updateSelectionDrag(screen: Frame['screen'], col: number, row: number): void {
+    const sel = this.selection;
+    const drag = this.selectionScroll;
+    // Keep the original multi-click span in virtual rows. Its clamped copy
+    // cannot locate the original word/line after a cross-screen reversal.
+    if (drag?.span && sel.anchorSpan) sel.anchorSpan = drag.span;
+    if (sel.anchorSpan) extendSelection(sel, screen, col, row);
+    else updateSelection(sel, col, row);
+    if (drag?.span && sel.anchor) {
+      const top = drag.target.scrollViewportTop ?? 0;
+      const bottom = top + (drag.target.scrollViewportHeight ?? 0) - 1;
+      const raw = sel.anchor.row;
+      sel.virtualAnchorRow = raw < top || raw > bottom ? raw : undefined;
+      sel.anchor = {
+        col: raw < top ? 0 : raw > bottom ? screen.width - 1 : sel.anchor.col,
+        row: Math.min(bottom, Math.max(top, raw)),
+      };
+    }
+    if (drag && sel.anchor) {
+      // Explicit pointer placement supersedes any focus-side resize debt.
+      // Only rows beyond the ORIGINAL anchor still belong to this gesture.
+      const top = drag.target.scrollViewportTop ?? 0;
+      const bottom = top + (drag.target.scrollViewportHeight ?? 0) - 1;
+      const raw = sel.virtualAnchorRow ?? sel.anchor.row;
+      const above = Math.max(0, top - raw);
+      const below = Math.max(0, raw - bottom);
+      if (sel.scrolledOffAbove.length > above) {
+        sel.scrolledOffAbove.splice(above);
+      }
+      if (sel.scrolledOffBelow.length > below) {
+        sel.scrolledOffBelow.splice(0, sel.scrolledOffBelow.length - below);
+      }
+    }
+  }
+
+  private selectionScrollPosition(): { col: number; row: number; direction: number } | null {
+    const drag = this.selectionScroll;
+    if (!drag || !this.selection.isDragging || !this.selection.focus ||
+        !this.altScreenActive || this.isPaused || this.isUnmounted ||
+        drag.target.attributes['selectionAutoScroll'] !== true) return null;
+    const rect = nodeCache.get(drag.target);
+    const top = drag.target.scrollViewportTop ?? 0;
+    const height = drag.target.scrollViewportHeight ?? 0;
+    if (!rect || height <= 1 || drag.col < rect.x || drag.col >= rect.x + rect.width) return null;
+    const bottom = top + height - 1;
+    const row = Math.min(bottom, Math.max(top, drag.row));
+    let hit = hitTestWithOverlays(this.rootNode, drag.col, row);
+    while (hit && hit !== drag.target) hit = hit.parentNode ?? null;
+    if (!hit) return null;
+    return { col: drag.col, row, direction: drag.row <= top ? -1 : drag.row >= bottom ? 1 : 0 };
+  }
+
+  private scheduleSelectionAutoScroll(): void {
+    const position = this.selectionScrollPosition();
+    const target = this.selectionScroll?.target;
+    let root = target;
+    while (root?.parentNode) root = root.parentNode;
+    if (target && root !== this.rootNode) {
+      this.resetSelectionAutoScroll();
+      return;
+    }
+    const top = target?.scrollTop ?? 0;
+    const max = Math.max(0, (target?.scrollHeight ?? 0) - (target?.scrollViewportHeight ?? 0));
+    if (!position || !target || position.direction === 0 || !this.selectionScroll?.edge ||
+        ((target.pendingScrollDelta ?? 0) === 0 &&
+         (position.direction < 0 ? top <= 0 : top >= max))) {
+      if (this.selectionScrollTimer !== null) clearTimeout(this.selectionScrollTimer);
+      this.selectionScrollTimer = null;
+      return;
+    }
+    // Motion updates the pointer, not the tick deadline: continuous movement
+    // along the edge must scroll just as a stationary pointer does.
+    if (this.selectionScrollTimer !== null) return;
+    this.selectionScrollTimer = setTimeout(() => {
+      this.selectionScrollTimer = null;
+      const next = this.selectionScrollPosition();
+      if (!next) { this.resetSelectionAutoScroll(); return; }
+      if (!this.selectionScroll?.edge || next.direction === 0) return;
+      // Reuse scrollBy: virtualization, sticky state and signed follow-scroll
+      // capture all stay on the same path as wheel input. Wait for outstanding
+      // debt rather than building a backlog after a stalled frame.
+      if ((target.pendingScrollDelta ?? 0) === 0) target.onSelectionScroll?.(next.direction);
+      this.scheduleSelectionAutoScroll();
+    }, 50);
+    this.selectionScrollTimer.unref();
+  }
+
   private notifySelectionChange(): void {
+    if (!this.selection.isDragging) this.resetSelectionAutoScroll();
     this.renderNow();
+    this.scheduleSelectionAutoScroll();
     // #185 self-heal: selection listeners drive React state; an overflow
     // throw resets React's nested counter, so absorb and keep the rest.
     for (const cb of this.selectionListeners) {
@@ -2607,6 +2791,7 @@ export default class Ink {
     // Ensure hasSelection is true so release doesn't re-dispatch onClickAt.
     // selectWordAt no-ops on noSelect; selectLineAt no-ops out-of-bounds.
     if (!this.selection.focus) this.selection.focus = this.selection.anchor;
+    this.beginSelectionAutoScroll(col, row);
     this.notifySelectionChange();
   }
 
@@ -2622,6 +2807,7 @@ export default class Ink {
   handleSelectionStart(col: number, row: number): void {
     if (!this.altScreenActive) return;
     startSelection(this.selection, col, row, this.frontFrame.screen);
+    this.beginSelectionAutoScroll(col, row);
     this.notifySelectionChange();
   }
 
@@ -2633,11 +2819,13 @@ export default class Ink {
    */
   handleSelectionDrag(col: number, row: number): void {
     if (!this.altScreenActive) return;
-    const sel = this.selection;
-    if (sel.anchorSpan) {
-      extendSelection(sel, this.frontFrame.screen, col, row);
-    } else {
-      updateSelection(sel, col, row);
+    const drag = this.selectionScroll;
+    if (drag) { drag.col = col; drag.row = row; }
+    this.updateSelectionDrag(this.frontFrame.screen, col, row);
+    const position = this.selectionScrollPosition();
+    if (drag) drag.edge = position !== null && position.direction !== 0;
+    if (position && drag?.edge) {
+      this.updateSelectionDrag(this.frontFrame.screen, position.col, position.row);
     }
     this.notifySelectionChange();
   }
@@ -2796,6 +2984,7 @@ export default class Ink {
       logError(renderError instanceof Error ? renderError : new Error(String(renderError)));
     }
     this.resetCursorIdle();
+    this.resetSelectionAutoScroll();
     this.unsubscribeExit();
     if (typeof this.restoreConsole === 'function') {
       this.restoreConsole();

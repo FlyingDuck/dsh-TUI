@@ -79,6 +79,8 @@ export type ScrollBoxProps = Except<Styles, 'textWrap' | 'overflow' | 'overflowX
    * grows. Unset manually via scrollTo/scrollBy to break the stickiness.
    */
   stickyScroll?: boolean;
+  /** Keep extending a text selection while its pointer rests at a viewport edge. */
+  selectionAutoScroll?: boolean;
 };
 
 /**
@@ -95,6 +97,7 @@ function ScrollBox({
   children,
   ref,
   stickyScroll,
+  selectionAutoScroll = false,
   ...style
 }: PropsWithChildren<ScrollBoxProps>): React.ReactNode {
   const domRef = useRef<DOMElement>(null);
@@ -359,6 +362,7 @@ function ScrollBox({
     domRef.current = el;
     if (el) {
       el.scrollTop ??= 0;
+      el.onSelectionScroll = delta => handleRef.current?.scrollBy(delta);
       el.onStickyRestore = notify;
       // A viewport-height change since the last layout pass means every
       // geometry-reading subscriber painted the previous bounds (the
@@ -387,7 +391,7 @@ function ScrollBox({
   // stickyScroll is passed as a DOM attribute (via ink-box directly) so it's
   // available on the first render — ref callbacks fire after the initial
   // commit, which is too late for the first frame.
-  return <ink-box ref={attachNode} onWheel={handleWheel} style={{
+  return <ink-box ref={attachNode} onWheel={handleWheel} selectionAutoScroll={selectionAutoScroll} style={{
     flexWrap: 'nowrap',
     flexDirection: style.flexDirection ?? 'row',
     flexGrow: style.flexGrow ?? 0,

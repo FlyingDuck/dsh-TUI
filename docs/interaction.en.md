@@ -630,7 +630,11 @@ In inline mode, the terminal emulator owns native scrollback and selection.
   notch on the timeline, ±1 in hotspot; scrolls the detail while expanded). Walks the
   focused row in /settings.
 - **Drag** — Select text and copy on release, keeping the selection; a "Copied N characters"
-  notice pops up. A new selection replaces the retained one. With
+  notice pops up. A new selection replaces the retained one. In the transcript, holding a
+  drag at its top or bottom edge keeps scrolling and extending the selection across screens;
+  moving back inside or releasing stops it. Release copies the off-screen selected text too;
+  `Esc` cancels without copying. Prompt inputs and side panels do not edge-scroll selections,
+  and overlays never trigger scrolling of the transcript behind them. With
   `dsh-tui.scrollGutter: scrollbar`, the right-edge scrollbar is a drag
   target: an unmodified left drag scrubs the transcript to the track position (same mapping
   as a track click — drag to point), while `Shift`/`Alt`/`Ctrl`+drag still selects text (the

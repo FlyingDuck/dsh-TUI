@@ -373,7 +373,7 @@ Fragmented SGR mouse reports no longer land in the prompt as text: an incomplete
 
 Mouse (fullscreen): drag to select and copy, double/triple click to select a word or line, click tool cards, timeline ticks and `[Image #N]` previews.
 
-Automatic copies keep the text selected; press `Esc` to clear it or start a new selection to replace it. Selection highlighting skips trailing padding and blank rows while preserving spaces within text and code indentation. Inline mode uses the terminal's native selection.
+Automatic copies keep the text selected; press `Esc` to clear it or start a new selection to replace it. In the fullscreen transcript, hold a drag at the top or bottom edge to scroll and extend the selection across screens; move back inside or release to stop. Release copies the full selection, including text scrolled off-screen. Prompt inputs and side panels do not use this edge scrolling, and overlays do not scroll the transcript behind them. Selection highlighting skips trailing padding and blank rows while preserving spaces within text and code indentation. Inline mode uses the terminal's native selection.
 
 During a fullscreen text drag, the native cursor follows the selected text's edge using your terminal's enabled cursor animation or trail effects. Moving into trailing padding or blank rows keeps it at the nearest selected text edge. Releasing or cancelling the drag restores the focused input's caret.
 

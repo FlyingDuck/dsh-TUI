@@ -452,6 +452,7 @@ change, also run the closest focused script:
 | Scrolling/sticky-bottom behavior | `node scripts/verify-scroll.mjs`, `node scripts/verify-resticky.mjs`, `node --import tsx/esm scripts/verify-post-shrink-anchor.tsx`, `node --import tsx/esm scripts/verify-scroll-fold-anchor.tsx`, `node --import tsx/esm scripts/verify-scroll-fold-anchor-mounted.tsx`, `node --import tsx/esm scripts/verify-scroll-anchor-invalidation.tsx`, `node --import tsx/esm scripts/verify-scroll-anchor-remeasurement.tsx` (also with `DSH_TEST_COLUMNS=60`), and the matching `repro-*` harness |
 | Long plan-review body (`exit_plan_mode` windowing + wheel) | `node --import tsx/esm scripts/verify-plan-review-scroll.tsx` |
 | Fullscreen copy-on-select | `node scripts/verify-copy-on-select.mjs` |
+| Transcript edge-selection auto-scroll (cross-screen copy, reverse/continuous drags, viewport changes, stopping and isolation) | `node --import tsx/esm scripts/verify-selection-auto-scroll.tsx` |
 | Component-level mouse drag protocol (target capture, bubbling, click/selection compatibility, interrupted-session cleanup) | `node --import tsx/esm scripts/verify-drag-protocol.tsx` |
 | Mouse pointer event pipeline (wheel coords/modifier bits, click/hover dispatch, out-of-bounds clamping, pointer-state reset) | `node --import tsx/esm scripts/verify-pointer-events.ts` |
 | Hover event performance (complete interest boundaries, no-interest rect fast path, frame/multi-root invalidation) | `node --import tsx/esm scripts/verify-hover-coalesce.tsx` |
