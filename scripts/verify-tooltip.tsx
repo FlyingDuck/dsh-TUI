@@ -20,6 +20,9 @@
  *      drag-copy crossing it yields the tooltip fragment), and any active
  *      text selection forces the whole layer dark until the selection
  *      settles — then hover behavior recovers
+ *  12. page-margin coordinates keep regional cards inside chat/panel bounds,
+ *      while a footer anchor on the exact boundary uses the whole page
+ *  13. undersized regions stay hidden and overflowing regions intersect the page
  *
  * Run: `node --import tsx/esm scripts/verify-tooltip.tsx`
  * Exits 1 on any failed assertion.
@@ -146,6 +149,104 @@ function makeRig(cols: number, rows: number) {
   const stdin = new FakeStdin()
   const stdout = new FakeStdout()
   return { term, stdout, stdin }
+}
+
+type Region = import('../src/components/Tooltip.js').TooltipRegion
+
+type CardBounds = { left: number; top: number; right: number; bottom: number }
+
+/** Read all four rendered corners, not just text length or the requested style. */
+function cardBounds(term: InstanceType<typeof XTerm>): CardBounds | null {
+  const corners = new Map<string, { col: number; row: number }>()
+  for (let row = 0; row < term.rows; row++) {
+    const line = term.buffer.active.getLine(term.buffer.active.baseY + row)
+    for (let col = 0; col < term.cols; col++) {
+      const char = line?.getCell(col)?.getChars() ?? ''
+      if ('╭╮╰╯'.includes(char) && char !== '') corners.set(char, { col, row })
+    }
+  }
+  const tl = corners.get('╭')
+  const tr = corners.get('╮')
+  const bl = corners.get('╰')
+  const br = corners.get('╯')
+  if (!tl || !tr || !bl || !br || tl.row !== tr.row || bl.row !== br.row ||
+      tl.col !== bl.col || tr.col !== br.col) return null
+  return { left: tl.col, top: tl.row, right: tr.col, bottom: bl.row }
+}
+
+function RegionProbe({ regions, anchor, content }: {
+  regions: readonly Region[]
+  anchor: { col: number; row: number }
+  content: string
+}): React.ReactNode {
+  return (
+    <Box flexDirection="column" flexGrow={1} width="100%">
+      <Box position="absolute" left={anchor.col} top={anchor.row} width={1} height={1}>
+        <Target label="A" content={content} delayMs={0} />
+      </Box>
+      <KeySink />
+      <tooltip.TooltipLayer regions={regions} />
+    </Box>
+  )
+}
+
+async function verifyRegion({ name, regions, anchor, content, expected, crossesSeam }: {
+  name: string
+  regions: readonly Region[]
+  anchor: { col: number; row: number }
+  content: string
+  /** Inclusive content coordinates, independently declared by each scenario. */
+  expected?: CardBounds
+  crossesSeam?: number
+}): Promise<void> {
+  // Normal PageMargin contributes x=2/y=1; the physical 64x24 terminal has a
+  // 60x22 content area. These deliberately differ from every region's origin.
+  displayPrefs.applyPageMargin('normal')
+  tooltip.clearTooltip()
+  const rig = makeRig(64, 24)
+  const instance = await render(
+    <AlternateScreen><PageMargin><RegionProbe regions={regions} anchor={anchor} content={content} /></PageMargin></AlternateScreen>,
+    { stdout: rig.stdout, stdin: rig.stdin, stderr: new (class extends Writable {
+      isTTY = true
+      _write(_c: unknown, _e: BufferEncoding, cb: () => void) { cb() }
+    })(), exitOnCtrlC: false, patchConsole: false },
+  )
+  try {
+    const placed = await settled(() => {
+      const point = findText(rig.term, 'A')
+      return point?.col === anchor.col + 2 && point.row === anchor.row + 1
+    })
+    check(name + ': target uses nonzero page inset', placed)
+    if (!placed) return
+    hover(rig.stdin, anchor.col + 3, anchor.row + 2)
+    check(name + ': the real hover writes the expected tooltip',
+      await settled(() => tooltip.getTooltipSnapshot()?.content === content))
+    if (expected === undefined) {
+      // The store has already fired: absence must hold across the renderer's
+      // deferred paint, not merely before it had an opportunity to draw.
+      await sleep(100) // 固定窗:探针 区域不足三行/列时，已触发的tooltip跨渲染帧仍不得画卡片
+      check(name + ': undersized surface paints no card',
+        viewportLines(rig.term).every(line => !/[╭╮╰╯]/u.test(line)))
+      return
+    }
+    const shown = await settled(() => cardBounds(rig.term) !== null)
+    const bounds = cardBounds(rig.term)
+    check(name + ': all four card corners remain visible', shown && bounds !== null,
+      JSON.stringify(bounds))
+    check(name + ': card stays inside the independently expected content region',
+      bounds !== null && bounds.left >= expected.left + 2 && bounds.right <= expected.right + 2 &&
+        bounds.top >= expected.top + 1 && bounds.bottom <= expected.bottom + 1,
+      `actual=${JSON.stringify(bounds)} expected(content)=${JSON.stringify(expected)}`)
+    if (crossesSeam !== undefined) {
+      check(name + ': full-page footer card crosses the former column seam',
+        bounds !== null && bounds.left < crossesSeam + 2 && bounds.right > crossesSeam + 2,
+        JSON.stringify(bounds))
+    }
+  } finally {
+    await instance.unmount()
+    tooltip.clearTooltip()
+    rig.term.dispose()
+  }
 }
 
 /** SGR mode-1003 motion with no buttons → dispatchHover. Coords 1-indexed. */
@@ -415,6 +516,55 @@ try {
     marginShown && bottomRow === anchorRow - 1 && bottomLine.includes('╰'),
     `anchor=${anchorRow} marker=${markerRow} bottom=${bottomRow} line=${JSON.stringify(bottomLine.trim())}`)
   await instance5.unmount()
+
+  // 13. A single root layer serves both upper columns and the shared footer.
+  // Regions are CONTENT coordinates, not the SGR pointer's screen coordinates.
+  const upperRegions: readonly Region[] = [
+    { left: 0, top: 0, columns: 26, rows: 14 },
+    { left: 27, top: 0, columns: 33, rows: 14 },
+  ]
+  await verifyRegion({
+    name: 'regional chat near its bottom/right edge', regions: upperRegions,
+    anchor: { col: 25, row: 13 }, content: 'CHAT-' + 'C'.repeat(170),
+    expected: { left: 0, top: 0, right: 25, bottom: 13 },
+  })
+  await verifyRegion({
+    name: 'regional panel near its left edge', regions: upperRegions,
+    anchor: { col: 27, row: 13 }, content: 'PANEL-' + 'P'.repeat(200),
+    expected: { left: 27, top: 0, right: 59, bottom: 13 },
+  })
+  await verifyRegion({
+    name: 'footer anchor exactly at upperRows', regions: upperRegions,
+    anchor: { col: 26, row: 14 }, content: 'FOOTER-' + 'F'.repeat(300),
+    expected: { left: 0, top: 0, right: 59, bottom: 21 }, crossesSeam: 26,
+  })
+  await verifyRegion({
+    name: 'two-column region',
+    regions: [{ left: 8, top: 2, columns: 2, rows: 10 }],
+    anchor: { col: 8, row: 3 }, content: 'TINY-COLUMNS',
+  })
+  await verifyRegion({
+    name: 'two-row region',
+    regions: [{ left: 6, top: 2, columns: 20, rows: 2 }],
+    anchor: { col: 6, row: 2 }, content: 'TINY-ROWS',
+  })
+  await verifyRegion({
+    name: 'negative-origin region intersects the page',
+    regions: [{ left: -5, top: -4, columns: 14, rows: 13 }],
+    anchor: { col: 1, row: 7 }, content: 'CLIPPED-' + 'N'.repeat(80),
+    expected: { left: 0, top: 0, right: 8, bottom: 8 },
+  })
+  await verifyRegion({
+    name: 'oversized bottom/right region intersects the page',
+    regions: [{ left: 48, top: 13, columns: 50, rows: 40 }],
+    anchor: { col: 59, row: 21 }, content: 'CLIPPED-' + 'R'.repeat(100),
+    expected: { left: 48, top: 13, right: 59, bottom: 21 },
+  })
+  await verifyRegion({
+    name: 'page intersection becomes two columns',
+    regions: [{ left: 58, top: 2, columns: 20, rows: 10 }],
+    anchor: { col: 58, row: 3 }, content: 'CLIPPED-TOO-NARROW',
+  })
 } finally {
   rmSync(dataDir, { recursive: true, force: true })
 }

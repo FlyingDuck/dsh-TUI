@@ -142,8 +142,14 @@ async function mount({ columns = 124, chat = false, fullscreen = true } = {}) {
   })
   const cell = (col: number, row: number) => term.buffer.active.getLine(term.buffer.active.baseY + row)?.getCell(col)
   const frameAt = (chatWidth: number): boolean => {
-    for (let row = 0; row < ROWS - 2; row += 1) {
-      const glyph = row === 1 || row === ROWS - 4 ? '├' : '│'
+    // The real Chat's shared footer is below both panes. Its panel hint
+    // identifies the last seam row without assuming a fixed footer height.
+    const panelHintRow = chat
+      ? viewportLines(term).findIndex(line => line.slice(INSET + chatWidth + 1).includes('Ctrl+B focus panel'))
+      : ROWS - 2
+    if (panelHintRow < 4) return false
+    for (let row = 0; row < panelHintRow; row += 1) {
+      const glyph = row === 1 || row === panelHintRow - 2 ? '├' : '│'
       if (cell(INSET + chatWidth, 1 + row)?.getChars() !== glyph) return false
     }
     // The fixture body is blank: an old divider left behind by the diff

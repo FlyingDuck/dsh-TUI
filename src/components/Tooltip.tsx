@@ -171,6 +171,14 @@ export function TooltipTarget({
   return <Box {...hover}>{children}</Box>
 }
 
+/** Content-area bounds for tooltips anchored on a narrower surface. */
+export type TooltipRegion = {
+  readonly left: number
+  readonly top: number
+  readonly columns: number
+  readonly rows: number
+}
+
 /**
  * The singleton floating layer: subscribes to the tooltip store and renders
  * the rounded card above the anchor row (below it when there is no room),
@@ -181,7 +189,10 @@ export function TooltipTarget({
 export function TooltipLayer({
   invalidationKey,
   subscribeInvalidation,
+  regions,
 }: {
+  /** Narrower surfaces in content coordinates; unmatched anchors use the full page. */
+  regions?: readonly TooltipRegion[]
   /** Changes when a modal/screen geometry transition makes the anchor stale. */
   invalidationKey?: unknown
   /** Scroll/viewport subscription; every notification invalidates the anchor. */
@@ -243,14 +254,25 @@ export function TooltipLayer({
   // A bordered card needs at least one content cell plus two border cells.
   // Below that, hiding is safer than creating geometry wider/taller than the
   // terminal (Yoga would clip unpredictably on 1–2 column/row resize states).
-  if (columns < 3 || rows < 3) return null
-  const maxWidth = Math.max(3, columns - 4)
+  const anchorRow = tooltip.anchorRow - inset.y
+  const anchorCol = tooltip.anchorCol - inset.x
+  const region = regions?.find(bounds =>
+    anchorCol >= bounds.left && anchorCol < bounds.left + bounds.columns &&
+    anchorRow >= bounds.top && anchorRow < bounds.top + bounds.rows)
+  const regionLeft = Math.max(0, region?.left ?? 0)
+  const regionTop = Math.max(0, region?.top ?? 0)
+  const regionColumns = Math.max(0, Math.min(columns,
+    (region?.left ?? 0) + (region?.columns ?? columns)) - regionLeft)
+  const regionRows = Math.max(0, Math.min(rows,
+    (region?.top ?? 0) + (region?.rows ?? rows)) - regionTop)
+  if (regionColumns < 3 || regionRows < 3) return null
+  const maxWidth = Math.max(3, regionColumns - 4)
   // Grapheme-aware wrap consistent with PromptInput's wrapToWidth: code-point
   // iteration splits ZWJ emoji and combining sequences across rows, leaving
   // broken halves at the row edges. Newlines are honoured like wrapWidth.
   let lines = wrapTooltipContent(tooltip.content, maxWidth - 2)
   // A tooltip taller than the terminal is useless; keep the head.
-  const maxLines = Math.max(1, rows - 2)
+  const maxLines = Math.max(1, regionRows - 2)
   if (lines.length > maxLines) lines = lines.slice(0, maxLines)
   const innerWidth = Math.min(maxWidth - 2, Math.max(1, ...lines.map(stringWidth)))
   const width = innerWidth + 2
@@ -264,19 +286,17 @@ export function TooltipLayer({
   // (the earlier bug) moved the whole card by the page margin — with the
   // default margin one row low and two columns right, so its bottom border
   // landed ON the hovered row and that row's glyphs showed beside the card.
-  const anchorRow = tooltip.anchorRow - inset.y
-  const anchorCol = tooltip.anchorCol - inset.x
-  const topAbove = anchorRow - height
-  const top = Math.max(
+  const topAbove = anchorRow - regionTop - height
+  const top = regionTop + Math.max(
     0,
     Math.min(
-      topAbove >= 0 ? topAbove : anchorRow + 1,
-      Math.max(0, rows - height),
+      topAbove >= 0 ? topAbove : anchorRow - regionTop + 1,
+      Math.max(0, regionRows - height),
     ),
   )
-  const left = Math.max(
+  const left = regionLeft + Math.max(
     0,
-    Math.min(anchorCol, Math.max(0, columns - width)),
+    Math.min(anchorCol - regionLeft, Math.max(0, regionColumns - width)),
   )
   return (
     <Box

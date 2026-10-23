@@ -261,7 +261,11 @@ List `↑/↓` + `Enter` to confirm · confirm page `Enter` rewind / `Esc` back 
 
 `Ctrl+B` (remappable under `/settings` → `Shortcuts`) expands a panel column to the right of the
 chat: a capsule tab bar on top, the active panel in the middle, a key-hint row at the bottom, and a
-one-column seam between the two surfaces.
+one-column seam between the two surfaces. The panel (including its hint row) and seam stop at
+the chat input's bottom edge; below them, the context bar, status fields and shared hints span
+the full content width. The input stays in the chat column, including multi-line drafts and
+questionnaire/approval replacements. The upper panes reserve the footer's measured height,
+rather than subtracting a fixed three rows.
 
 - **Three states**: **split** (chat ≈ 68% plus the panel; `+`/`-` resize by 4 columns), **collapsed**
   (the layout is byte-identical to before), **zoom** (the panel takes over and the chat column keeps

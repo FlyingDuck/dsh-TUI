@@ -307,6 +307,8 @@ const GROUPS = {
 // hint 随焦点切换（zh/en）、聊天侧输入框不越缝、zoom 与 93 列最小分栏
 // 不破版、geometry=null 零 diff 直通、resize 终态等价（120→100→120）。
     ["verify-side-panel-layout", ['node', '--import', 'tsx/esm', 'scripts/verify-side-panel-layout.tsx']],
+// 公共底栏通栏：真实 Chat 分栏/缩放、输入与审批问卷等底、动态高度、悬停及草稿保持。
+    ['verify-shared-footer-layout', ['node', '--import', 'tsx/esm', 'scripts/verify-shared-footer-layout.tsx']],
 // Companion（宠物）面板回归——纯函数层：mood 优先级格（attention 三触发各
 // 自点亮、attention 阻止入睡、celebration 到期回落、activity 缺失/done/idle
 // 退 spinnerMode、sleepAfterMs=0 永不睡）+ stepCompanionMood 的 since 保留与

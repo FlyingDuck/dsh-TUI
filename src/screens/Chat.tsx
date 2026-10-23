@@ -1415,6 +1415,8 @@ export function Chat({
   const [effortLevelsFallback, setEffortLevelsFallback] = React.useState(false)
   const [themeName, setTheme] = useTheme()
   const { rows: terminalRows } = useTerminalSize()
+  const [footerRows, setFooterRows] = React.useState(0)
+  const upperRows = Math.max(0, terminalRows - footerRows)
   /**
    * 帮助盖屏（第八版，overlay kind 'help'）的滚动视口：HelpMenu 自带
    * ScrollBox，键盘（↑/↓/PgUp/PgDn/Home/End）由 Chat 的 overlay 分支驱动。
@@ -4497,10 +4499,10 @@ export function Chat({
     [sidePanel.split, sidePanel.activePanelId],
   )
   // 聊天列宽：收起时 = 内容区全宽（与现状逐字节一致），分栏时 = 左栏宽。
-  // 所有显式下传的宽度（gutter / 图片预览区 / wake 条）都改用它；转录
-  // 子树则经 SidePanelLayout 的 TerminalSizeContext 覆盖自动拿到。
+  // 转录区显式下传的宽度（gutter / 图片预览区）使用聊天列宽；公共
+  // 底栏位于分栏之外，wake 条仍按整页内容宽度计算。
   const chatColumns = sidePanel.chatColumns
-  const wakeWidth = miniWakeWidth(chatColumns)
+  const wakeWidth = miniWakeWidth(terminalColumns)
   const panelPickerRows = usePanelPickerRows(sidePanel)
   const wakeBand = React.useMemo(
         () =>
@@ -6778,7 +6780,7 @@ export function Chat({
       />
     )
     // 落地页这一屏的完整树（AC-4）：Tooltip 单例层挂在**最外层最后**——与下面
-    // 聊天主树末尾那处（SidePanelLayout 里）是同一个组件、同一条"单例层挂树尾"
+    // 聊天主树末尾那处（公共底栏之后）是同一个组件、同一条"单例层挂树尾"
     // 姿态；参数行被截断的段（ParamChip 写的锚点）hover 600ms 后由它画完整名。
     // 本屏没有滚动、也没有面板几何过渡 ⇒ 不需要 subscribeInvalidation；但**必须**给
     // invalidationKey：选择器是**盖在落地页之上**的浮层，落地页不卸载、指针也不一定
@@ -6856,6 +6858,7 @@ export function Chat({
       <SidePanelLayout
         geometry={sidePanel.geometry}
         focus={sidePanel.focus}
+        availableRows={upperRows}
         onActivateChat={sidePanel.focusChat}
         onActivatePanel={sidePanel.focusPanel}
         onResize={sidePanel.resize}
@@ -7005,7 +7008,7 @@ export function Chat({
         })()}
         {!promptEditorOpen && imagePreviewNode}
       </Box>
-      {/* Bottom chrome (pill, spinners, dialogs, prompt, statusline): never
+      {/* Chat-column chrome (pill, spinners, dialogs, prompt): never
           let flex shrink squeeze these fixed-height rows — the ScrollBox
           above absorbs all overflow (it is the scroll container). */}
       <Box flexDirection="column" flexShrink={0}>
@@ -7123,7 +7126,7 @@ export function Chat({
             </Box>
           </PluginStatusViewBoundary>
         ))}
-        {/* 输入簇：可替换输入行链 + 状态行 + 瞬态浮层。浮层锚点收窄到本簇
+        {/* 输入簇：可替换输入行链 + 瞬态浮层。浮层锚点收窄到本簇
             顶边（= 输入行顶边），picker 紧贴输入框向上展开，盖住其上
             todo/spinner/转录尾部行（用户接受的取舍），自身零布局高度、
             不推动帧布局。 */}
@@ -7235,33 +7238,6 @@ export function Chat({
           caretPreviewOpen={peekPreview !== null}
           onDismissCaretPreview={dismissPeek}
         />
-        <StatusLine
-          channel={channel}
-          activity={workingActivity}
-          selectionActive={selectionActive}
-          helpOpen={helpOpen}
-          // Backend-native permission modes: the footer mode segment always
-          // shows (the base mode included) and clicks into the same
-          // /permission picker the command opens (the launchpad param row's
-          // route). DSH answers an empty list here — no prop, byte-identical
-          // rendering.
-          backendMode={backendModeStatus}
-          // 模型段/思考档位段：能力位在才可点，点击走既有 /model · /effort
-          // 命令（与模式段打开 /permission 完全同构）。
-          modelPicker={modelPickerStatus}
-          effortPicker={effortPickerStatus}
-          wake={
-            wakeBand === undefined
-              ? undefined
-              : {
-                  band: wakeBand,
-                  hint: trajectorySeen ? undefined : primaryComboString('trajectory'),
-                  tick: Math.floor(wakeTime / 120),
-                  onOpen: openScene,
-                  hoverHint: primaryComboString('trajectory'),
-                }
-          }
-        />
         {/* 瞬态面板浮层：absolute + bottom:'100%' 钉在输入簇 Box 顶边（=
             输入行顶边），紧贴输入框向上覆盖其上 todo/spinner/转录尾部行，
             自身零布局高度。in-flow 挂载会让帧高随面板开关涨落，把帧顶行滚进
@@ -7276,17 +7252,42 @@ export function Chat({
         )}
         </Box>
       </Box>
-      {/* Tooltip 悬停浮层：absolute 零布局高度，挂在聊天栏内最后（v2.1
-          surface 边界）——它读到的是聊天列宽，clamp 后永远不会越过中缝
-          压进右栏；yoga 的 absolute 相对父级，聊天栏原点即内容区原点，
-          指针 anchor 的屏幕坐标换算（anchorCol - inset.x）保持正确。
-          订阅模块级 store，锚点/内容由各处 useTooltip hover props 写入；
-          resize 时自行隐藏（几何失效）。 */}
+      </SidePanelLayout>
+      {/* 公共底栏横跨聊天与侧栏；点击仍像原聊天列一样交回聊天焦点。 */}
+      <Box flexDirection="column" flexShrink={0} onClick={sidePanel.split ? sidePanel.focusChat : undefined}>
+        <StatusLine
+          channel={channel}
+          onHeightChange={setFooterRows}
+          activity={workingActivity}
+          selectionActive={selectionActive}
+          helpOpen={helpOpen}
+          // Backend-native modes and model/effort fields keep their existing
+          // picker routes; only the footer's containing surface changes.
+          backendMode={backendModeStatus}
+          modelPicker={modelPickerStatus}
+          effortPicker={effortPickerStatus}
+          wake={
+            wakeBand === undefined
+              ? undefined
+              : {
+                  band: wakeBand,
+                  hint: trajectorySeen ? undefined : primaryComboString('trajectory'),
+                  tick: Math.floor(wakeTime / 120),
+                  onOpen: openScene,
+                  hoverHint: primaryComboString('trajectory'),
+                }
+          }
+        />
+      </Box>
+      {/* 单例 tooltip 层：上部按列约束，公共底栏的悬停提示使用整页宽度。 */}
       <TooltipLayer
-        invalidationKey={`${overlay.kind}:${dialogOverlayOpen}:${btwOverlayOpen}`}
+        regions={sidePanel.geometry === null ? undefined : [
+          { left: 0, top: 0, columns: chatColumns, rows: upperRows },
+          { left: chatColumns + 1, top: 0, columns: sidePanel.panelColumns, rows: upperRows },
+        ]}
+        invalidationKey={`${overlay.kind}:${dialogOverlayOpen}:${btwOverlayOpen}:${sidePanel.split}:${chatColumns}:${footerRows}`}
         subscribeInvalidation={subscribeTooltipInvalidation}
       />
-      </SidePanelLayout>
       {/* 全屏草稿编辑浮层：必须挂在 TooltipLayer 之后，才能盖住包括
           状态栏在内的全部普通后绘兄弟。内容由 PromptInput 经 module
           store 发布（见 PromptEditor.tsx）。图片预览是唯一有意后绘于它

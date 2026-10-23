@@ -50,6 +50,8 @@ import type { SidePanelSplit } from './dimensions.js'
 export interface SidePanelLayoutProps {
   readonly geometry: SidePanelSplit | null
   readonly focus: SidePanelFocus
+  /** Rows left above a shared footer; omitted when this row owns the full page. */
+  readonly availableRows?: number
   /** Right-column content (PanelBar + PanelHost + hint). */
   readonly side: React.ReactNode
   readonly onActivateChat?: () => void
@@ -129,6 +131,7 @@ function DividerColumn({
 export function SidePanelLayout({
   geometry,
   focus,
+  availableRows,
   side,
   onActivateChat,
   onActivatePanel,
@@ -137,9 +140,9 @@ export function SidePanelLayout({
 }: SidePanelLayoutProps): React.ReactNode {
   const outerEdges = useSurfaceEdges()
   const parentSize = useTerminalSize()
-  const rows = parentSize.rows
-  const screenRows = parentSize.screenRows ?? parentSize.rows
   const split = geometry !== null
+  const rows = split ? Math.max(0, Math.min(parentSize.rows, availableRows ?? parentSize.rows)) : parentSize.rows
+  const screenRows = parentSize.screenRows ?? parentSize.rows
   const panelColumns = geometry?.panel ?? 0
   const chatEdges = React.useMemo(
     () => ({ left: outerEdges.left, right: 0 }),

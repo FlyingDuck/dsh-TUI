@@ -451,6 +451,7 @@ change, also run the closest focused script:
 | Default-reasoning-effort and similar preference chains (effortPrefs / settings defaults) | `node --import tsx/esm scripts/verify-effort-default.ts` |
 | Scrolling/sticky-bottom behavior | `node scripts/verify-scroll.mjs`, `node scripts/verify-resticky.mjs`, `node --import tsx/esm scripts/verify-post-shrink-anchor.tsx`, `node --import tsx/esm scripts/verify-scroll-fold-anchor.tsx`, `node --import tsx/esm scripts/verify-scroll-fold-anchor-mounted.tsx`, `node --import tsx/esm scripts/verify-scroll-anchor-invalidation.tsx`, `node --import tsx/esm scripts/verify-scroll-anchor-remeasurement.tsx` (also with `DSH_TEST_COLUMNS=60`), and the matching `repro-*` harness |
 | Long plan-review body (`exit_plan_mode` windowing + wheel) | `node --import tsx/esm scripts/verify-plan-review-scroll.tsx` |
+| Shared footer below split panes (full width, prompt/question/approval alignment, dynamic height, hover and draft lifetime) | `node --import tsx/esm scripts/verify-shared-footer-layout.tsx` |
 | Fullscreen copy-on-select | `node scripts/verify-copy-on-select.mjs` |
 | Transcript edge-selection auto-scroll (cross-screen copy, reverse/continuous drags, viewport changes, stopping and isolation) | `node --import tsx/esm scripts/verify-selection-auto-scroll.tsx` |
 | Component-level mouse drag protocol (target capture, bubbling, click/selection compatibility, interrupted-session cleanup) | `node --import tsx/esm scripts/verify-drag-protocol.tsx` |
