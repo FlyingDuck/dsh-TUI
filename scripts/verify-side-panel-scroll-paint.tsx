@@ -18,8 +18,8 @@
  * reverse direction (chat scroll damaging the divider/panel) is covered too.
  *
  * Invariants after EVERY scroll input (arrow keys and SGR wheel):
- *  1. divider column: rows 0..ROWS-1 each still exactly one of │/├,
- *     junctions only at rows 1 and ROWS-2, column index fixed = chat width;
+ *  1. divider column: row 1 is '├', the final row is '└', and every
+ *     other row stays '│', with the column index fixed = chat width;
  *  2. the column that did NOT scroll is byte-identical to its snapshot
  *     (chat region frozen while the panel scrolls; panel region frozen while
  *     chat scrolls — both regions are time-invariant in this fixture);
@@ -197,7 +197,7 @@ function dividerReport(): string {
   const bad: string[] = []
   const lines = rawLines()
   for (let y = 0; y < ROWS; y += 1) {
-    const want = y === 1 || y === ROWS - 2 ? '├' : '│'
+    const want = y === 1 ? '├' : y === ROWS - 1 ? '└' : '│'
     const got = lines[y]![col] ?? ' '
     if (got !== want) bad.push(y + ':' + JSON.stringify(got) + '!=' + want)
   }

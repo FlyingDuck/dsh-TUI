@@ -5,8 +5,8 @@
  * via the controller) with fake chat content in a headless XTerm
  * (AlternateScreen — fixed-height boxes are only trustworthy there, see
  * verify-divider-width's lesson) and locks the visual contract:
- *  - divider column sits exactly at the chat width; rows 1 and rows-2
- *    draw '├' (teeing into the panel rules), every other row '│';
+ *  - divider column sits exactly at the chat width; row 1 draws '├',
+ *    the final row closes with '└', and all intermediate rows draw '│';
  *  - PanelBar keeps its title centered, spaces panel icons and arrows on one row;
  *  - the chat-side bordered input never crosses the divider;
  *  93-column split keeps the bar and hint on one row;
@@ -167,25 +167,26 @@ function cells(line: string): string[] { return [...line] }
 function assertSplitFrame(name: string, frame: Frame, geo: { chat: number; panel: number }, hintNeedle: string, hintAnti: string) {
   const lines = frame.lines()
   const chatCol = geo.chat
-  // Divider column: tee at rule rows, seam elsewhere.
+  // Divider column: top-rule tee, middle seam, and a closing bottom corner.
   for (let y = 0; y < ROWS; y += 1) {
-    const expected = (y === 1 || y === ROWS - 2) ? '├' : '│'
+    const expected = y === 1 ? '├' : y === ROWS - 1 ? '└' : '│'
     const got = cells(lines[y])[chatCol]
     check(name + ': divider row ' + y + ' is ' + expected, got === expected, 'got ' + JSON.stringify(got) + ' line=' + JSON.stringify(lines[y]))
   }
   check(name + ': row 0 carries the active title', lines[0].includes('待办'), JSON.stringify(lines[0]))
   check(name + ': row 0 shows the inactive panel icons', lines[0].includes('▸') && lines[0].includes('◆'), JSON.stringify(lines[0]))
-  // Rules frame the host: row 1 and rows-2 are horizontal rules on the panel side.
+  // The final rule follows the hint, closing the entire column on its last row.
   const ruleAfter = cells(lines[1]).slice(chatCol + 1).join('').trim()
   check(name + ': row 1 rule right of the divider', ruleAfter.length > 0 && ruleAfter.startsWith('─'), ruleAfter.slice(0, 8))
-  const ruleBefore = cells(lines[ROWS - 2]).slice(chatCol + 1).join('').trim()
-  check(name + ': rows-2 rule right of the divider', ruleBefore.length > 0 && ruleBefore.startsWith('─'), ruleBefore.slice(0, 8))
-  // Hint on the last row, swapping with focus.
-  check(name + ': hint row carries ' + JSON.stringify(hintNeedle), lines[ROWS - 1].includes(hintNeedle), JSON.stringify(lines[ROWS - 1]))
-  check(name + ': hint row does not carry the other focus copy', !lines[ROWS - 1].includes(hintAnti), JSON.stringify(lines[ROWS - 1]))
+  const closingRule = cells(lines[ROWS - 1]).slice(chatCol + 1).join('').trim()
+  check(name + ': final row is a continuous closing rule', closingRule.length > 0 && /^─+$/.test(closingRule), closingRule.slice(0, 8))
+  // Hint is immediately above the final rule, swapping with focus.
+  check(name + ': hint row carries ' + JSON.stringify(hintNeedle), lines[ROWS - 2].includes(hintNeedle), JSON.stringify(lines[ROWS - 2]))
+  check(name + ': hint row does not carry the other focus copy', !lines[ROWS - 2].includes(hintAnti), JSON.stringify(lines[ROWS - 2]))
+  check(name + ': closing rule carries no hint', !lines[ROWS - 1].includes(hintNeedle) && !lines[ROWS - 1].includes(hintAnti), JSON.stringify(lines[ROWS - 1]))
   // Chat-side bordered input never crosses the divider.
   const topBorder = lines.find(l => l.includes('┌'))
-  const bottomBorder = lines.find(l => l.includes('└'))
+  const bottomBorder = lines.find(l => cells(l).slice(0, chatCol).includes('└'))
   const inputRow = lines.find(l => l.includes('input ›'))
   check(name + ': bordered input rendered', topBorder !== undefined && inputRow !== undefined && bottomBorder !== undefined)
   if (topBorder !== undefined && inputRow !== undefined) {
@@ -228,12 +229,12 @@ function assertSplitFrame(name: string, frame: Frame, geo: { chat: number; panel
   const lines = frame.lines()
   assertSplitFrame('93/focus=panel', frame, geo, 'Esc 聊天', 'Ctrl+B 聚焦侧栏')
   check('93: carousel arrows and title occupy row 0 without overflow', lines[0]?.includes('◀') && lines[0]?.includes('▶') && !/\+\d+/.test(lines[0]!), JSON.stringify(lines[0]))
-  // Hint is exactly one row: rows-2 is the rule, and no hint text above it.
-  check('93: hint is exactly one row (rows-2 is the rule)', !lines[ROWS - 2].includes('Esc') && lines[ROWS - 1].includes('Esc'), JSON.stringify(lines[ROWS - 2]))
+  // Hint is exactly one row, immediately above the closing rule.
+  check('93: hint is exactly one row above the final rule', lines[ROWS - 2].includes('Esc') && !lines[ROWS - 1].includes('Esc'), JSON.stringify(lines.slice(ROWS - 2)))
   await frame.app.unmount()
   // Unfocused hint at the minimum width: full copy fits.
   const frame2 = await mountSplit(93, false)
-  check('93: unfocused hint copy fits one row', frame2.lines()[ROWS - 1].includes('Ctrl+B 聚焦侧栏'), JSON.stringify(frame2.lines()[ROWS - 1]))
+  check('93: unfocused hint copy fits one row', frame2.lines()[ROWS - 2].includes('Ctrl+B 聚焦侧栏'), JSON.stringify(frame2.lines()[ROWS - 2]))
   await frame2.app.unmount()
 }
 
@@ -310,10 +311,10 @@ function assertSplitFrame(name: string, frame: Frame, geo: { chat: number; panel
 {
   setLang('en')
   const frame = await mountSplit(120, true)
-  check('en: focused hint says Esc chat', frame.lines()[ROWS - 1].includes('Esc chat'), JSON.stringify(frame.lines()[ROWS - 1]))
+  check('en: focused hint says Esc chat', frame.lines()[ROWS - 2].includes('Esc chat'), JSON.stringify(frame.lines()[ROWS - 2]))
   await frame.app.unmount()
   const frame2 = await mountSplit(120, false)
-  check('en: unfocused hint says Ctrl+B focus panel', frame2.lines()[ROWS - 1].includes('Ctrl+B focus panel'), JSON.stringify(frame2.lines()[ROWS - 1]))
+  check('en: unfocused hint says Ctrl+B focus panel', frame2.lines()[ROWS - 2].includes('Ctrl+B focus panel'), JSON.stringify(frame2.lines()[ROWS - 2]))
   await frame2.app.unmount()
   setLang('zh')
 }

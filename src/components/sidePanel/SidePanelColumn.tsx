@@ -1,6 +1,7 @@
 /**
  * SidePanelColumn: PanelBar, the active panel surface and a one-row key hint.
- * The hint follows focus, and the rules brighten with the divider as one surface.
+ * The hint follows focus and sits above the bottom rule; the rules brighten
+ * with the divider as one surface.
  * Tabs follow the enabled registration order and carry each panel's icon and badge.
  */
 import React from 'react'
@@ -137,12 +138,13 @@ export function SidePanelColumn({ width, controller, channel, activity, attentio
           )
           : <EmptyNone />}
       </Box>
-      <Rule focused={focused} />
       <Box height={1} flexShrink={0} paddingX={1} overflow="hidden">
         <Text dimColor wrap="truncate-end">
           {focused ? focusedHint : t('panel-hint-unfocused')}
         </Text>
       </Box>
+      {/* Close at the input's bottom edge; keep the hint inside this rule. */}
+      <Rule focused={focused} />
     </Box>
   )
 }

@@ -2,7 +2,8 @@
  * Shared Chat footer regression through the real Chat + PageMargin + Ink tree.
  * The split/zoom row stops at the prompt replacement's bottom; StatusLine owns
  * the entire content width below it. Checks painted terminal cells as well as
- * rendered DOM geometry, dynamic chrome heights and the composer lifetime.
+ * rendered DOM geometry, the final └/horizontal-rule pixels and hint row,
+ * dynamic chrome heights and the composer lifetime.
  *
  * Run: node --import tsx/esm scripts/verify-shared-footer-layout.tsx
  */
@@ -149,6 +150,8 @@ async function mount({ columns = 144, fullscreen = true } = {}) {
     const row = lines().findIndex((line, row) => row >= firstRow && line.includes(text))
     return row < 0 ? undefined : { row, col: lines()[row]!.indexOf(text) }
   }
+  const cell = (col: number, row: number): string =>
+    term.buffer.active.getLine(term.buffer.active.baseY + row)?.getCell(col)?.getChars() ?? ''
   const snapshot = (): string => lines().map((line, row) => `${row}: ${line}`).join('\n')
   const layout = () => ({
     footer: rect('StatusLine'), side: rect('SidePanelColumn'), divider: rect('DividerColumn'), prompt: rect('PromptInput'),
@@ -172,9 +175,16 @@ async function mount({ columns = 144, fullscreen = true } = {}) {
       const hints = lines().map((line, row) => ({ line, row })).filter(({ line }) => line.includes('Ctrl+B') || line.includes('Esc chat'))
       check(label + ': side hint is above the footer', hints.some(({ row }) => row < footer.y), snapshot())
       check(label + ': side hint never appears inside the footer', hints.every(({ row }) => row < footer.y), snapshot())
+      const closingRow = footer.y - 1
+      const hintRow = footer.y - 2
+      check(label + ': closing seam is └ immediately above the footer', cell(geometry.divider.x, closingRow) === '└', snapshot())
+      const closingRule = Array.from({ length: geometry.side.width }, (_, col) => cell(geometry.side.x + col, closingRow)).join('')
+      check(label + ': sidebar final row is a continuous horizontal rule', closingRule.length === geometry.side.width && /^─+$/.test(closingRule), JSON.stringify(closingRule))
+      check(label + ': sidebar closing rule contains no hint', !hints.some(({ row }) => row === closingRow), snapshot())
+      check(label + ': side hint is exactly one row above the closing rule', hints.some(({ row }) => row === hintRow), snapshot())
       for (let row = footer.y; row < footer.y + footer.height; row += 1) {
-        const char = term.buffer.active.getLine(term.buffer.active.baseY + row)?.getCell(geometry.divider.x)?.getChars()
-        check(label + `: no divider glyph on footer row ${row}`, char !== '│' && char !== '├', snapshot())
+        const char = cell(geometry.divider.x, row)
+        check(label + `: no divider glyph on footer row ${row}`, char !== '│' && char !== '├' && char !== '└', snapshot())
       }
       const input = geometry.replacement ?? geometry.prompt
       check(label + ': prompt or replacement bottom meets the sidebar bottom', input !== undefined && input.height > 0 && input.y + input.height === footer.y, JSON.stringify(geometry))

@@ -63,9 +63,9 @@ export interface SidePanelLayoutProps {
 
 /**
  * The 1-column seam. Rendered as an explicit glyph block (not a border) so
- * it can tee into the panel column's horizontal rules: rows that line up
- * with a rule draw '├', everything else '│' — the seam and the rules read
- * as one framed surface instead of two crossing lines.
+ * it can tee into the panel column's top rule and close at its bottom rule:
+ * row 1 draws '├', the last row '└', and intervening rows '│'. The lower
+ * rule aligns with the input's bottom edge above the shared footer.
  */
 function DividerColumn({
   focused,
@@ -98,8 +98,9 @@ function DividerColumn({
   }
   const junctions = new Set(junctionRows)
   const glyphs: string[] = []
-  for (let y = 0; y < Math.max(1, rows); y += 1) {
-    glyphs.push(junctions.has(y) ? '├' : '│')
+  const lastRow = Math.max(1, rows) - 1
+  for (let y = 0; y <= lastRow; y += 1) {
+    glyphs.push(y === lastRow ? '└' : junctions.has(y) ? '├' : '│')
   }
   return (
     <Box
@@ -181,13 +182,13 @@ export function SidePanelLayout({
       </SurfaceEdgesContext.Provider>
       {split && (
         <>
-          {/* Junction contract: SidePanelColumn keeps its PanelBar on row 0,
-              a rule on row 1, and the hint + its rule as the last two rows, so
-              the seam tees at exactly 1 and rows-2. */}
+          {/* SidePanelColumn keeps its upper rule on row 1 and ends with
+              hint + lower rule. The seam tees at the top and closes on the
+              final row, level with the input's bottom border. */}
           <DividerColumn
             focused={focus === 'panel'}
             rows={rows}
-            junctionRows={[1, Math.max(1, rows - 2)]}
+            junctionRows={[1]}
             chatColumns={geometry.chat}
             onResize={onResize}
           />
