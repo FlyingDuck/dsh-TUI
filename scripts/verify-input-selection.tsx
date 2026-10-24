@@ -9,7 +9,8 @@
  *     拖选→松手即复制→打字替换、反向拖选、Backspace/Delete 删选区、Shift+click 扩展
  *     + 控制器复制（OSC 52 断言）、Esc 仅清选区→再 Esc 清输入、双击选词
  *     （500ms/1 格自检测）、方向键坍缩、CJK 宽字符、英文整词换行与换行词上的
- *     caret/点击、fold block 选区钳制与无选区 consumeSelectionCopy=false。
+ *     caret/点击、fold block 选区钳制、无选区 consumeSelectionCopy=false，以及
+ *     空首行（含 fold tail）的上下移动与逻辑首行/软换行的历史键边界。
  *   阶段 B（真实 Chat）：拖选松手即复制、Ctrl+C 经 Chat→控制器复制选区且保留选区、
  *     再打字替换；无选区 Ctrl+C 保持既有清空语义。
  *   阶段 C/D（无原生光标时的主题回退）：C = `cursor` 有值（实心主题色块、选区仍
@@ -655,6 +656,88 @@ function makePromptChannel(): Record<string, unknown> {
         oscPayloads().at(-1) === word,
       oscPayloads().at(-1) ?? 'no osc52',
     )
+
+    // A13: a newline at offset 0 must be reachable from the second line.
+    // Seed real history first so a misplaced history branch cannot look like
+    // a successful caret move. Read the physical cursor, not just draft text.
+    controllerBox.current?.clear()
+    await settle(() => controllerBox.current?.text() === '')
+    const historyText = 'history-before-empty-line'
+    stdin.write(historyText)
+    await settle(() => controllerBox.current?.text() === historyText)
+    stdin.write('\r')
+    await settle(() => controllerBox.current?.text() === '')
+    stdin.write('\n') // Ctrl+J: insert the empty first line through real input.
+    await settle(() => controllerBox.current?.text() === '\n')
+    stdin.write('abcd')
+    await settle(() => screenHas('abcd'))
+    const secondLine = findText('abcd')!
+    stdin.write('\x1b[H')
+    check('A13 Home 将 caret 放在第二行 a',
+      await settled(() => caretAt(secondLine.col, secondLine.row)))
+    stdin.write('\x1b[A')
+    check('A13 ↑ 从第二行 a 移至空首行，不召回历史',
+      await settled(() => controllerBox.current?.text() === '\nabcd' &&
+        caretAt(secondLine.col, secondLine.row - 1)))
+    stdin.write('\x1b[B')
+    check('A13 ↓ 从空首行返回第二行 a',
+      await settled(() => controllerBox.current?.text() === '\nabcd' &&
+        caretAt(secondLine.col, secondLine.row)))
+
+    // Left reaches the first line independently of Up, so this boundary check
+    // still exercises history even when the preceding regression is broken.
+    stdin.write('\x1b[D')
+    await settle(() => caretAt(secondLine.col, secondLine.row - 1))
+    stdin.write('\x1b[A')
+    check('A13 逻辑首行 ↑ 仍召回历史',
+      await settled(() => controllerBox.current?.text() === historyText))
+    stdin.write('\x1b[B')
+    check('A13 历史末尾 ↓ 恢复带空首行的完整草稿',
+      await settled(() => controllerBox.current?.text() === '\nabcd' &&
+        caretAt(secondLine.col + 4, secondLine.row)))
+
+    // A14: the independently navigable tail after an atomic paste fold has
+    // the same offset-0 newline edge, relative to block.end rather than value.
+    controllerBox.current?.clear()
+    await settle(() => controllerBox.current?.text() === '')
+    const foldedText = foldLines.join('\n')
+    stdin.write(`\x1b[200~${foldedText}\x1b[201~`)
+    await settle(() => screenHas('▸ 12 lines'))
+    stdin.write('\n')
+    await settle(() => controllerBox.current?.text() === `${foldedText}\n`)
+    stdin.write('abcd')
+    await settle(() => screenHas('abcd'))
+    const tailLine = findText('abcd')!
+    stdin.write('\x1b[H')
+    await settle(() => caretAt(tailLine.col, tailLine.row))
+    stdin.write('\x1b[A')
+    check('A14 fold tail ↑ 可进入尾部空首行，chip 保持折叠',
+      await settled(() => screenHas('▸ 12 lines') &&
+        controllerBox.current?.text() === `${foldedText}\nabcd` &&
+        caretAt(tailLine.col, tailLine.row - 1)))
+    stdin.write('\x1b[B')
+    check('A14 fold tail ↓ 返回 a，全文不变',
+      await settled(() => screenHas('▸ 12 lines') &&
+        controllerBox.current?.text() === `${foldedText}\nabcd` &&
+        caretAt(tailLine.col, tailLine.row)))
+
+    // A15: soft wrapping is presentation, not a logical newline. Keep the
+    // existing history boundary even with the caret on a later visual row.
+    controllerBox.current?.clear()
+    await settle(() => controllerBox.current?.text() === '')
+    const wrappedDraft = `${'x'.repeat(70)} ${word}`
+    stdin.write(wrappedDraft)
+    await settle(() => findText(word) !== null)
+    stdin.write('\x1b[A')
+    check('A15 首逻辑行软换行后 ↑ 仍走历史',
+      await settled(() => controllerBox.current?.text() === historyText))
+    stdin.write('\x1b[B')
+    check('A15 历史 ↓ 恢复长行和换行词尾 caret',
+      await settled(() => {
+        const pos = findText(word)
+        return controllerBox.current?.text() === wrappedDraft && pos !== null &&
+          caretAt(pos.col + word.length, pos.row)
+      }))
   } finally {
     app.unmount()
   }

@@ -2846,7 +2846,7 @@ export function PromptInput({
         if (line > 0) {
           const upToLineStart = tail.lastIndexOf('\n', tailCursor - 1)
           const prevLineStart =
-            upToLineStart === -1 ? 0 : tail.lastIndexOf('\n', upToLineStart - 1) + 1
+            upToLineStart <= 0 ? 0 : tail.lastIndexOf('\n', upToLineStart - 1) + 1
           const prevLine = tail.slice(prevLineStart, upToLineStart)
           setInput(
             value,
@@ -2861,8 +2861,10 @@ export function PromptInput({
       if (line > 0) {
         // Move to the previous line, clamping to its length.
         const upToLineStart = value.lastIndexOf('\n', cursor - 1)
+        // lastIndexOf clamps a negative position to 0, where a leading
+        // newline must not be mistaken for the previous line's start.
         const prevLineStart =
-          upToLineStart === -1 ? 0 : value.lastIndexOf('\n', upToLineStart - 1) + 1
+          upToLineStart <= 0 ? 0 : value.lastIndexOf('\n', upToLineStart - 1) + 1
         const prevLine = value.slice(prevLineStart, upToLineStart)
         setInput(value, prevLineStart + Math.min(cursorColumn(value, cursor), prevLine.length))
         return
