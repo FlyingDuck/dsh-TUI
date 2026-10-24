@@ -104,8 +104,7 @@ import instances from '../ink/instances.js'
 import { cursorMove, DISABLE_KITTY_KEYBOARD, DISABLE_MODIFY_OTHER_KEYS, DISABLE_WIN32_INPUT_MODE } from '../ink/termio/csi.js'
 import { DBP, DFE, DISABLE_MOUSE_TRACKING, EXIT_ALT_SCREEN, SHOW_CURSOR } from '../ink/termio/dec.js'
 import { CLEAR_ITERM2_PROGRESS, CLEAR_TAB_STATUS, supportsTabStatus, wrapForMultiplexer } from '../ink/termio/osc.js'
-import { addProcessErrorAbsorber, fatalReasonForExit, registerProcessGuardFatalSink } from '../ink/update-overflow-guard.js'
-import { CHANNEL_UI_LIFETIME_ENDED } from '../adapter/channel/ui.js'
+import { fatalReasonForExit, registerProcessGuardFatalSink } from '../ink/update-overflow-guard.js'
 import { markBoot } from '../utils/bootTrace.js'
 import type { EntrySlot } from './entry-slot.js'
 import { TERMINATION_SIGNALS, dieBySignal, type ExitRequest, type ExitRequestAnswer, type ProcessExitSeam, type TerminationSignal } from './process-exit.js'
@@ -3382,13 +3381,6 @@ function runRestart(ctx: Context, profile: string | undefined, sessionId: string
   disposeRootAndThen(ctx, () => {
     logRestartEvent('runRestart: root disposed, starting restartTui')
     const supervision = superviseReplacement(exitSeam, options)
-    // The React tree stays mounted while supervising, so a late UI read of the
-    // ended channel is logged instead of crashing the supervisor.
-    addProcessErrorAbsorber(error => {
-      if (!(error instanceof Error) || error.message !== CHANNEL_UI_LIFETIME_ENDED) return false
-      logRestartEvent('supervisor: late UI read after dispose ignored', { at: error.stack?.split('\n').slice(1, 4).map(line => line.trim()).join(' | ') })
-      return true
-    })
     void restartTui(sessionId, supervision).then(
       restartCode => {
         logRestartEvent('runRestart: restartTui resolved', { restartCode })
