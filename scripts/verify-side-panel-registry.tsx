@@ -2,16 +2,16 @@
  * Side-panel registry smoke: the builtin registrations and the ⤢ capability
  * bit, driven through the REAL PanelHost (not the panel components in
  * isolation) — the panel family's own probes mount one component each, so
- * nothing else catches a missing registration, a wrong icon (the bar's width
- * budget assumes one cell per icon) or a capability bit that never reaches
- * the bar.
+ * nothing else catches a missing registration, text order/badge propagation,
+ * or a capability bit that never reaches the bar. Icons remain registration
+ * compatibility metadata, not rendered tab labels.
  *
  * Locked behavior:
  *  r. every builtin panel is registered with a single-cell icon, and the
  *     fullscreen capability is set exactly where a fullscreen form exists;
  *  c. mounting the column with 'todo,info,trajectory' renders those three
- *     tabs, clicking the ⓘ tab swaps the column to the info readout,
- *     clicking ∿ swaps it to the trajectory panel (empty state without a
+ *     text tabs, clicking Info swaps the column to the info readout,
+ *     clicking Trajectory swaps it to the trajectory panel (empty state without a
  *     build), and ⤢ shows up only while a fullscreen-capable panel is active.
  *
  * Run: node --import tsx/esm scripts/verify-side-panel-registry.tsx
@@ -63,8 +63,7 @@ const EXPECTED: readonly { id: string; icon: string; fullscreen: boolean }[] = [
   { id: 'workspace', icon: '⌗', fullscreen: true },
   { id: 'companion', icon: '♥', fullscreen: false },
 ]
-// Importing the column module runs registerBuiltinPanels(); give it a tick.
-await new Promise(resolve => setTimeout(resolve, 0))
+// Importing the column module synchronously registers the builtins.
 const registry = panelStore.list()
 const defaultIds = prefs.DEFAULT_SIDE_PANEL_IDS.split(',')
 check('r defaults: every built-in panel is selected once',
@@ -75,7 +74,7 @@ for (const expected of EXPECTED) {
   check('r registry: ' + expected.id + ' is registered', entry !== undefined)
   if (entry === undefined) continue
   const icon = entry.definition.icon ?? ''
-  check('r registry: ' + expected.id + ' has a single-cell icon', stringWidth(icon) === 1 && icon === expected.icon, icon)
+  check('r registry: ' + expected.id + ' retains its compatibility icon', stringWidth(icon) === 1 && icon === expected.icon, icon)
   const fullscreen = entry.definition.capabilities?.fullscreen === true
   check('r registry: ' + expected.id + ' fullscreen=' + expected.fullscreen, fullscreen === expected.fullscreen)
   check('r registry: ' + expected.id + ' is marked enabled by default', entry.definition.defaultEnabled === true)
@@ -167,26 +166,44 @@ const app = await render(
 )
 
 try {
-  check('c mount: todo is the active carousel title', await settled(() => has('Todo'), { timeoutMs: 4000 }))
-  check('c mount: inactive panels show their registered icons', (viewportLines(term, ROWS)[0]?.match(/[ⓘ∿]/g) ?? []).length === 2)
+  check('c mount: registered text tabs appear in configured order', await settled(() => /Todo\s+Info\s+Trajectory/.test(viewportLines(term, ROWS)[0] ?? '')))
+  const initialBar = viewportLines(term, ROWS)[0] ?? ''
+  check('c mount: fitting tabs have no icons or overflow arrows', !/[≡ⓘ∿◀▶]/.test(initialBar), initialBar)
   check('c mount: no ⤢ while a fullscreen-less panel is active', !has('⤢'))
 
-  const infoArrow = findText('▶')
-  if (infoArrow !== null) click(infoArrow.col, infoArrow.row)
-  check('c info: right arrow selects the next carousel title', await settled(() => has('Info') && !has('Todo'), { timeoutMs: 4000 }))
+  const infoTab = findText('Info')
+  check('c info: text tab is visible and clickable', infoTab?.row === 0)
+  if (infoTab !== null) click(infoTab.col + 2, infoTab.row)
+  check('c info: text click selects Info without reordering tabs', await settled(() => infoTab !== null && Boolean(term.buffer.active.getLine(0)?.getCell(infoTab.col)?.isBold()) && viewportLines(term, ROWS)[0] === initialBar))
   // Labels come from i18n so a copy change cannot make this silently vacuous.
   check('c info: session section rendered', await settled(() => has(t('info-section-session')), { timeoutMs: 4000 }))
   check('c info: cache row rendered', has(t('info-row-cache')))
   check('c info: working dir row rendered', has(t('info-row-cwd')))
   check('c info: still no ⤢ (no fullscreen form)', !has('⤢'))
 
-  const row = viewportLines(term, ROWS)[0] ?? ''
-  const trajectoryIcon = { col: row.indexOf('∿', row.indexOf('Info') + 'Info'.length), row: 0 }
-  check('c trajectory: the next panel icon is visible', trajectoryIcon.col > 0, row)
-  if (trajectoryIcon.col > 0) click(trajectoryIcon.col + 1, trajectoryIcon.row)
-  check('c trajectory: clicking its icon selects the panel title', await settled(() => has('Trajectory') && !has('Info'), { timeoutMs: 4000 }), viewportLines(term, ROWS).slice(0, 5).join('|'))
+  const trajectoryTab = findText('Trajectory')
+  check('c trajectory: the registered title is visible', trajectoryTab?.row === 0)
+  if (trajectoryTab !== null) click(trajectoryTab.col + 4, trajectoryTab.row)
+  check('c trajectory: text click selects it without changing order', await settled(() => trajectoryTab !== null && Boolean(term.buffer.active.getLine(0)?.getCell(trajectoryTab.col)?.isBold()) && /Todo\s+Info\s+Trajectory/.test(viewportLines(term, ROWS)[0] ?? '')), viewportLines(term, ROWS).slice(0, 5).join('|'))
   check('c trajectory: empty state without a build', await settled(() => has(t('panel-trajectory-empty').slice(0, 24)), { timeoutMs: 4000 }))
   check('c trajectory: ⤢ appears (declares capabilities.fullscreen)', has('⤢'))
+
+  const unregister = panelStore.register({
+    id: 'regression:long', source: 'plugin', pluginId: 'regression',
+    title: 'Plugin diagnostics and observability dashboard', icon: '◆',
+    minColumns: 1, capabilities: { fullscreen: true },
+    component: () => <Text>plugin-body</Text>,
+  }, { pluginId: 'regression' })
+  try {
+    applySidePanelPanels('regression:long')
+    check('c plugin: literal title is clipped above the real PanelHost body', await settled(() => (viewportLines(term, ROWS)[0] ?? '').includes('Plugin') && (viewportLines(term, ROWS)[0] ?? '').includes('…') && has('plugin-body') && has('⤢')))
+    panelStore.setBadge('regression:long', { level: 'warning', unread: 27 })
+    check('c plugin: store badge update reaches the text bar', await settled(() => /27/.test(viewportLines(term, ROWS)[0] ?? '') && (viewportLines(term, ROWS)[0] ?? '').includes('…')))
+    panelStore.setBadge('regression:long', { level: 'error', unread: 0 })
+    check('c plugin: zero-unread alert stays visible without an icon', await settled(() => (viewportLines(term, ROWS)[0] ?? '').includes('•') && !/[◆]/.test(viewportLines(term, ROWS)[0] ?? '') && has('plugin-body')))
+  } finally {
+    unregister()
+  }
 } finally {
   await app.unmount()
 }

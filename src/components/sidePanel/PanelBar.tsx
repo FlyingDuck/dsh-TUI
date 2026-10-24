@@ -1,6 +1,7 @@
 import React from 'react'
 import { Box, Text } from '../../ui.js'
 import { stringWidth } from '../../ink/stringWidth.js'
+import { getGraphemeSegmenter } from '../../utils/intl.js'
 import { useTooltip } from '../Tooltip.js'
 
 export type PanelBadgeLevel = 'info' | 'warning' | 'error'
@@ -28,46 +29,75 @@ function badgeColor(level: PanelBadgeLevel): 'warning' | 'error' | 'accent' {
   return 'accent'
 }
 
-function tabLabel(tab: PanelBarTab): string {
-  const icon = tab.icon ?? Array.from(tab.title)[0] ?? '?'
-  const unread = tab.badge?.unread ?? 0
-  return icon + (unread > 0 ? String(unread) : '')
+function badgeLabel(tab: PanelBarTab): string {
+  if (tab.badge == null) return ''
+  return tab.badge.unread > 0 ? ` ${tab.badge.unread}` : ' •'
+}
+
+function tabTitle(tab: PanelBarTab): string {
+  return tab.title.replace(/\s+/gu, ' ')
 }
 
 function truncateCells(text: string, maxCells: number): string {
+  if (maxCells < 1) return ''
   if (stringWidth(text) <= maxCells) return text
   let out = ''
   let cells = 0
-  for (const char of text) {
-    const width = stringWidth(char)
-    if (cells + width > Math.max(1, maxCells - 1)) break
-    out += char
+  for (const { segment } of getGraphemeSegmenter().segment(text)) {
+    const width = stringWidth(segment)
+    if (cells + width > maxCells - 1) break
+    out += segment
     cells += width
   }
   return out + '…'
 }
 
-function ActiveTitle({ title, left, width, focused }: { title: string; left: number; width: number; focused: boolean }): React.ReactNode {
-  const clipped = stringWidth(title) > width
-  const tooltip = useTooltip(title)
-  return (
-    <Box position="absolute" left={left} top={0} width={width} height={1} justifyContent="center" overflow="hidden" {...(clipped ? tooltip : {})}>
-      <Text bold color={focused ? 'accent' : 'inactive'} wrap="truncate-end">{truncateCells(title, width)}</Text>
-    </Box>
-  )
+const TAB_GAP = 2
+
+/** Keep a contiguous window stable while fitting the active tab and available width. */
+function tabWindow(widths: readonly number[], activeIndex: number, startHint: number, width: number): {
+  start: number
+  end: number
+  arrowWidth: number
+} {
+  const count = widths.length
+  if (count === 0 || width < 1) return { start: 0, end: 0, arrowWidth: 0 }
+  const prefix = [0]
+  for (const cells of widths) prefix.push(prefix[prefix.length - 1]! + cells)
+  const arrowWidth = (start: number, end: number): number => {
+    const hiddenSides = Number(start > 0) + Number(end < count)
+    // At extreme widths keep at least one cell for the selected text.
+    return hiddenSides === 0 ? 0 : Math.min(2, Math.floor((width - 1) / hiddenSides))
+  }
+  const measured = (start: number, end: number): number => prefix[end]! - prefix[start]!
+    + Math.max(0, end - start - 1) * TAB_GAP
+    + (Number(start > 0) + Number(end < count)) * arrowWidth(start, end)
+  if (measured(0, count) <= width) return { start: 0, end: count, arrowWidth: 0 }
+  let start = Math.max(0, Math.min(startHint, activeIndex))
+  let end = activeIndex + 1
+  while (start < activeIndex && measured(start, end) > width) start += 1
+  if (measured(start, end) <= width) {
+    while (end < count && measured(start, end + 1) <= width) end += 1
+    while (start > 0 && measured(start - 1, end) <= width) start -= 1
+  }
+  return { start, end, arrowWidth: arrowWidth(start, end) }
 }
 
-function PanelIcon({ tab, left, width, focused, hovered, onHover, onSelect }: {
+function PanelTab({ tab, left, width, active, hovered, onHover, onSelect }: {
   tab: PanelBarTab
   left: number
   width: number
-  focused: boolean
+  active: boolean
   hovered: boolean
   onHover: (id: string | null) => void
   onSelect?: (id: string) => void
 }): React.ReactNode {
   const tooltip = useTooltip(tab.title)
-  const label = tabLabel(tab)
+  const title = tabTitle(tab)
+  const badge = badgeLabel(tab)
+  const showBadge = stringWidth(badge) < width
+  const titleWidth = width - (showBadge ? stringWidth(badge) : 0)
+  const clipped = stringWidth(title) > titleWidth
   return (
     <Box
       position="absolute"
@@ -76,22 +106,21 @@ function PanelIcon({ tab, left, width, focused, hovered, onHover, onSelect }: {
       width={width}
       height={1}
       flexShrink={0}
-      justifyContent="center"
-      {...tooltip}
-      onMouseEnter={event => { tooltip.onMouseEnter(event); onHover(tab.id) }}
+      overflow="hidden"
+      onMouseEnter={event => {
+        if (clipped) tooltip.onMouseEnter(event)
+        onHover(tab.id)
+      }}
       onMouseLeave={() => { tooltip.onMouseLeave(); onHover(null) }}
       onClick={onSelect === undefined ? undefined : event => {
         event.stopImmediatePropagation()
         onSelect(tab.id)
       }}
     >
-      <Text
-        bold={hovered || tab.badge != null}
-        dimColor={!hovered && tab.badge == null && !focused}
-        color={tab.badge != null ? badgeColor(tab.badge.level) : hovered || focused ? 'accent' : undefined}
-      >
-        {label}
+      <Text bold={active} dimColor={!active && !hovered} color={active ? 'accent' : undefined} wrap="truncate-end">
+        {truncateCells(title, titleWidth)}
       </Text>
+      {showBadge && tab.badge != null && <Text color={badgeColor(tab.badge.level)} bold>{badge}</Text>}
     </Box>
   )
 }
@@ -99,85 +128,54 @@ function PanelIcon({ tab, left, width, focused, hovered, onHover, onSelect }: {
 export function PanelBar({ tabs, activeId, width, focused, canExpand, onExpand, onSelect }: PanelBarProps): React.ReactNode {
   const [expandHovered, setExpandHovered] = React.useState(false)
   const [hoveredTab, setHoveredTab] = React.useState<string | null>(null)
+  const startRef = React.useRef(0)
   const activeIndex = Math.max(0, tabs.findIndex(tab => tab.id === activeId))
-  const active = tabs[activeIndex]
-  const hasArrows = tabs.length > 1
-  const contentWidth = Math.max(0, width - 2)
-  const arrowWidth = hasArrows ? 1 : 0
-  const expandWidth = canExpand === true ? 2 : 0
-  const middleStart = arrowWidth
-  const middleWidth = Math.max(0, contentWidth - arrowWidth * 2 - expandWidth)
-  const icons: Array<{ readonly tab: PanelBarTab; readonly side: 'left' | 'right' }> = []
-  for (let distance = 1; icons.length < tabs.length - 1; distance += 1) {
-    icons.push({ tab: tabs[(activeIndex + distance) % tabs.length]!, side: 'right' })
-    if (icons.length < tabs.length - 1) {
-      icons.push({ tab: tabs[(activeIndex - distance + tabs.length) % tabs.length]!, side: 'left' })
-    }
-  }
-  const iconWidth = Math.max(2, ...icons.map(icon => stringWidth(tabLabel(icon.tab))))
-  const titleWidth = active === undefined
-    ? 0
-    : Math.max(6, Math.min(stringWidth(active.title), Math.max(6, middleWidth - icons.length * iconWidth)))
-  const pitch = icons.length === 0 ? 0 : Math.max(2, Math.floor((middleWidth - titleWidth) / icons.length))
-  const titleLeft = middleStart + Math.floor((middleWidth - titleWidth) / 2)
-  let rightIndex = 0
-  let leftIndex = 0
-  const iconPositions = icons.map(icon => {
-    const index = icon.side === 'right' ? rightIndex++ : leftIndex++
-    return {
-      ...icon,
-      left: icon.side === 'right'
-        ? titleLeft + titleWidth + index * pitch
-        : titleLeft - (index + 1) * pitch,
-    }
+  const contentWidth = Math.max(0, Math.floor(width) - 2)
+  const expandWidth = canExpand === true ? Math.max(0, Math.min(2, contentWidth - 1)) : 0
+  const tabWidth = contentWidth - expandWidth
+  const widths = tabs.map(tab => Math.max(1, stringWidth(tabTitle(tab) + badgeLabel(tab))))
+  const window = tabWindow(widths, activeIndex, startRef.current, tabWidth)
+  React.useLayoutEffect(() => { startRef.current = window.start }, [window.start])
+  const hiddenLeft = window.start > 0
+  const hiddenRight = window.end < tabs.length
+  const labelBudget = tabWidth - (Number(hiddenLeft) + Number(hiddenRight)) * window.arrowWidth
+  let left = hiddenLeft ? window.arrowWidth : 0
+  const visibleTabs = tabs.slice(window.start, window.end).map((tab, index) => {
+    const cells = Math.min(widths[window.start + index]!, labelBudget)
+    const position = { tab, left, width: cells }
+    left += cells + TAB_GAP
+    return position
   })
-  const changePanel = (delta: number): void => {
-    if (active === undefined || tabs.length <= 1) return
-    onSelect?.(tabs[(activeIndex + delta + tabs.length) % tabs.length]!.id)
-  }
   return (
     <Box height={1} flexShrink={0} paddingX={1} overflow="hidden">
       <Box width={contentWidth} height={1} position="relative" overflow="hidden" flexShrink={0}>
-        {active !== undefined && <ActiveTitle title={active.title} left={titleLeft} width={titleWidth} focused={focused} />}
-        {iconPositions.map(icon => (
-          <PanelIcon
-            key={icon.tab.id}
-            tab={icon.tab}
-            left={icon.left}
-            width={pitch}
-            focused={focused}
-            hovered={hoveredTab === icon.tab.id}
+        {visibleTabs.map(position => (
+          <PanelTab
+            key={position.tab.id}
+            {...position}
+            active={position.tab.id === tabs[activeIndex]?.id}
+            hovered={hoveredTab === position.tab.id}
             onHover={setHoveredTab}
             onSelect={onSelect}
           />
         ))}
-        {hasArrows && (
-          <>
-            <Box
-              position="absolute"
-              left={0}
-              top={0}
-              width={1}
-              height={1}
-              justifyContent="center"
-              onClick={event => { event.stopImmediatePropagation(); changePanel(-1) }}
-            >
-              <Text color={focused ? 'accent' : 'inactive'}>◀</Text>
-            </Box>
-            <Box
-              position="absolute"
-              left={contentWidth - expandWidth - 1}
-              top={0}
-              width={1}
-              height={1}
-              justifyContent="center"
-              onClick={event => { event.stopImmediatePropagation(); changePanel(1) }}
-            >
-              <Text color={focused ? 'accent' : 'inactive'}>▶</Text>
-            </Box>
-          </>
+        {hiddenLeft && window.arrowWidth > 0 && (
+          <Box
+            position="absolute" left={0} top={0} width={window.arrowWidth} height={1}
+            onClick={event => { event.stopImmediatePropagation(); onSelect?.(tabs[window.start - 1]!.id) }}
+          >
+            <Text color={focused ? 'accent' : 'inactive'}>◀</Text>
+          </Box>
         )}
-        {canExpand === true && (
+        {hiddenRight && window.arrowWidth > 0 && (
+          <Box
+            position="absolute" left={tabWidth - window.arrowWidth} top={0} width={window.arrowWidth} height={1} justifyContent="flex-end"
+            onClick={event => { event.stopImmediatePropagation(); onSelect?.(tabs[window.end]!.id) }}
+          >
+            <Text color={focused ? 'accent' : 'inactive'}>▶</Text>
+          </Box>
+        )}
+        {expandWidth > 0 && (
           <Box
             position="absolute"
             left={contentWidth - 1}

@@ -260,7 +260,7 @@ List `↑/↓` + `Enter` to confirm · confirm page `Enter` rewind / `Esc` back 
 ### 2.8 Side panel
 
 `Ctrl+B` (remappable under `/settings` → `Shortcuts`) expands a panel column to the right of the
-chat: a capsule tab bar on top, the active panel in the middle, a key-hint row at the bottom, and a
+chat: a single-row text tab bar on top, the active panel in the middle, a key-hint row at the bottom, and a
 one-column seam between the two surfaces. The hint sits above the closing rule, which aligns
 with the chat input's bottom edge; the seam ends on that row with `└`. Below them,
 the context bar, status fields and shared hints span
@@ -277,6 +277,7 @@ rather than subtracting a fixed three rows.
 - **Focus model**: one keyboard focus at a time; while the panel holds it, its frame and the seam
   brighten together. `Ctrl+B` is three-state: closed → open and focus the panel; open but
   chat-focused → focus the panel; panel-focused → close and return to the chat.
+- **Tabs**: names stay left-to-right in enabled order. The active tab is bold and accented, the others dim; selection remains distinct when chat has focus. Overflow shows a contiguous window that follows selection and keeps the active tab visible. An arrow appears only toward hidden tabs; clicking it selects the adjacent hidden panel in that direction. Only an individually overlong name is truncated, with its full title on hover. Unread counts and alert markers remain visible.
 - **Panel keys**: `Esc` steps back to the input (the panel stays open) · `←`/`→` or `[`/`]` switch
   panels · `1`-`9` jump to the Nth · `z` or `Alt+Z` zoom · `+`/`-` resize (`+` widens the panel by 4 columns) · `↑`/`↓`/`PgUp`/`PgDn`
   go to the active panel (jobs selects and scrolls with them). Keys the panel does not take never

@@ -5,9 +5,10 @@
  * panels that actually have a fullscreen form (capabilities.fullscreen).
  *
  * Locked behavior:
- *  a. the active title stays centered while inactive panels show their icons;
- *  b. icon hover reveals the panel title, and clicking its hit area selects it;
- *  c. the edge arrows wrap through the panel order and ⤢ appears by capability;
+ *  a. text tabs retain their order and selection styling across focus changes;
+ *  b. hovering/clicking text tabs works without confusing hover with selection;
+ *  c. overflow arrows select start-1/end, while keyboard arrows still cycle;
+ *  f. a clipped plugin title reveals its full text on hover; resize follows active;
  *  d. ⤢ calls the host with the active panel id;
  *  e. clicking the chat column returns focus to chat.
  *
@@ -30,7 +31,11 @@ const [{ PassThrough, Writable }, React, { Terminal: XTerm }, ui, { SidePanelLay
   import('../src/components/Tooltip.js'),
   import('./lib/term-test.mjs'),
 ])
-const { render, AlternateScreen, Box, Text, useInput } = ui
+const { render, AlternateScreen, ThemeProvider, Box, Text, useInput, useTerminalSize } = ui
+const [{ panelStore }, { stringWidth }] = await Promise.all([
+  import('../src/components/sidePanel/PanelStore.js'),
+  import('../src/ink/stringWidth.js'),
+])
 const { applySidePanelOpen, applySidePanelPanels, applySidePanelRatio } = prefs
 const { settled, viewportLines } = termTest
 
@@ -69,11 +74,11 @@ const channelStub: unknown = {
   notify() {},
 }
 
-function Harness({ columns = COLS }: { readonly columns?: number } = {}): React.ReactNode {
+function Harness(): React.ReactNode {
+  const { columns } = useTerminalSize()
   const sp = useSidePanel({ columns, fullscreen: true, editorOpen: false })
-  // Mouse/keys only reach the tree while stdin has a readable listener the
-  // ink App owns; MessageList-free fixtures must keep one alive.
-  useInput(() => {}, { isActive: true })
+  // Mirror Chat's host fallback; plugin fixture panels register no own keys.
+  useInput((input, key, event) => { sp.handleKey(input, key, event) }, { isActive: true })
   return (
     <SidePanelLayout
       geometry={sp.geometry}
@@ -130,7 +135,7 @@ const findText = (s: string): { col: number; row: number } | null => {
   const view = lines()
   for (let row = 0; row < view.length; row++) {
     const col = view[row]!.indexOf(s)
-    if (col >= 0) return { col, row }
+    if (col >= 0) return { col: stringWidth(view[row]!.slice(0, col)), row }
   }
   return null
 }
@@ -151,10 +156,10 @@ applySidePanelOpen(true)
 
 const app = await render(
   <AlternateScreen>
-    <>
+    <ThemeProvider theme="dark">
       <Harness />
       <TooltipLayer />
-    </>
+    </ThemeProvider>
   </AlternateScreen>,
   {
     stdout: stdout as unknown as NodeJS.WriteStream,
@@ -166,66 +171,89 @@ const app = await render(
 )
 
 try {
-  check('a boot: active title is centered on Todo', await settled(() => has('Todo'), { timeoutMs: 4000 }))
-  check('a boot: inactive panels show their own icons', (lines()[0]?.match(/[▸◆]/g) ?? []).length === 2, lines()[0]?.trim())
+  check('a boot: text tabs appear in fixed order', await settled(() => /Todo\s+Jobs\s+Agents/.test(lines()[0] ?? '')))
+  const bootRow = lines()[0] ?? ''
+  const positions = ['Todo', 'Jobs', 'Agents'].map(title => bootRow.indexOf(title))
+  check('a boot: fitting tabs show neither icons nor overflow arrows', !/[≡▸◆◀▶]/.test(bootRow), bootRow.trim())
   check('a boot: no ⤢ for a panel without a fullscreen form', !has('⤢'))
 
-  const agentsIcon = findText('◆')
-  check('b hover: agents icon located', agentsIcon !== null, JSON.stringify(agentsIcon))
-  if (agentsIcon !== null) {
-    check('b hover: icon starts dim', !boldAt(agentsIcon.col, agentsIcon.row))
-    motion(agentsIcon.col, agentsIcon.row)
-    check('b hover: icon brightens and reveals its title', await settled(() => boldAt(agentsIcon.col, agentsIcon.row) && has('Agents'), { timeoutMs: 4000 }))
-    motion(agentsIcon.col + 5, agentsIcon.row + 3)
-    check('b hover: tooltip disappears after leaving the icon', await settled(() => !has('Agents'), { timeoutMs: 4000 }))
+  const agentsTab = findText('Agents')
+  check('b hover: Agents text located', agentsTab?.row === 0, JSON.stringify(agentsTab))
+  if (agentsTab !== null) {
+    const fg = () => term.buffer.active.getLine(agentsTab.row)?.getCell(agentsTab.col)?.getFgColor()
+    const dim = fg()
+    check('b hover: inactive text starts unbolded', !boldAt(agentsTab.col, agentsTab.row))
+    motion(agentsTab.col + 2, agentsTab.row)
+    check('b hover: inactive text brightens without becoming selected', await settled(() => fg() !== dim && !boldAt(agentsTab.col, agentsTab.row)))
+    motion(5, 3)
+    check('b hover: leaving restores inactive color', await settled(() => fg() === dim && !boldAt(agentsTab.col, agentsTab.row)))
+    click(agentsTab.col + 3, agentsTab.row)
   }
+  check('c click: text hit area selects Agents', await settled(() => agentsTab !== null && boldAt(agentsTab.col, agentsTab.row) && has('⤢')))
+  check('c click: selection does not recenter the titles', JSON.stringify(positions) === JSON.stringify(['Todo', 'Jobs', 'Agents'].map(title => (lines()[0] ?? '').indexOf(title))))
 
-  if (agentsIcon !== null) click(agentsIcon.col + 1, agentsIcon.row)
-  check('c click: icon hit area selects Agents', await settled(() => has('Agents') && has('⤢'), { timeoutMs: 4000 }))
-  const nextArrow = findText('▶')
-  check('c arrows: right arrow located', nextArrow !== null)
-  if (nextArrow !== null) click(nextArrow.col, nextArrow.row)
-  check('c arrows: next wraps from Agents to Todo', await settled(() => has('Todo') && !has('⤢'), { timeoutMs: 4000 }))
-  const previousArrow = findText('◀')
-  check('c arrows: left arrow located', previousArrow !== null)
-  if (previousArrow !== null) click(previousArrow.col, previousArrow.row)
-  check('c arrows: previous wraps from Todo to Agents', await settled(() => has('Agents') && has('⤢'), { timeoutMs: 4000 }))
-
-  // ── d. ⤢ hands the ACTIVE panel id to the host ─────────────────────────
   const expand = findText('⤢')
-  check('d ⤢: button located', expand !== null, JSON.stringify(expand))
-  if (expand !== null) {
-    click(expand.col, expand.row)
-    // 固定窗:onExpand 是宿主回调，屏幕本身没有可轮询的变化点
-    await new Promise(resolve => setTimeout(resolve, 200))
-    check('d ⤢: host received the active panel id', expanded.length === 1 && expanded[0] === 'agents', JSON.stringify(expanded))
-  }
+  check('d ⤢: independent button sits after text tabs', expand !== null && agentsTab !== null && expand.col > agentsTab.col + 'Agents'.length, JSON.stringify(expand))
+  if (expand !== null) click(expand.col, expand.row)
+  check('d ⤢: host received exactly the active panel id', await settled(() => expanded.length === 1 && expanded[0] === 'agents'), JSON.stringify(expanded))
 
-  // ── e. clicking the chat column returns the focus ──────────────────────
-  check('e focus: panel focus first (clicking the column focuses it)', await settled(() => has('Esc chat'), { timeoutMs: 4000 }))
+  check('e focus: clicking a text tab focuses the panel', await settled(() => has('Esc chat')))
+  const activeColor = agentsTab === null ? undefined : term.buffer.active.getLine(0)?.getCell(agentsTab.col)?.getFgColor()
   const body = findText('chat-body')
   check('e focus: chat body located', body !== null, JSON.stringify(body))
   if (body !== null) click(body.col, body.row)
-  check('e focus: hint swaps back to the unfocused copy', await settled(() => has('Ctrl+B focus panel'), { timeoutMs: 4000 }))
+  check('e focus: hint swaps back to the unfocused copy', await settled(() => has('Ctrl+B focus panel')))
+  check('e focus: selection stays bold/accent while chat is focused', agentsTab !== null && boldAt(agentsTab.col, 0) && term.buffer.active.getLine(0)?.getCell(agentsTab.col)?.getFgColor() === activeColor)
+
+  const todoTab = findText('Todo')
+  if (todoTab !== null) click(todoTab.col + 1, todoTab.row)
+  check('e capability: selecting Todo removes only fullscreen control', await settled(() => todoTab !== null && boldAt(todoTab.col, 0) && !has('⤢') && /Todo\s+Jobs\s+Agents/.test(lines()[0] ?? '')))
 } finally {
   await app.unmount()
 }
 
-// ── f. eight panels and fullscreen control stay on one narrow bar ─────────
+// ── f. real overflow fixture: hidden neighbors are NOT active neighbors ──
 {
   const NARROW = 96
   const NROWS = 14
   const term2 = new XTerm({ cols: NARROW, rows: NROWS, scrollback: 0, allowProposedApi: true })
+  const stdout2 = new FakeStdout(term2, NARROW, NROWS)
   const lines2 = (): string[] => viewportLines(term2, NROWS)
-  // Jobs starts active so the fullscreen control is present beside seven icons.
+  const find2 = (text: string) => {
+    const rows = lines2()
+    for (let row = 0; row < rows.length; row++) {
+      const index = rows[row]!.indexOf(text)
+      if (index >= 0) return { row, col: stringWidth(rows[row]!.slice(0, index)) }
+    }
+    return null
+  }
+  const click2 = (text: string, offset = 0) => {
+    const at = find2(text)
+    check('f target located: ' + text, at !== null)
+    if (at !== null) click(at.col + offset, at.row)
+  }
+  const ids = Array.from({ length: 8 }, (_, i) => 'regression:t' + i)
+  const titles = ids.map((_, i) => 'T0' + i)
+  const visible = () => titles.flatMap((title, i) => (lines2()[0] ?? '').includes(title) ? [i] : [])
+  const selected = (i: number) => lines2().some(row => row.includes('panel:t' + i))
+  const longTitle = 'Plugin observability dashboard / 计划👩‍💻状态😀 full details'
+  const releases = ids.map((id, i) => panelStore.register({
+    id, title: titles[i], icon: '◆', source: 'plugin', pluginId: 'regression',
+    minColumns: 1, capabilities: { fullscreen: true },
+    component: () => <Text>{'panel:t' + i}</Text>,
+  }, { pluginId: 'regression' }))
+  releases.push(panelStore.register({
+    id: 'regression:long', title: longTitle, icon: '◆', source: 'plugin', pluginId: 'regression',
+    minColumns: 1, capabilities: { fullscreen: true }, component: () => <Text>panel:long</Text>,
+  }, { pluginId: 'regression' }))
   applySidePanelRatio(0.78)
-  applySidePanelPanels('jobs,todo,info,trajectory,btw,agents,workspace,companion')
+  applySidePanelPanels(ids.join(','))
   const app2 = await render(
     <AlternateScreen>
-      <Harness columns={NARROW} />
+      <ThemeProvider theme="dark"><Harness /><TooltipLayer /></ThemeProvider>
     </AlternateScreen>,
     {
-      stdout: new FakeStdout(term2, NARROW, NROWS) as unknown as NodeJS.WriteStream,
+      stdout: stdout2 as unknown as NodeJS.WriteStream,
       stdin: stdin as unknown as NodeJS.ReadStream,
       stderr: new FakeStderr() as unknown as NodeJS.WriteStream,
       exitOnCtrlC: false,
@@ -233,13 +261,63 @@ try {
     },
   )
   try {
-    await settled(() => lines2().some(line => line.includes('Jobs')), { timeoutMs: 4000 })
-    const barRow = lines2()[0] ?? ''
-    check('f narrow: eight-panel bar keeps every icon and both arrows', (barRow.match(/[≡ⓘ∿?◆⌗♥]/g) ?? []).length === 7 && barRow.includes('◀') && barRow.includes('▶'), barRow.trim())
-    check('f narrow: ⤢ stays on the same row', barRow.includes('⤢'), barRow.trim())
-    check('f fold: the bar is exactly one row (row 1 is the rule)', (lines2()[1] ?? '').includes('─'), (lines2()[1] ?? '').trim())
+    check('f boot: narrow fixture renders selected plugin through PanelHost', await settled(() => selected(0) && visible().length > 1 && (lines2()[0] ?? '').includes('⤢')))
+    const first = visible()
+    check('f boot: initial window has only right overflow', first[0] === 0 && first.length < ids.length && !(lines2()[0] ?? '').includes('◀') && (lines2()[0] ?? '').includes('▶'), JSON.stringify(lines2()[0]))
+    const end = (first.at(-1) ?? -1) + 1
+    check('f oracle: right hidden neighbor differs from active+1', end > 1, JSON.stringify(first))
+    click2('▶')
+    check('f right arrow: selects first hidden tab, not active+1', await settled(() => selected(end)), JSON.stringify(lines2()[0]))
+
+    const middleWindow = visible()
+    const middle = middleWindow[1] ?? -1
+    check('f oracle: left hidden neighbor differs from active-1', middleWindow[0]! > 0 && middle > middleWindow[0]!, JSON.stringify(middleWindow))
+    if (middle >= 0) click2(titles[middle]!, 1)
+    check('f text click: selects visible tab without shifting window', await settled(() => selected(middle) && JSON.stringify(visible()) === JSON.stringify(middleWindow)), JSON.stringify(lines2()[0]))
+    const previousHidden = middleWindow[0]! - 1
+    click2('◀')
+    check('f left arrow: selects start-1, not active-1', await settled(() => selected(previousHidden)), JSON.stringify(lines2()[0]))
+    check('f left boundary: no left arrow or accidental wrap', previousHidden === 0 && !(lines2()[0] ?? '').includes('◀'))
+
+    stdin.write('8')
+    check('f keyboard: number selects the last registered tab', await settled(() => selected(7)))
+    check('f last boundary: only left overflow remains', (lines2()[0] ?? '').includes('◀') && !(lines2()[0] ?? '').includes('▶'), JSON.stringify(lines2()[0]))
+    stdin.write('\x1b[D')
+    check('f keyboard: left selects active-1, not start-1', await settled(() => selected(6)))
+    stdin.write('\x1b[C')
+    check('f keyboard: right selects active+1 inside the window', await settled(() => selected(7)))
+    stdin.write('\x1b[C')
+    check('f keyboard: right still wraps last to first', await settled(() => selected(0)))
+    stdin.write('\x1b[D')
+    check('f keyboard: left still wraps first to last', await settled(() => selected(7)))
+
+    const bodyRow = find2('panel:t7')?.row
+    const rightInset = NARROW - (find2('⤢')?.col ?? 0)
+    for (const width of [160, NARROW]) {
+      stdout2.columns = width
+      term2.resize(width, NROWS)
+      stdout2.emit('resize')
+      check('f resize ' + width + ': active, body row and fullscreen survive', await settled(() => selected(7) && (lines2()[0] ?? '').includes('T07') && find2('⤢')?.col === width - rightInset && find2('panel:t7')?.row === bodyRow && (lines2()[1] ?? '').includes('─')), JSON.stringify(lines2().slice(0, 3)))
+    }
+
+    applySidePanelPanels('regression:long')
+    check('f long: single plugin title truncates with no overflow arrows', await settled(() => lines2().some(row => row.includes('panel:long')) && (lines2()[0] ?? '').includes('Plugin') && (lines2()[0] ?? '').includes('…') && !/[◀▶◆]/.test(lines2()[0] ?? '')))
+    const clipped = find2('Plugin')
+    if (clipped !== null) motion(clipped.col + 4, clipped.row)
+    check('f hover: full English/CJK/emoji title is actually rendered', await settled(() => lines2().some(row => row.includes(longTitle))))
+    motion(5, 4)
+    check('f hover leave: tooltip disappears without moving the panel body', await settled(() => !lines2().some(row => row.includes(longTitle)) && find2('panel:long')?.row === bodyRow))
+    click2('chat-body')
+    check('f long: return focus to chat before testing the text hit area', await settled(() => lines2().some(row => row.includes('Ctrl+B focus panel'))))
+    const beforeExpand = expanded.length
+    click2('…')
+    check('f long text: ellipsis hit area remains a tab, not fullscreen', await settled(() => lines2().some(row => row.includes('Esc chat'))) && expanded.length === beforeExpand)
+    click2('⤢')
+    check('f ⤢: independent fullscreen hit area reports the long plugin id', await settled(() => expanded.length === beforeExpand + 1 && expanded.at(-1) === 'regression:long'))
+    check('f fold: row below the bar remains the rule', (lines2()[1] ?? '').includes('─'))
   } finally {
     await app2.unmount()
+    for (const release of releases) release()
   }
 }
 

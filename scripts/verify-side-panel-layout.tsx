@@ -7,11 +7,13 @@
  * verify-divider-width's lesson) and locks the visual contract:
  *  - divider column sits exactly at the chat width; row 1 draws '├',
  *    the final row closes with '└', and all intermediate rows draw '│';
- *  - PanelBar keeps its title centered, spaces panel icons and arrows on one row;
+ *  - PanelBar shows text tabs in fixed order, with a contiguous overflow window;
+ *  - selection stays bold/accent with either focus, badges remain visible;
  *  - the chat-side bordered input never crosses the divider;
  *  93-column split keeps the bar and hint on one row;
  *  - geometry=null renders children byte-identically to no layout;
- *  - a 28-column bar shows seven panels without folding and centers a truncated title;
+ *  - wide/narrow/tiny bars, empty/single tabs and Unicode titles stay one row;
+ *  - active changes and resize follow selection without unnecessarily moving the window;
  *  - resize oracle: 120 -> 100 -> 120 settles to the same frame as a
  *    fresh 120 render (terminal-state equivalence); the frame must also
  *    re-split live (geometry resolved from useTerminalSize, mirroring
@@ -39,7 +41,13 @@ const [{ PassThrough, Writable }, React, { Terminal: XTerm }, ui, { SidePanelLay
 const { render, ThemeProvider, Box, Text, AlternateScreen, useTerminalSize } = ui
 const { resolveSplit, resolveZoom, resolveSidePanelGeometry } = dims
 const { applySidePanelOpen, applySidePanelRatio, applySidePanelPanels } = prefs
-const { settled, sleep } = termTest
+const { settled, settle } = termTest
+const [{ PanelBar }, { stringWidth }, { getTheme }] = await Promise.all([
+  import('../src/components/sidePanel/PanelBar.js'),
+  import('../src/ink/stringWidth.js'),
+  import('../src/theme.js'),
+])
+type BarTab = import('../src/components/sidePanel/PanelBar.js').PanelBarTab
 setLang('zh')
 
 const ROWS = 18
@@ -123,15 +131,17 @@ class FakeStdin extends PassThrough { isTTY = true; setRawMode() { return this }
 interface Frame {
   term: import('@xterm/headless').Terminal
   stdout: FakeStdout
-  app: { unmount: () => Promise<void> }
+  app: Awaited<ReturnType<typeof render>>
+  rerender(tree: React.ReactNode): void
   lines(): string[]
 }
 
 async function mountTree(cols: number, tree: React.ReactNode): Promise<Frame> {
   const term = new XTerm({ cols, rows: ROWS, scrollback: 0, allowProposedApi: true })
   const stdout = new FakeStdout(term, cols)
+  const wrap = (node: React.ReactNode) => <AlternateScreen><ThemeProvider theme="dark">{node}</ThemeProvider></AlternateScreen>
   const app = await render(
-    <AlternateScreen><ThemeProvider theme="dark">{tree}</ThemeProvider></AlternateScreen>,
+    wrap(tree),
     {
       stdout: stdout as unknown as NodeJS.WriteStream,
       stdin: new FakeStdin() as unknown as NodeJS.ReadStream,
@@ -142,15 +152,15 @@ async function mountTree(cols: number, tree: React.ReactNode): Promise<Frame> {
   )
   const frame: Frame = {
     term, stdout, app,
+    rerender(node) { app.rerender(wrap(node)) },
     lines() {
       const buf = term.buffer.active
       const out: string[] = []
-      for (let y = 0; y < ROWS; y += 1) out.push((buf.getLine(y)?.translateToString(false) ?? '').padEnd(cols, ' '))
+      for (let y = 0; y < ROWS; y += 1) out.push((buf.getLine(y)?.translateToString(true) ?? '').padEnd(stdout.columns, ' '))
       return out
     },
   }
-  await settled(() => frame.lines().some(l => l.includes('status:ready')))
-  await sleep(50) // 固定窗:pacing 首帧无单一可轮询锚点（多面板 display:none 切换），等一帧渲染 flush 再交还夹具
+  await settle(() => frame.lines().some(l => l.includes('status:ready') || l.trim() === 'ready'))
   return frame
 }
 
@@ -159,7 +169,10 @@ async function mountSplit(cols: number, focusPanel: boolean, zoom = false): Prom
   applySidePanelOpen(true)
   applySidePanelRatio(0.68)
   applySidePanelPanels('todo,jobs,agents')
-  return mountTree(cols, <SplitFixture focusPanel={focusPanel} zoom={zoom} />)
+  const frame = await mountTree(cols, <SplitFixture focusPanel={focusPanel} zoom={zoom} />)
+  await settle(() => cols < 93 || frame.lines()[ROWS - 2]!.includes(focusPanel ? 'Esc' : 'Ctrl+B'))
+  if (zoom) await settle(() => cells(frame.lines()[5]!)[64] === '│')
+  return frame
 }
 
 function cells(line: string): string[] { return [...line] }
@@ -174,7 +187,10 @@ function assertSplitFrame(name: string, frame: Frame, geo: { chat: number; panel
     check(name + ': divider row ' + y + ' is ' + expected, got === expected, 'got ' + JSON.stringify(got) + ' line=' + JSON.stringify(lines[y]))
   }
   check(name + ': row 0 carries the active title', lines[0].includes('待办'), JSON.stringify(lines[0]))
-  check(name + ': row 0 shows the inactive panel icons', lines[0].includes('▸') && lines[0].includes('◆'), JSON.stringify(lines[0]))
+  const titles = ['待办', '任务', '代理']
+  const positions = titles.map(title => lines[0]!.indexOf(title))
+  check(name + ': row 0 shows text tabs in configured order', positions.every((p, i) => p >= 0 && (i === 0 || p > positions[i - 1]!)), JSON.stringify(lines[0]))
+  check(name + ': fitting tabs have no icons or overflow arrows', !/[≡▸◆◀▶]/.test(lines[0]!), JSON.stringify(lines[0]))
   // The final rule follows the hint, closing the entire column on its last row.
   const ruleAfter = cells(lines[1]).slice(chatCol + 1).join('').trim()
   check(name + ': row 1 rule right of the divider', ruleAfter.length > 0 && ruleAfter.startsWith('─'), ruleAfter.slice(0, 8))
@@ -228,7 +244,7 @@ function assertSplitFrame(name: string, frame: Frame, geo: { chat: number; panel
   const frame = await mountSplit(93, true)
   const lines = frame.lines()
   assertSplitFrame('93/focus=panel', frame, geo, 'Esc 聊天', 'Ctrl+B 聚焦侧栏')
-  check('93: carousel arrows and title occupy row 0 without overflow', lines[0]?.includes('◀') && lines[0]?.includes('▶') && !/\+\d+/.test(lines[0]!), JSON.stringify(lines[0]))
+  check('93: fitting text tabs need no overflow arrows', !/[◀▶]/.test(lines[0]!) && lines[0]!.includes('代理'), JSON.stringify(lines[0]))
   // Hint is exactly one row, immediately above the closing rule.
   check('93: hint is exactly one row above the final rule', lines[ROWS - 2].includes('Esc') && !lines[ROWS - 1].includes('Esc'), JSON.stringify(lines.slice(ROWS - 2)))
   await frame.app.unmount()
@@ -238,36 +254,121 @@ function assertSplitFrame(name: string, frame: Frame, geo: { chat: number; panel
   await frame2.app.unmount()
 }
 
-// --- 5. Centered carousel title and seven-panel narrow layout ------------
+// --- 5. Text tabs, overflow windows, badges and Unicode ------------------
+function BarFixture({ tabs, activeId, focused = true, stamp = 'initial' }: {
+  tabs: readonly BarTab[]; activeId?: string; focused?: boolean; stamp?: string
+}): React.ReactNode {
+  const { columns } = useTerminalSize()
+  return (
+    <Box flexDirection="column" width={columns}>
+      <PanelBar tabs={tabs} activeId={activeId} width={columns} focused={focused} canExpand={tabs.length > 0} />
+      <Text>BODY</Text>
+      <Text>ready</Text>
+      <Text>{stamp}</Text>
+    </Box>
+  )
+}
+
+function visibleTabs(frame: Frame, tabs: readonly BarTab[]): number[] {
+  const row = frame.lines()[0]!
+  return tabs.flatMap((tab, i) => row.includes(tab.title) ? [i] : [])
+}
+
+function assertWindow(name: string, frame: Frame, tabs: readonly BarTab[], active: number): number[] {
+  const row = frame.lines()[0]!
+  const shown = visibleTabs(frame, tabs)
+  const start = shown[0] ?? -1
+  const end = shown.at(-1) ?? -1
+  check(name + ': active text remains visible', shown.includes(active), JSON.stringify(row))
+  check(name + ': window is contiguous and in tab order', shown.length > 0 && shown.every((index, i) => index === start + i && (i === 0 || row.indexOf(tabs[index]!.title) > row.indexOf(tabs[shown[i - 1]!]!.title))), JSON.stringify(shown))
+  check(name + ': arrows appear only toward hidden tabs', row.includes('◀') === (start > 0) && row.includes('▶') === (end < tabs.length - 1), JSON.stringify(row))
+  check(name + ': body and fullscreen never wrap/overlap', row.includes('⤢') && row.indexOf('⤢') > row.indexOf(tabs[active]!.title) + tabs[active]!.title.length - 1 && frame.lines()[1]!.trim() === 'BODY', JSON.stringify(frame.lines().slice(0, 2)))
+  return shown
+}
+
+function titleCell(frame: Frame, title: string) {
+  const row = frame.lines()[0]!
+  const index = row.indexOf(title)
+  return index < 0 ? undefined : frame.term.buffer.active.getLine(0)?.getCell(stringWidth(row.slice(0, index)))
+}
+
 {
-  const { PanelBar } = await import('../src/components/sidePanel/PanelBar.js')
-  const { stringWidth } = await import('../src/ink/stringWidth.js')
-  const tabs = [
-    { id: 'p0', title: 'P0', icon: '≡', badge: { level: 'info' as const, unread: 3 } },
+  const tabs: readonly BarTab[] = [
+    { id: 'p0', title: 'P0', icon: '≡', badge: { level: 'info', unread: 3 } },
     { id: 'p1', title: 'Notes' },
-    { id: 'p2', title: 'P2', icon: 'ⓘ', badge: { level: 'warning' as const, unread: 4 } },
-    { id: 'p3', title: 'P3 long title', icon: '▸' },
+    { id: 'p2', title: 'P2', icon: 'ⓘ', badge: { level: 'warning', unread: 4 } },
+    { id: 'p3', title: 'P3', icon: '▸' },
     { id: 'p4', title: 'P4', icon: '∿' },
-    { id: 'p5', title: 'P5', icon: '◆', badge: { level: 'error' as const, unread: 2 } },
+    { id: 'p5', title: 'P5', icon: '◆', badge: { level: 'error', unread: 2 } },
     { id: 'p6', title: 'P6', icon: '♥' },
   ]
-  const frame = await mountTree(28, <PanelBar tabs={tabs} activeId="p3" width={28} focused canExpand />)
-  const row = frame.lines()[0] ?? ''
-  const shownTitle = 'P3 long t…'
-  const titlePos = termTest.findText(frame.term, shownTitle)
-  check('carousel(28/7): active title truncates to the middle budget', row.includes(shownTitle), JSON.stringify(row))
-  check('carousel(28/7): active title center stays within one cell', titlePos !== null && Math.abs(titlePos.col + stringWidth(shownTitle) / 2 - 13) <= 1, JSON.stringify(titlePos))
-  check('carousel(28/7): both edge arrows and fullscreen affordance fit', row.includes('◀') && row.includes('▶') && row.includes('⤢'), JSON.stringify(row))
-  check('carousel(28/7): all six icons, including the title fallback, stay visible', (row.match(/[≡Nⓘ∿◆♥]/g) ?? []).length === 6, JSON.stringify(row))
-  check('carousel(28/7): unread counts follow their panel icons', row.includes('≡3') && row.includes('ⓘ4') && row.includes('◆2'), JSON.stringify(row))
+  const rgb = (color: string) => (color.match(/\d+/g) ?? []).map(Number).reduce((value, part) => value * 256 + part, 0)
+  const accent = rgb(getTheme('dark').accent)
+  const frame = await mountTree(80, <BarFixture tabs={tabs} activeId="p3" />)
+  assertWindow('wide(80/7)', frame, tabs, 3)
+  check('wide: every title is visible, icons are compatibility data only', visibleTabs(frame, tabs).length === tabs.length && !/[≡ⓘ▸∿◆♥]/.test(frame.lines()[0]!), JSON.stringify(frame.lines()[0]))
+  check('wide: active is bold theme accent and inactive text stays weak', Boolean(titleCell(frame, 'P3')?.isBold()) && titleCell(frame, 'P3')?.getFgColor() === accent && !titleCell(frame, 'Notes')?.isBold() && titleCell(frame, 'Notes')?.getFgColor() !== accent)
+  check('wide: unread badges accompany text tabs', /P0\s*3/.test(frame.lines()[0]!) && /P2\s*4/.test(frame.lines()[0]!) && /P5\s*2/.test(frame.lines()[0]!), JSON.stringify(frame.lines()[0]))
+  for (const [digit, level] of [['4', 'warning'], ['2', 'error']] as const) {
+    const title = level === 'warning' ? 'P2' : 'P5'
+    const row = frame.lines()[0]!
+    const at = row.indexOf(digit, row.indexOf(title) + title.length)
+    const cell = frame.term.buffer.active.getLine(0)?.getCell(at)
+    check('wide: ' + level + ' badge retains its semantic color', at >= 0 && cell?.getFgColor() === rgb(getTheme('dark')[level]))
+  }
+  const fixedPositions = tabs.map(tab => frame.lines()[0]!.indexOf(tab.title))
+  frame.rerender(<BarFixture tabs={tabs} activeId="p0" focused={false} stamp="chat" />)
+  check('chat focus: active badge/title remains bold accent', await settled(() => frame.lines()[3]!.includes('chat') && Boolean(titleCell(frame, 'P0')?.isBold()) && titleCell(frame, 'P0')?.getFgColor() === accent && /P0\s*3/.test(frame.lines()[0]!)))
+  check('active change: titles do not move toward the center', JSON.stringify(fixedPositions) === JSON.stringify(tabs.map(tab => frame.lines()[0]!.indexOf(tab.title))))
   await frame.app.unmount()
 
-  const single = await mountTree(28, <PanelBar tabs={[{ id: 'solo', title: 'Solo' }]} activeId="solo" width={28} focused canExpand />)
-  const singleTitle = termTest.findText(single.term, 'Solo')
-  check('carousel(single): title remains centered without arrows', singleTitle !== null && Math.abs(singleTitle.col + 2 - 13) <= 1 && !single.lines()[0]!.includes('◀') && !single.lines()[0]!.includes('▶'), JSON.stringify(single.lines()[0]))
-  check('carousel(single): fullscreen affordance remains available', single.lines()[0]!.includes('⤢'))
-  await single.app.unmount()
-  applySidePanelPanels('todo,jobs,agents')
+  // Uniform labels make the overflow oracle independent of spacing policy.
+  const shortTabs = Array.from({ length: 12 }, (_, i) => ({ id: 't' + i, title: 'T' + String(i).padStart(2, '0'), icon: '◆' }))
+  for (const width of [28, 14, 11]) {
+    const narrow = await mountTree(width, <BarFixture tabs={shortTabs} activeId="t6" />)
+    const shown = assertWindow('narrow(' + width + '/12)', narrow, shortTabs, 6)
+    check('narrow(' + width + '): hides tabs rather than squeezing icons', shown.length < shortTabs.length && !narrow.lines()[0]!.includes('◆'), JSON.stringify(narrow.lines()[0]))
+    if (shown.length > 1) {
+      const next = shown[0] === 6 ? shown.at(-1)! : shown[0]!
+      narrow.rerender(<BarFixture tabs={shortTabs} activeId={'t' + next} stamp="moved" />)
+      check('visible switch(' + width + '): preserves window start', await settled(() => narrow.lines()[3]!.includes('moved') && visibleTabs(narrow, shortTabs)[0] === shown[0] && Boolean(titleCell(narrow, shortTabs[next]!.title)?.isBold())), JSON.stringify(shown))
+      assertWindow('visible switch(' + width + ')', narrow, shortTabs, next)
+    }
+    await narrow.app.unmount()
+  }
+
+  for (const tabs of [[], [{ id: 'solo', title: 'Solo', icon: '◆' }]] as readonly (readonly BarTab[])[]) {
+    const single = await mountTree(28, <BarFixture tabs={tabs} activeId={tabs[0]?.id} />)
+    const row = single.lines()[0]!
+    check('tabs=' + tabs.length + ': no overflow arrows or icons', !/[◀▶◆]/.test(row) && row.includes('⤢') === (tabs.length === 1), JSON.stringify(row))
+    check('tabs=' + tabs.length + ': one-row bar does not move body', single.lines()[1]!.trim() === 'BODY')
+    if (tabs.length === 1) check('single: title starts at the left, not centered', row.indexOf('Solo') >= 0 && row.indexOf('Solo') <= 2, JSON.stringify(row))
+    await single.app.unmount()
+  }
+
+  for (const title of ['Plugin observability dashboard with a deliberately long English title', '计划👩‍💻状态😀插件扩展面板']) {
+    const long = await mountTree(18, <BarFixture tabs={[{ id: 'plugin:long', title }]} activeId="plugin:long" />)
+    const row = long.lines()[0]!
+    const shown = row.slice(0, row.indexOf('⤢')).trim()
+    const prefixes = new Set([''])
+    let prefix = ''
+    for (const part of new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(title)) {
+      prefix += part.segment
+      prefixes.add(prefix)
+    }
+    check('long title: ellipsis preserves graphemes and fullscreen space', shown.endsWith('…') && prefixes.has(shown.slice(0, -1)) && stringWidth(row.trimEnd()) <= 18 && long.lines()[1]!.trim() === 'BODY', JSON.stringify(row))
+    await long.app.unmount()
+  }
+
+  const resizing = await mountTree(80, <BarFixture tabs={shortTabs} activeId="t9" />)
+  for (const width of [28, 18, 52]) {
+    resizing.stdout.columns = width
+    resizing.term.resize(width, ROWS)
+    resizing.stdout.emit('resize')
+    check('bar resize ' + width + ': follows active and keeps body stable', await settled(() => resizing.lines()[0]!.includes('T09') && resizing.lines()[0]!.includes('⤢') && resizing.lines()[1]!.trim() === 'BODY' && resizing.lines()[0]!.indexOf('⤢') >= width - 3 && resizing.lines()[0]!.trimEnd().length <= width))
+    assertWindow('bar resize ' + width, resizing, shortTabs, 9)
+  }
+  await resizing.app.unmount()
 }
 
 // --- 6. 90 columns (!canSplit): geometry=null is a byte-identical passthrough
@@ -289,15 +390,13 @@ function assertSplitFrame(name: string, frame: Frame, geo: { chat: number; panel
   frame.stdout.columns = 100
   frame.term.resize(100, ROWS)
   frame.stdout.emit('resize')
-  await sleep(120) // 固定窗:墙钟 resize 触发的是节流重排，渲染节流窗口本身就是被等语义
   const shrunkGeo = resolveSidePanelGeometry({ columns: 100, open: true, zoom: false, ratio: 0.68 })
   if (shrunkGeo === null) throw new Error('100 columns must split')
-  const shrunkLine = (frame.lines()[5] ?? '').slice(0, 100)
-  check('resize: 100-col frame re-splits to chat=68/panel=31', [...shrunkLine][shrunkGeo.chat] === '│', JSON.stringify(shrunkLine))
+  check('resize: 100-col frame re-splits to chat=68/panel=31', await settled(() => cells(frame.lines()[5]!)[shrunkGeo.chat] === '│'), JSON.stringify(frame.lines()[5]))
   frame.stdout.columns = 120
   frame.term.resize(120, ROWS)
   frame.stdout.emit('resize')
-  await sleep(120) // 固定窗:墙钟 同上：等渲染节流窗口过去再读终态帧
+  check('resize: 120-col divider returns to its original position', await settled(() => cells(frame.lines()[5]!)[resolveSplit(120, 0.68).chat] === '│'))
   const backLines = frame.lines().map(l => l.slice(0, 120))
   await frame.app.unmount()
   const fresh = await mountSplit(120, true)

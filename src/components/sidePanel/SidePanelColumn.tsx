@@ -2,7 +2,7 @@
  * SidePanelColumn: PanelBar, the active panel surface and a one-row key hint.
  * The hint follows focus and sits above the bottom rule; the rules brighten
  * with the divider as one surface.
- * Tabs follow the enabled registration order and carry each panel's icon and badge.
+ * Text tabs follow the enabled registration order and retain each panel's badge.
  */
 import React from 'react'
 import { Box, Text, useTerminalSize } from '../../ui.js'
