@@ -1,5 +1,5 @@
 import React from 'react'
-import { Box, Text, useAnimationFrame } from '../ui.js'
+import { Box, Text, useAnimationFrame, useTerminalSize } from '../ui.js'
 import wrapText, { wrapTextLines } from '../ink/wrap-text.js'
 import type { ChannelUi as Channel } from '../adapter/channel/ui-policy.js'
 import type { ChannelGoal, TodoPanelItem } from '../dsh-adapter/channel.js'
@@ -58,6 +58,12 @@ export function GoalStatusChip({ goal, minimal = false }: { goal: ChannelGoal; m
   )
 }
 
+function phaseText(goal: Pick<ChannelGoal, 'phase' | 'roundsStarted' | 'maxGoalRounds' | 'budget'>, elapsed?: string): string {
+  return `${PHASE_LABEL[goal.phase]} · ${goal.budget !== undefined
+    ? formatGoalBudget(goal.budget)
+    : `${goal.roundsStarted}/${goal.maxGoalRounds}${elapsed !== undefined ? ` · ${elapsed}` : ''}`}`
+}
+
 function PhaseBadge({
   phase,
   roundsStarted,
@@ -74,18 +80,9 @@ function PhaseBadge({
   /** Wall-clock age of the goal, from the panel's own timer. */
   elapsed?: string
 }): React.ReactNode {
-  const color = phaseColor(phase)
-  if (budget !== undefined) {
-    return (
-      <Text color={color} dimColor={phase === 'complete'}>
-        {PHASE_LABEL[phase]} · {formatGoalBudget(budget)}
-      </Text>
-    )
-  }
   return (
-    <Text color={color} dimColor={phase === 'complete'}>
-      {PHASE_LABEL[phase]} · {roundsStarted}/{maxGoalRounds}
-      {elapsed !== undefined ? ` · ${elapsed}` : ''}
+    <Text color={phaseColor(phase)} dimColor={phase === 'complete'}>
+      {phaseText({ phase, roundsStarted, maxGoalRounds, budget }, elapsed)}
     </Text>
   )
 }
@@ -135,6 +132,7 @@ export function GoalTodoPanel({
   variant = 'default',
   visible = true,
   maxTodos,
+  maxRows,
   wrapWidth,
 }: {
   channel: Channel
@@ -148,14 +146,18 @@ export function GoalTodoPanel({
   /** 侧栏 visible 契约：非 active Panel 时 false——暂停本地计时，
    *  store（channel.goal/todos）照常更新，重新打开直接读最新值。 */
   visible?: boolean
-  /** 覆盖 MAX_TODOS（panel variant 按宿主高度传入）。 */
+  /** 覆盖 MAX_TODOS。 */
   maxTodos?: number
+  /** panel variant：总行预算，扣除实际目标行、状态、留白与折叠头；
+   *  至少保留 3 行待办（含 overflow），内容超高交宿主滚动。 */
+  maxRows?: number
   /** panel variant：todo 行按此宽度折行——单条最多 2 行，超出部分截断
    *  加省略号；maxTodos 预算按「行」折算，放不下仍走「…N more」。缺省
    *  （default 形态）不折行，保持单行 truncate 的 chat 页现状。 */
   wrapWidth?: number
 }): React.ReactNode {
   const goal = channel.goal
+  const { columns } = useTerminalSize()
   const objectiveRef = React.useRef<DOMElement | null>(null)
   const goalTooltip = useTooltip(() => {
     const width = objectiveRef.current?.yogaNode?.getComputedWidth() ?? 0
@@ -216,7 +218,18 @@ export function GoalTodoPanel({
     (channel.working || anyUnfinished || goal !== undefined || variant === 'panel')
   if (goal === undefined && !showTodoSection) return null
 
-  const budget = maxTodos ?? MAX_TODOS
+  // PanelHost supplies the panel width. Pre-wrap once and render those exact
+  // rows: Yoga's single-row truncate measurement must not budget a long goal.
+  const goalLines = variant === 'panel' && goal !== undefined
+    ? wrapTextLines(goal.objective, Math.max(1, columns - 5)).map(line => line.text)
+    : []
+  const phaseLines = variant === 'panel' && goal !== undefined
+    ? wrapTextLines(phaseText(goal, elapsed), Math.max(1, columns - 2)).map(line => line.text)
+    : []
+  const blockedRows = goal?.phase === 'blocked' && goal.blockedReason !== undefined ? 2 : 0
+  const budget = variant === 'panel' && maxRows !== undefined
+    ? Math.max(3, maxRows - 1 - goalLines.length - phaseLines.length - blockedRows - (showTodoSection ? 1 : 0))
+    : maxTodos ?? MAX_TODOS
   // 折行形态（panel）：每条 todo 占 1~2 行，预算按「行」折算——放不下
   // 的整条让位给「…N more」，不撑破面板高度（§16.6 盒高恒定）。cap：
   // 折出 >2 行时保留第一行、其余拼回一行截断加省略号（wrapText truncate）。
@@ -229,9 +242,13 @@ export function GoalTodoPanel({
       const lines = wrapped.length <= 2
         ? wrapped
         : [wrapped[0]!, wrapText(wrapped.slice(1).join(''), wrapWidth, 'truncate')!]
-      if (display.length > 0 && used + lines.length > budget) break
+      if ((display.length > 0 || (variant === 'panel' && maxRows !== undefined)) && used + lines.length > budget) break
       display.push({ todo, lines })
       used += lines.length
+    }
+    // The overflow summary is itself a row, not free space after the budget.
+    if (variant === 'panel' && maxRows !== undefined && display.length < todos.length) {
+      while (display.length > 0 && used + 1 > budget) used -= display.pop()!.lines.length
     }
   } else {
     for (const todo of todos.slice(0, budget)) display.push({ todo, lines: [todo.content] })
@@ -246,33 +263,49 @@ export function GoalTodoPanel({
     <Box
       ref={variant === 'panel' ? clockRef : undefined}
       flexDirection="column"
+      flexShrink={variant === 'panel' ? 0 : undefined}
       paddingLeft={variant === 'panel' ? 1 : 2}
       paddingRight={variant === 'panel' ? 1 : 2}
       paddingTop={1}
     >
       {goal !== undefined && (
         <Box flexDirection="column">
-          {/* 行盒显式 height={1}：窄屏下与截断文本同行的布局会被量出虚高
-              （行内出现幽灵空行，实测窄终端里 🎯 行与折叠头之间多出空行），
-              钉死单行高度可消除；本面板各行本就设计为单行（内容均
-              truncate）。 */}
-          <Box flexDirection="row" width="100%" height={1}>
-            <Text color="suggestion">🎯 </Text>
-            <Box ref={objectiveRef} flexGrow={1} flexShrink={1} {...goalTooltip}>
-              <Text bold wrap="truncate">
-                {goal.objective}
-              </Text>
+          {variant === 'panel' ? (
+            <>
+              <Box flexDirection="row" width="100%" height={goalLines.length}>
+                <Text color="suggestion">🎯 </Text>
+                <Box flexDirection="column" flexGrow={1} flexShrink={1}>
+                  {goalLines.map((line, index) => (
+                    <Box key={index} height={1}><Text bold wrap="truncate">{line}</Text></Box>
+                  ))}
+                </Box>
+              </Box>
+              {phaseLines.map((line, index) => (
+                <Box key={index} height={1}>
+                  <Text color={phaseColor(goal.phase)} dimColor={goal.phase === 'complete'} wrap="truncate">{line}</Text>
+                </Box>
+              ))}
+            </>
+          ) : (
+            // Compact chat chrome keeps the single-row summary and its tooltip.
+            <Box flexDirection="row" width="100%" height={1}>
+              <Text color="suggestion">🎯 </Text>
+              <Box ref={objectiveRef} flexGrow={1} flexShrink={1} {...goalTooltip}>
+                <Text bold wrap="truncate">
+                  {goal.objective}
+                </Text>
+              </Box>
+              <Box flexShrink={0} marginLeft={1}>
+                <PhaseBadge
+                  phase={goal.phase}
+                  roundsStarted={goal.roundsStarted}
+                  maxGoalRounds={goal.maxGoalRounds}
+                  budget={goal.budget}
+                  elapsed={elapsed}
+                />
+              </Box>
             </Box>
-            <Box flexShrink={0} marginLeft={1}>
-              <PhaseBadge
-                phase={goal.phase}
-                roundsStarted={goal.roundsStarted}
-                maxGoalRounds={goal.maxGoalRounds}
-                budget={goal.budget}
-                elapsed={elapsed}
-              />
-            </Box>
-          </Box>
+          )}
           {goal.phase === 'blocked' && goal.blockedReason !== undefined && (
             <Box flexDirection="row" marginTop={1} height={1}>
               <Text dimColor>│ </Text>

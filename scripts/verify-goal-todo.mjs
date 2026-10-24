@@ -9,6 +9,7 @@
  */
 import { Writable, PassThrough } from 'node:stream'
 import React from 'react'
+import stripAnsi from 'strip-ansi'
 import { render, useInput } from '../lib/types/ui.js'
 import { GoalTodoPanel } from '../lib/types/components/GoalTodoPanel.js'
 import { AlternateScreen } from '../lib/types/ink/components/AlternateScreen.js'
@@ -19,11 +20,14 @@ function check(name, ok, extra = '') {
   if (!ok) failed += 1
 }
 
-const toPlain = s =>
-  s
-    .replace(/\x1b\[(\d+)C/g, (_, n) => ' '.repeat(Number(n)))
-    .replace(/\x1b\[[0-9;?>:]*[a-zA-Z]/g, '')
-    .replace(/\x1b\]9;[^\x07]*\x07/g, '')
+const toPlain = s => stripAnsi(s
+  .replace(/\x1b\[(\d+)C/g, (_, n) => ' '.repeat(Number(n)))
+  .replace(/\x1b\[[0-9;?>:]*[a-zA-Z]/g, ''))
+
+check('terminal OSC cleanup is not visible text', toPlain('\x1b]8;;\x07') === '')
+check('keyboard protocol setup is not visible text', toPlain('\x1b[>1u\x1b[>4;2m') === '')
+check('stripping hyperlink controls preserves their visible label',
+  toPlain('\x1b]8;;https://example.invalid\x07goal label\x1b]8;;\x07') === 'goal label')
 
 function makeStreams() {
   const stdout = new Writable({

@@ -1,6 +1,7 @@
 /** Register built-in panels in the shared panel store. */
 import React from 'react'
 import { t } from '../../i18n.js'
+import { ScrollBox, type ScrollBoxHandle } from '../../ui.js'
 import { GoalTodoPanel } from '../GoalTodoPanel.js'
 import { JobsPanel } from '../JobsPanel.js'
 import { SubagentDashboard } from '../SubagentDashboard.js'
@@ -27,25 +28,34 @@ function TodoPanelAdapter({ width, height, focused, visible }: PanelProps): Reac
   // 侧栏里点折叠头是死控件。
   const [collapsed, setCollapsed] = React.useState(false)
   const toggleCollapsed = React.useCallback(() => setCollapsed(previous => !previous), [])
+  const scrollRef = React.useRef<ScrollBoxHandle | null>(null)
+  React.useEffect(() => { scrollRef.current?.scrollTo(0) }, [channel.sessionId, channel.goal?.id])
   usePanelInput((input, key) => {
     if (key.ctrl || key.meta || key.escape) return false
+    if (key.upArrow || key.downArrow) {
+      scrollRef.current?.scrollBy(key.upArrow ? -1 : 1)
+      return true
+    }
     if (key.return_ !== true && input !== ' ') return false
     toggleCollapsed()
     return true
   }, { active: focused && visible })
-  // 行数预算：goal 区最多 2 行 + 折叠头 1 行 + 留白 1 行，其余给 todo 列表。
+  // The component budgets its actual wrapped goal rows; a goal taller than
+  // the viewport remains readable by scrolling without moving panel chrome.
   return (
-    <GoalTodoPanel
-      channel={channel}
-      variant="panel"
-      visible={visible}
-      collapsed={collapsed}
-      onToggle={toggleCollapsed}
-      maxTodos={Math.max(3, height - 4)}
-      // 折行宽 = 面板宽 − 左右 padding 2 − 树形前缀 3 − 状态 glyph 2，
-      // 再留 1 格余量防 ink 二次折行（长行溢出超过约束会把同行定宽列挤折）。
-      wrapWidth={Math.max(10, width - 8)}
-    />
+    <ScrollBox ref={scrollRef} flexDirection="column" height={height} flexShrink={0}>
+      <GoalTodoPanel
+        channel={channel}
+        variant="panel"
+        visible={visible}
+        collapsed={collapsed}
+        onToggle={toggleCollapsed}
+        maxRows={height}
+        // 折行宽 = 面板宽 − 左右 padding 2 − 树形前缀 3 − 状态 glyph 2，
+        // 再留 1 格余量防 ink 二次折行。
+        wrapWidth={Math.max(10, width - 8)}
+      />
+    </ScrollBox>
   )
 }
 
@@ -235,6 +245,7 @@ export function registerBuiltinPanels(): void {
     source: 'builtin',
     mountPolicy: 'enabled',
     defaultEnabled: true,
+    capabilities: { scroll: true },
     component: TodoPanelAdapter,
   }, 'builtin')
   panelStore.register({

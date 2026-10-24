@@ -9,6 +9,10 @@
  *    TodoPanelAdapter never passed onToggle and the header was a dead control);
  *  - Enter and Space toggle through the v2.1 dispatcher (usePanelInput) while
  *    the panel is active;
+ *  - long goals wrap completely at narrow/wide sidebar widths, with exact
+ *    row measurement and a separate phase badge; resizing reflows them;
+ *  - a short viewport scrolls to the goal tail and the budgeted todo list
+ *    without moving the panel chrome or consuming chat-focused arrow keys;
  *  - control: the chat-page default variant still renders its list + fold
  *    hint line untouched (panel-variant-only change).
  * Run: node --import tsx/esm scripts/verify-todo-side-panel.tsx
@@ -29,7 +33,12 @@ const [{ PassThrough, Writable }, React, { Terminal: XTerm }, ui, { SidePanelCol
 ])
 const { render, ThemeProvider, AlternateScreen, Box, Text, useInput } = ui
 const { applySidePanelOpen, applySidePanelRatio } = prefs
-const { settled, sleep } = termTest
+const { settled, sleep, viewportLines } = termTest
+const [{ wrapTextLines }, { getTooltipSnapshot, clearTooltip }] = await Promise.all([
+  import('../src/ink/wrap-text.js'),
+  import('../src/components/Tooltip.js'),
+])
+import type { DOMElement } from '../src/ink/dom.js'
 
 const COLS = 110
 const ROWS = 22
@@ -101,7 +110,7 @@ function Harness(): React.ReactNode {
   return (
     <Box flexDirection="row" width={COLS} height={ROWS}>
       <Box width={sp.split ? sp.chatColumns : COLS}><Text>{'chat-anchor SP split=' + (sp.split ? 1 : 0) + ' focus=' + sp.focus + ' active=' + (sp.activePanelId ?? 'none')}</Text></Box>
-      {sp.split ? <SidePanelColumn width={sp.panelColumns} controller={sp} channel={channel as never} /> : null}
+      {sp.split ? <SidePanelColumn width={sp.panelColumns} controller={{ ...sp, enabledPanelIds: ['todo'] }} channel={channel as never} /> : null}
     </Box>
   )
 }
@@ -203,8 +212,8 @@ try {
   }
   const rulesBefore = ruleRows()
   check('wrap: panel rules located (baseline geometry)', rulesBefore.length >= 2, JSON.stringify(rulesBefore))
-  // hostHeight = ROWS-4 = 18 → maxTodos = 14 行。两条 2 行项 + 12 条单行
-  // = 16 行 > 14：预算按行折算时第 15 行起的整条让位给 …N more。
+  // hostHeight = 18: padding + goal + badge + header use 4 rows. The
+  // remaining 14 include the overflow row, leaving 13 for todo text.
   const shorts = Array.from({ length: 12 }, (_, i) => ({ id: 's' + i, content: 'short task ' + i, status: 'pending' }))
   setTodos([
     { id: 'L', content: LONG_WRAP, status: 'pending' },
@@ -223,11 +232,10 @@ try {
   check('wrap: continuation line hangs with 5-space indent (aligns with first-line text)',
     contAtPrefix === '\u2502    ',
     JSON.stringify(contLine ?? null))
-  // 行数预算按行折算：两条 2 行项(4 行) + 10 条单行 = 14 行恰好吃满预算，
-  // 第 15 行起的整条（末两条 short）让位给 …N more。
+  // Two 2-row todos + nine 1-row todos + overflow use exactly 14 rows.
   check('wrap: overflow items yield to the …N more lane (budget by rows)',
-    lines().some(l => l.includes('more')) && lines().some(l => l.includes('short task 9')) &&
-      !lines().some(l => l.includes('short task 10')) && !lines().some(l => l.includes('short task 11')),
+    lines().some(l => l.includes('… 3 more')) && lines().some(l => l.includes('short task 8')) &&
+      !lines().some(l => l.includes('short task 9')) && !lines().some(l => l.includes('short task 10')),
     lines().find(l => l.includes('more')) ?? 'no-more-line')
   // 高度契约（§16.6）：折行只改变可见条数，面板盒子高度（分隔线位置）不变。
   check('wrap: panel height unchanged (rule rows identical)', JSON.stringify(ruleRows()) === JSON.stringify(rulesBefore),
@@ -308,7 +316,7 @@ try {
   const app2 = await render(
     <AlternateScreen>
       <ThemeProvider theme="dark">
-        <GoalTodoPanel channel={channel as never} variant="default" />
+        <GoalTodoPanel channel={{ ...channel, goal: { ...goal, objective: 'COMPACT_HEAD ' + 'x'.repeat(150) + ' COMPACT_TAIL' } } as never} variant="default" />
       </ThemeProvider>
     </AlternateScreen>,
     {
@@ -329,6 +337,9 @@ try {
     check('control: default variant renders expanded list', ls2.some(l => l.includes('write the fix')))
     check('control: default variant keeps its fold hint line', ls2.some(l => l.includes('to fold')), ls2.find(l => l.includes('fold')) ?? '')
     check('control: default variant header is expanded glyph', ls2.some(l => l.includes('\u25be')))
+    check('control: long goal stays on one compact row beside its badge',
+      ls2.some(line => line.includes('COMPACT_HEAD') && line.includes('active ·'))
+      && !ls2.some(line => line.includes('COMPACT_TAIL')))
     // 整屏形态不折行：长 todo 仍是单行 truncate——没有任何续行。
     const xRows2 = ls2.filter(l => l.includes('XXXXX'))
     check('control: default variant does NOT wrap the long todo (single truncated row)',
@@ -341,6 +352,133 @@ try {
   try { await app.unmount() } catch { /* already unmounted */ }
   try { term.dispose() } catch { /* already disposed */ }
 }
+
+// --- goal layout: real built-in adapter + PanelHost + terminal renderer -----
+const LONG_GOAL = 'GOAL_HEAD 将本机个人 dsh-tui profile 安装为干净提交后的版本，'
+  + '验证中英文目标自然换行 👩‍💻 e\u0301、侧栏尺寸和待办行预算。'.repeat(4)
+  + '\n显式换行后仍保留全部目标内容 GOAL_TAIL'
+
+function scrollNode(node: DOMElement | null): DOMElement | undefined {
+  if (node === null) return undefined
+  if (node.style.overflowY === 'scroll') return node
+  for (const child of node.childNodes) {
+    if (child.nodeName === '#text') continue
+    const found = scrollNode(child)
+    if (found !== undefined) return found
+  }
+  return undefined
+}
+
+async function goalLayout(rows: number): Promise<void> {
+  const columns = 132
+  let width = 28
+  let panelRoot: DOMElement | null = null
+  let controller: ReturnType<typeof useSidePanel> | undefined
+  const goalChannel = {
+    ...channel,
+    sessionId: 'goal-layout-session',
+    goal: { ...goal, objective: LONG_GOAL },
+    todos: Array.from({ length: 24 }, (_, i) => ({ content: 'task-' + i, status: 'pending' })),
+  }
+  const goalTerm = new XTerm({ cols: columns, rows, scrollback: 0, allowProposedApi: true })
+  const goalOut = new FakeStdout(goalTerm, columns, rows)
+  const goalIn = new FakeStdin()
+  function GoalHarness(): React.ReactNode {
+    const sp = useSidePanel({ columns, fullscreen: true, editorOpen: false })
+    controller = sp
+    useInput((input, key) => { sp.handleKey(input, key as never) })
+    React.useEffect(() => { sp.openPanel('todo', { focus: true }) }, [])
+    return (
+      <Box flexDirection="row" width={columns} height={rows}>
+        <Box width={columns - width}><Text>chat-anchor</Text></Box>
+        <Box ref={node => { panelRoot = node }} width={width} flexDirection="column">
+          <SidePanelColumn width={width} controller={{ ...sp, enabledPanelIds: ['todo'], activePanelId: 'todo' }} channel={goalChannel as never} />
+        </Box>
+      </Box>
+    )
+  }
+  const tree = () => <AlternateScreen><ThemeProvider theme="dark"><GoalHarness /></ThemeProvider></AlternateScreen>
+  const instance = await render(tree(), {
+    stdout: goalOut as unknown as NodeJS.WriteStream,
+    stdin: goalIn as unknown as NodeJS.ReadStream,
+    stderr: new FakeStderr() as unknown as NodeJS.WriteStream,
+    exitOnCtrlC: false,
+    patchConsole: false,
+  })
+  const screen = () => viewportLines(goalTerm, rows)
+  const scroller = () => scrollNode(panelRoot)
+  const expectedGoalRows = () => wrapTextLines(LONG_GOAL, width - 5).length
+  const compact = (text: string) => text.normalize('NFC').replace(/\s/g, '')
+  const fullObjective = () => {
+    const lines = screen()
+    const head = lines.findIndex(line => line.includes('GOAL_HEAD'))
+    const phase = lines.findIndex(line => line.includes('active ·'))
+    return head >= 0 && phase - head === expectedGoalRows()
+      && compact(lines.slice(head, phase).join('')).includes(compact(LONG_GOAL))
+  }
+  try {
+    await settled(() => screen().some(line => line.includes('GOAL_HEAD')) && controller?.focus === 'panel')
+    const ruleRows = () => screen().flatMap((line, index) => line.includes('────') ? [index] : [])
+    const rules = ruleRows()
+    if (rows >= 30) {
+      for (const nextWidth of [28, 62, 28]) {
+        width = nextWidth
+        instance.rerender(tree())
+        check(`goal ${width} cols: full CJK/emoji/multiline objective without hover`, await settled(fullObjective), screen().join('\n'))
+        check(`goal ${width} cols: phase badge follows exactly the wrapped goal rows`,
+          screen().findIndex(line => line.includes('active ·')) - screen().findIndex(line => line.includes('GOAL_HEAD')) === expectedGoalRows())
+        check(`goal ${width} cols: todo budget includes padding/header/overflow (no hidden overflow row)`,
+          await settled(() => screen().some(line => line.includes('more')))
+          && scroller()?.scrollHeight === rows - 4 && scroller()?.scrollViewportHeight === rows - 4,
+          `height=${scroller()?.scrollHeight}, viewport=${scroller()?.scrollViewportHeight}`)
+        check(`goal ${width} cols: resizing keeps panel chrome fixed`, JSON.stringify(ruleRows()) === JSON.stringify(rules))
+      }
+      const hit = termTest.findText(goalTerm, 'GOAL_HEAD')
+      if (hit !== null) goalIn.write(`\x1b[<35;${hit.col + 1};${hit.row + 1}M`)
+      await sleep(700) // 固定窗:墙钟 fully visible wrapped goals must stay silent after tooltip dwell.
+      check('goal panel: fully visible wrapped objective has no truncation tooltip', getTooltipSnapshot() === null)
+    } else {
+      check('short goal panel: measured content exceeds only its own viewport',
+        (scroller()?.scrollHeight ?? 0) > rows - 4 && scroller()?.scrollViewportHeight === rows - 4)
+      // Real focused-panel arrow bytes must expose the goal tail and todo rows.
+      goalIn.write('\x1b[B'.repeat(100))
+      check('short goal panel: scroll reaches full goal tail, badge, first todo and overflow summary',
+        await settled(() => screen().some(line => line.includes('GOAL_TAIL'))
+          && screen().some(line => line.includes('active ·')) && screen().some(line => line.includes('task-0'))
+          && screen().some(line => line.includes('more'))), screen().join('\n'))
+      check('short goal panel: total scroll height uses a minimum todo budget, not the full list',
+        scroller()?.scrollHeight === 1 + expectedGoalRows() + 1 + 1 + 3,
+        `height=${scroller()?.scrollHeight}, goalRows=${expectedGoalRows()}`)
+      goalIn.write('\x1b[A'.repeat(100))
+      check('short goal panel: arrows scroll back to the objective head', await settled(() => screen().some(line => line.includes('GOAL_HEAD'))))
+      // The wheel is routed by its coordinates even while chat owns the keys.
+      controller?.focusChat()
+      await termTest.settle(() => controller?.focus === 'chat')
+      goalIn.write(`\x1b[<65;${columns - 10};4M`.repeat(30))
+      check('short goal panel: mouse wheel also reaches the todo list', await settled(() => screen().some(line => line.includes('task-0'))))
+      const top = scroller()?.scrollTop
+      goalIn.write('\x1b[A')
+      await sleep(100) // 固定窗:探针 chat-focused arrows must not scroll the sidebar.
+      check('short goal panel: chat-focused arrows do not scroll the sidebar', scroller()?.scrollTop === top)
+      check('short goal panel: scrolling preserves panel chrome', JSON.stringify(ruleRows()) === JSON.stringify(rules))
+      goalChannel.goal = { ...goalChannel.goal, id: 'replacement-goal' }
+      instance.rerender(tree())
+      check('short goal panel: a replacement goal starts at its head', await settled(() => scroller()?.scrollTop === 0 && screen().some(line => line.includes('GOAL_HEAD'))))
+      goalIn.write(`\x1b[<65;${columns - 10};4M`.repeat(30))
+      await termTest.settle(() => screen().some(line => line.includes('task-0')))
+      goalChannel.sessionId = 'replacement-session'
+      instance.rerender(tree())
+      check('short goal panel: changing sessions resets the retained panel scroll', await settled(() => scroller()?.scrollTop === 0 && screen().some(line => line.includes('GOAL_HEAD'))))
+    }
+  } finally {
+    clearTooltip()
+    await instance.unmount()
+    goalTerm.dispose()
+  }
+}
+
+await goalLayout(34)
+await goalLayout(12)
 
 if (failed > 0) {
   console.error('FAILED: ' + failed + ' check(s).')
