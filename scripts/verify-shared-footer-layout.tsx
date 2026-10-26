@@ -1,9 +1,11 @@
 /**
- * Shared Chat footer regression through the real Chat + PageMargin + Ink tree.
- * The split/zoom row stops at the prompt replacement's bottom; StatusLine owns
- * the entire content width below it. Checks painted terminal cells as well as
- * rendered DOM geometry, the final └/horizontal-rule pixels and hint row,
- * dynamic chrome heights and the composer lifetime.
+ * Shared Chat input + footer regression through the real Chat + PageMargin +
+ * Ink tree. The split/zoom row closes right above the prompt (or its
+ * question/approval replacement); the input and StatusLine below it own the
+ * entire content width. Checks painted terminal cells as well as rendered DOM
+ * geometry, the final └/horizontal-rule pixels and hint row, dynamic chrome
+ * heights (including a draft growing from the prompt's own state) and the
+ * composer lifetime.
  *
  * Run: node --import tsx/esm scripts/verify-shared-footer-layout.tsx
  */
@@ -171,25 +173,32 @@ async function mount({ columns = 144, fullscreen = true } = {}) {
     if (split) {
       check(label + ': sidebar and divider are measured', geometry.side !== undefined && geometry.divider !== undefined, JSON.stringify(geometry))
       const footer = geometry.footer!
-      check(label + ': footer is wider than the chat column', footer.width > geometry.divider.x - INSET_X, JSON.stringify(geometry))
-      check(label + ': sidebar bottom meets the footer top', geometry.side.y + geometry.side.height === footer.y, JSON.stringify(geometry))
-      check(label + ': divider bottom meets the footer top', geometry.divider.y + geometry.divider.height === footer.y, JSON.stringify(geometry))
+      const input = geometry.replacement ?? geometry.prompt
+      check(label + ': prompt or replacement is measured', input !== undefined && input.height > 0, JSON.stringify(geometry))
+      check(label + ': input owns the complete content width', input.x === INSET_X && input.width === stdout.columns - INSET_X * 2, JSON.stringify(geometry))
+      check(label + ': footer sits directly below the input', input.y + input.height === footer.y, JSON.stringify(geometry))
+      const sideBottom = geometry.side.y + geometry.side.height
+      check(label + ': divider ends with the sidebar', geometry.divider.y + geometry.divider.height === sideBottom, JSON.stringify(geometry))
+      // The prompt's top margin (its toast row) is the only gap; a stale
+      // measurement would overlap the input or leave extra blank rows.
+      check(label + ': sidebar ends right above the input', sideBottom <= input.y && input.y - sideBottom <= 1, JSON.stringify(geometry))
+      for (let row = sideBottom; row < input.y; row += 1) {
+        check(label + `: gap row ${row} is blank`, lines()[row]?.trim() === '', snapshot())
+      }
       const hints = lines().map((line, row) => ({ line, row })).filter(({ line }) => line.includes('Ctrl+B') || line.includes('Esc chat'))
-      check(label + ': side hint is above the footer', hints.some(({ row }) => row < footer.y), snapshot())
-      check(label + ': side hint never appears inside the footer', hints.every(({ row }) => row < footer.y), snapshot())
-      const closingRow = footer.y - 1
-      const hintRow = footer.y - 2
-      check(label + ': closing seam is └ immediately above the footer', cell(geometry.divider.x, closingRow) === '└', snapshot())
+      check(label + ': side hint is above the input', hints.some(({ row }) => row < input.y), snapshot())
+      check(label + ': side hint never appears below the sidebar', hints.every(({ row }) => row < sideBottom), snapshot())
+      const closingRow = sideBottom - 1
+      const hintRow = sideBottom - 2
+      check(label + ': closing seam is └ on the sidebar final row', cell(geometry.divider.x, closingRow) === '└', snapshot())
       const closingRule = Array.from({ length: geometry.side.width }, (_, col) => cell(geometry.side.x + col, closingRow)).join('')
       check(label + ': sidebar final row is a continuous horizontal rule', closingRule.length === geometry.side.width && /^─+$/.test(closingRule), JSON.stringify(closingRule))
       check(label + ': sidebar closing rule contains no hint', !hints.some(({ row }) => row === closingRow), snapshot())
       check(label + ': side hint is exactly one row above the closing rule', hints.some(({ row }) => row === hintRow), snapshot())
-      for (let row = footer.y; row < footer.y + footer.height; row += 1) {
+      for (let row = sideBottom; row < footer.y + footer.height; row += 1) {
         const char = cell(geometry.divider.x, row)
-        check(label + `: no divider glyph on footer row ${row}`, char !== '│' && char !== '├' && char !== '└', snapshot())
+        check(label + `: no divider glyph on input/footer row ${row}`, char !== '│' && char !== '├' && char !== '└', snapshot())
       }
-      const input = geometry.replacement ?? geometry.prompt
-      check(label + ': prompt or replacement bottom meets the sidebar bottom', input !== undefined && input.height > 0 && input.y + input.height === footer.y, JSON.stringify(geometry))
     } else {
       check(label + ': no sidebar is painted', geometry.side === undefined && geometry.divider === undefined, JSON.stringify(geometry))
     }
@@ -234,7 +243,7 @@ await verify('split and zoom share the full-width context bar and fields', async
     const footer = geometry.footer!
     f.stdin.write(`\x1b[<35;${ctx.col + 1};${ctx.row + 1}M`)
     check('hovering a footer field under the former sidebar shows its own detail', await settled(() => f.lines()[footer.y + footer.height - 1]?.includes('free ') === true), f.snapshot())
-    check('footer hover does not resize or enter the sidebar', f.rect('StatusLine')?.height === footer.height && f.rect('SidePanelColumn')!.y + f.rect('SidePanelColumn')!.height === footer.y, JSON.stringify(f.layout()))
+    check('footer hover does not resize or enter the sidebar', f.rect('StatusLine')?.height === footer.height && f.rect('SidePanelColumn')!.height === geometry.side!.height, JSON.stringify(f.layout()))
     f.stdin.write('\x1b[<35;4;20M')
     check('leaving the footer restores the common hint', await settled(() => f.lines()[footer.y + footer.height - 1]?.includes('? for shortcuts') === true), f.snapshot())
     f.stdin.write('\x02') // Pre-opened sidebar: Ctrl+B focuses it.
@@ -245,10 +254,12 @@ await verify('split and zoom share the full-width context bar and fields', async
     check('zoom context readout is still in the former sidebar columns', (f.point('40k/100k')?.col ?? -1) > geometry.divider!.x, f.snapshot())
     const model = f.point(MODEL, geometry.footer!.y)!
     f.stdin.write(`\x1b[<0;${model.col + 1};${model.row + 1}M\x1b[<0;${model.col + 1};${model.row + 1}m`)
-    check('clicking the shared footer returns keyboard focus to chat', await settled(() => f.lines().some(line => line.includes('Ctrl+B focus panel'))), f.snapshot())
     check('clicking the footer model opens its existing picker', await settled(() => f.rect('ModelPicker') !== undefined), f.snapshot())
+    // The full-width picker covers the sidebar hint, so read focus after
+    // Escape — which closes only the picker and never moves focus itself.
     f.stdin.write('\x1b')
     check('Escape closes only the model picker', await settled(() => f.rect('ModelPicker') === undefined), f.snapshot())
+    check('clicking the shared footer returned keyboard focus to chat', await settled(() => f.lines().some(line => line.includes('Ctrl+B focus panel'))), f.snapshot())
     f.stdin.write('FOOTER_CLICK_DRAFT')
     check('typing after the footer click reaches the composer', await settled(() => f.rowOf('FOOTER_CLICK_DRAFT') >= 0), f.snapshot())
   } finally { await f.close() }
@@ -262,6 +273,7 @@ await verify('multi-line draft and prompt replacements preserve the shared bound
     check('pasted draft is visible in the real composer', await settled(() => f.rowOf('THIRD_DRAFT_LINE') >= 0), f.snapshot())
     const multi = await f.assertShared('multi-line')
     check('multi-line input grows without changing footer height', multi.prompt!.height > initial.prompt!.height && multi.footer!.height === initial.footer!.height, JSON.stringify({ initial, multi }))
+    check('multi-line input shortens the sidebar by the rows it grew', initial.side!.height - multi.side!.height === multi.prompt!.height - initial.prompt!.height, JSON.stringify({ initial, multi }))
     const ask = f.questions.ask({ questions: [{ id: 'shared-question', header: 'FOOTER_QUESTION', question: 'Choose an item?', options: [{ label: 'One', description: 'First item' }, { label: 'Two', description: 'Second item' }] }] }).catch(() => undefined)
     check('question replaces the composer', await settled(() => f.rowOf('FOOTER_QUESTION') >= 0), f.snapshot())
     await f.assertShared('question')

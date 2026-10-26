@@ -50,7 +50,7 @@ import type { SidePanelSplit } from './dimensions.js'
 export interface SidePanelLayoutProps {
   readonly geometry: SidePanelSplit | null
   readonly focus: SidePanelFocus
-  /** Rows left above a shared footer; omitted when this row owns the full page. */
+  /** Rows left above the shared input and footer; omitted when this row owns the full page. */
   readonly availableRows?: number
   /** Right-column content (PanelBar + PanelHost + hint). */
   readonly side: React.ReactNode
@@ -65,7 +65,7 @@ export interface SidePanelLayoutProps {
  * The 1-column seam. Rendered as an explicit glyph block (not a border) so
  * it can tee into the panel column's top rule and close at its bottom rule:
  * row 1 draws '├', the last row '└', and intervening rows '│'. The lower
- * rule aligns with the input's bottom edge above the shared footer.
+ * rule sits directly above the full-width input.
  */
 function DividerColumn({
   focused,
@@ -187,7 +187,7 @@ export function SidePanelLayout({
         <>
           {/* SidePanelColumn keeps its upper rule on row 1 and ends with
               hint + lower rule. The seam tees at the top and closes on the
-              final row, level with the input's bottom border. */}
+              final row, directly above the input's top border. */}
           <DividerColumn
             focused={focus === 'panel'}
             rows={rows}

@@ -67,6 +67,7 @@ import { useTerminalFocus } from '../ink/hooks/use-terminal-focus.js'
 import { useProgramStatus, type ProgramBlockedPrompt } from '../ink/hooks/use-program-status.js'
 import { supportsProgramStatus } from '../ink/termio/osc7501.js'
 import { useCopyOnSelect } from '../ink/hooks/use-copy-on-select.js'
+import { useCommittedHeight } from '../ink/hooks/use-committed-height.js'
 import { useSelection } from '../ink/hooks/use-selection.js'
 import { NoSelect } from '../ink/components/NoSelect.js'
 import { LogoHeader, MessageList } from '../components/MessageList.js'
@@ -1448,8 +1449,11 @@ export function Chat({
   const [effortLevelsFallback, setEffortLevelsFallback] = React.useState(false)
   const [themeName, setTheme] = useTheme()
   const { rows: terminalRows } = useTerminalSize()
-  const [footerRows, setFooterRows] = React.useState(0)
-  const upperRows = Math.max(0, terminalRows - footerRows)
+  // 通栏底部（输入簇 + 公共底栏）的实测高度：分栏行只占它上方的行。
+  // 输入簇会因子组件自身状态长高（多行草稿、问卷翻页），Chat 不一定重渲，
+  // 所以按每次提交的布局读，而不是只在 Chat 的 layout effect 里读。
+  const [bottomRef, bottomRows] = useCommittedHeight()
+  const upperRows = Math.max(0, terminalRows - bottomRows)
   /**
    * 帮助盖屏（第八版，overlay kind 'help'）的滚动视口：HelpMenu 自带
    * ScrollBox，键盘（↑/↓/PgUp/PgDn/Home/End）由 Chat 的 overlay 分支驱动。
@@ -7215,7 +7219,7 @@ export function Chat({
         })()}
         {!promptEditorOpen && imagePreviewNode}
       </Box>
-      {/* Chat-column chrome (pill, spinners, dialogs, prompt): never
+      {/* Chat-column chrome (pill, spinners, todo, status rows): never
           let flex shrink squeeze these fixed-height rows — the ScrollBox
           above absorbs all overflow (it is the scroll container). */}
       <Box flexDirection="column" flexShrink={0}>
@@ -7335,10 +7339,15 @@ export function Chat({
             </Box>
           </PluginStatusViewBoundary>
         ))}
+      </Box>
+      </SidePanelLayout>
+      {/* 通栏底部：输入簇 + 公共底栏横跨聊天与侧栏，分栏行停在它的顶边；
+          点击仍像原聊天列一样交回聊天焦点。 */}
+      <Box ref={bottomRef} flexDirection="column" flexShrink={0} onClick={sidePanel.split ? sidePanel.focusChat : undefined}>
         {/* 输入簇：可替换输入行链 + 瞬态浮层。浮层锚点收窄到本簇
             顶边（= 输入行顶边），picker 紧贴输入框向上展开，盖住其上
-            todo/spinner/转录尾部行（用户接受的取舍），自身零布局高度、
-            不推动帧布局。 */}
+            todo/spinner/转录尾部行与侧栏底部（用户接受的取舍），自身零布局
+            高度、不推动帧布局。 */}
         <Box flexDirection="column" flexShrink={0}>
         {approvalPanelNode !== null ? (
           approvalPanelNode
@@ -7470,13 +7479,8 @@ export function Chat({
         </OverlayAbove>
         )}
         </Box>
-      </Box>
-      </SidePanelLayout>
-      {/* 公共底栏横跨聊天与侧栏；点击仍像原聊天列一样交回聊天焦点。 */}
-      <Box flexDirection="column" flexShrink={0} onClick={sidePanel.split ? sidePanel.focusChat : undefined}>
         <StatusLine
           channel={channel}
-          onHeightChange={setFooterRows}
           pluginFields={statusFields}
           activity={workingActivity}
           selectionActive={selectionActive}
@@ -7498,13 +7502,13 @@ export function Chat({
           }
         />
       </Box>
-      {/* 单例 tooltip 层：上部按列约束，公共底栏的悬停提示使用整页宽度。 */}
+      {/* 单例 tooltip 层：上部按列约束，通栏底部的悬停提示使用整页宽度。 */}
       <TooltipLayer
         regions={sidePanel.geometry === null ? undefined : [
           { left: 0, top: 0, columns: chatColumns, rows: upperRows },
           { left: chatColumns + 1, top: 0, columns: sidePanel.panelColumns, rows: upperRows },
         ]}
-        invalidationKey={`${overlay.kind}:${dialogOverlayOpen}:${btwOverlayVisible}:${sidePanel.split}:${chatColumns}:${footerRows}`}
+        invalidationKey={`${overlay.kind}:${dialogOverlayOpen}:${btwOverlayVisible}:${sidePanel.split}:${chatColumns}:${bottomRows}`}
         subscribeInvalidation={subscribeTooltipInvalidation}
       />
       {/* 全屏草稿编辑浮层：必须挂在 TooltipLayer 之后，才能盖住包括

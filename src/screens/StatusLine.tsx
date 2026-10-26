@@ -1,7 +1,6 @@
 import React from 'react'
 import { Box, Text, useTerminalSize, useTheme } from '../ui.js'
 import type { Color } from '../ink/styles.js'
-import type { DOMElement } from '../ink/dom.js'
 import { formatTokens } from '../terminal-utils/format.js'
 import { gitStatusSuffix } from '../utils/gitStatus.js'
 import { t } from '../i18n.js'
@@ -228,12 +227,9 @@ export function StatusLine({
   effortPicker,
   wake,
   activity: projectedActivity,
-  onHeightChange,
   pluginFields,
 }: {
   channel: Channel
-  /** Report actual footer height so sibling panes reserve the same rows. */
-  onHeightChange?: (rows: number) => void
   selectionActive?: boolean
   helpOpen?: boolean
   /** Plugin footer fields (`tuiStatus.setField`), already normalized by the
@@ -294,19 +290,6 @@ export function StatusLine({
   }
 }) {
   const { columns } = useTerminalSize()
-  const footerRef = React.useRef<DOMElement | null>(null)
-  const reportedHeight = React.useRef<{ rows: number; notify: typeof onHeightChange } | null>(null)
-  React.useLayoutEffect(() => {
-    if (onHeightChange === undefined) return
-    const height = footerRef.current?.yogaNode?.getComputedHeight()
-    if (height === undefined) return
-    const rows = Math.max(0, Math.ceil(height))
-    // Guard BEFORE enqueueing: hover/activity commits must not schedule a
-    // parent update for an unchanged height (React's nested-update limit).
-    if (reportedHeight.current?.rows === rows && reportedHeight.current.notify === onHeightChange) return
-    reportedHeight.current = { rows, notify: onHeightChange }
-    onHeightChange(rows)
-  })
   const [themeName] = useTheme()
   const [hover, setHover] = React.useState<HoverTarget | null>(null)
   const hoverProps = React.useCallback((id: HoverTarget) => ({
@@ -769,7 +752,7 @@ const selectionBadge = formatSelectionBadge(channel.selection)
     // Taking the width from the same source the bar already uses makes the
     // three rows agree by construction. verify-trace-scene part D walks a
     // ladder of widths and asserts the wake reaches the right margin at each.
-    <Box ref={footerRef} paddingX={1} width={columns} flexShrink={0}>
+    <Box paddingX={1} width={columns} flexShrink={0}>
       <Box flexDirection="column" width="100%">
         {/* Row 1: segmented context bar, its own line, first (pi-nano-context
             placement — the bar sits directly under the transcript). Rendered
