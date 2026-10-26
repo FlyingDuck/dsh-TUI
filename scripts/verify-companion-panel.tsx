@@ -76,6 +76,7 @@ const [{ PassThrough, Writable }, React, { Terminal: XTerm }, ui, { SidePanelLay
   import('./lib/term-test.mjs'),
 ])
 const { render, ThemeProvider, AlternateScreen, Box, Text, useInput } = ui
+const { t } = await import('../src/i18n.js')
 const { applySidePanelOpen, applySidePanelRatio, applySidePanelPanels, applyCompanionSkin } = prefs
 const { settled, sleep } = termTest
 const { WhaleSkin } = skins
@@ -443,10 +444,13 @@ try {
   fakeChannel.notifications = []
   const a = await scene(140, 30, fakeActivity, { approvals: 0, questions: 0 }, 'todo,jobs,agents,companion')
   try {
-    await settled(() => (a.lines()[0]?.match(/[▸◆♥]/g) ?? []).length === 3)
-    check('enable: companion panel appears with its heart icon', (a.lines()[0]?.match(/[▸◆♥]/g) ?? []).length === 3)
+    check('enable: companion is enabled and its text tab is rendered', await settled(() =>
+      a.controller?.enabledPanelIds.includes('companion') === true
+      && a.lines()[0]?.includes(t('panel-title-companion')) === true))
     a.controller?.openPanel('companion', { focus: true })
-    await settled(() => artRows(a.lines()).length > 0, { timeoutMs: 8000 })
+    check('enable: selecting companion activates its rendered panel', await settled(() =>
+      a.controller?.activePanelId === 'companion' && a.controller.focus === 'panel'
+      && artRows(a.lines()).length > 0, { timeoutMs: 8000 }))
     check('wide: deepy sprite frames render (half-block art rows)', artRows(a.lines()).length > 0)
     await settled(() => a.lines().some(l => l.includes('个工具')), { timeoutMs: 5000 })
     const statsLine = a.lines().find(l => l.includes('个工具')) ?? ''

@@ -354,8 +354,10 @@ try {
     const COLS = 120
     const ROWS = 30
     let source: string | undefined = 'unsupported'
+    let controller: ReturnType<typeof useSidePanel> | undefined
     function ColumnHarness(): React.ReactNode {
       const sp = useSidePanel({ columns: COLS, fullscreen: true, editorOpen: false })
+      controller = sp
       useInput(() => {}, { isActive: true })
       const channel = {
         version: 0, rows: [], status: 'idle', working: false, todos: [], subagents: [], goal: undefined,
@@ -410,24 +412,31 @@ try {
     source = 'unsupported'
     {
       const { h, app } = await mountColumn()
-      check('tab: the inactive trajectory panel shows its icon', await settled(() => barRow(h).includes('∿') && barRow(h).includes('◀') && barRow(h).includes('▶')), barRow(h).trim())
-      const tab = findText(h, '∿')
+      check('tab: inactive trajectory text stays visible beside the active todo', await settled(() =>
+        controller?.activePanelId === 'todo' && barRow(h).includes('Trajectory') && barRow(h).includes('Todo')), barRow(h).trim())
+      const tab = findText(h, 'Trajectory')
       if (tab !== null) click(h, tab.col + 1, tab.row)
-      check('tab: clicking the trajectory icon centers its title', await settled(() => barRow(h).includes('Trajectory') && !barRow(h).includes('Todo')), barRow(h).trim())
-      check('tab: honest generic unsupported copy remains in the panel', await settled(() => h.screen().includes(head(t('trajectory-unsupported')))))
-      check('outlet/unsupported: ⤢ stays hidden while carousel navigation remains', !barRow(h).includes('⤢') && barRow(h).includes('Trajectory') && barRow(h).includes('◀') && barRow(h).includes('▶'), barRow(h).trim())
+      check('tab: clicking trajectory text activates its panel', await settled(() =>
+        controller?.activePanelId === 'trajectory' && barRow(h).includes('Trajectory') && barRow(h).includes('Todo')), barRow(h).trim())
+      check('tab: honest generic unsupported copy remains in the active panel', await settled(() =>
+        controller?.activePanelId === 'trajectory' && h.screen().includes(head(t('trajectory-unsupported')))))
+      check('outlet/unsupported: ⤢ is hidden and fitting text tabs need no overflow arrows',
+        !barRow(h).includes('⤢') && barRow(h).includes('Trajectory') && !/[◀▶]/u.test(barRow(h)), barRow(h).trim())
       await app.unmount(); h.term.dispose()
     }
     source = 'supported'
     {
       const { h, app } = await mountColumn()
-      // 固定窗:pacing 两次用例在完全相同的坐标点击 ∿——必须跨过 ink 的
+      // 固定窗:pacing 两次用例在完全相同的坐标点击文字 tab——必须跨过 ink 的
       // 500ms 双击窗，否则第二次点击被当作 double-click 吞掉（面板不切换）。
       await sleep(600)
-      const tab = findText(h, '∿')
+      await settled(() => controller?.activePanelId === 'todo' && barRow(h).includes('Trajectory'))
+      const tab = findText(h, 'Trajectory')
       if (tab !== null) click(h, tab.col + 1, tab.row)
-      check('outlet/supported: trajectory icon centers the title', await settled(() => barRow(h).includes('Trajectory') && !barRow(h).includes('Todo')), barRow(h).trim())
-      check('outlet/supported: ⤢ stays beside the carousel', await settled(() => barRow(h).includes('⤢') && barRow(h).includes('◀') && barRow(h).includes('▶')), barRow(h).trim())
+      check('outlet/supported: trajectory text activates its panel', await settled(() =>
+        controller?.activePanelId === 'trajectory' && barRow(h).includes('Trajectory')), barRow(h).trim())
+      check('outlet/supported: ⤢ stays beside the fitting text tabs', await settled(() =>
+        controller?.activePanelId === 'trajectory' && barRow(h).includes('⤢') && !/[◀▶]/u.test(barRow(h))), barRow(h).trim())
       await app.unmount(); h.term.dispose()
     }
     // Restore the in-process defaults so later harnesses in the same process

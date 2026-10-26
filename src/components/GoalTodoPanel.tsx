@@ -129,6 +129,7 @@ export function GoalTodoPanel({
   channel,
   collapsed = false,
   onToggle,
+  idleDismissal = false,
   variant = 'default',
   visible = true,
   maxTodos,
@@ -140,6 +141,8 @@ export function GoalTodoPanel({
   collapsed?: boolean
   /** Toggle the fold (click on the header row; shares the hotkey state). */
   onToggle?: () => void
+  /** The host uses the idle toggle to dismiss this footer instead of folding. */
+  idleDismissal?: boolean
   /** 'panel' = 侧栏 Todo Panel 形态：更紧凑（去外层 padding 与折叠
    *  提示行），计时走共享动画时钟（visible=false 时零订阅）。 */
   variant?: 'default' | 'panel'
@@ -381,7 +384,7 @@ export function GoalTodoPanel({
                   collapsed line already IS the folded state. Panel 形态省略：
                   折叠键归侧栏宿主，底部 hint 行已有说明。 */}
               {variant !== 'panel' && (
-                <Text dimColor>  {t('goal-todo-fold-hint', { key: primaryComboString('todoFold') })}</Text>
+                <Text dimColor>  {t(idleDismissal && !channel.working ? 'goal-todo-hide-hint' : 'goal-todo-fold-hint', { key: primaryComboString('todoFold') })}</Text>
               )}
             </Box>
           )}

@@ -29,6 +29,7 @@
  *
  * Run after build: `node scripts/verify-vim-mode.mjs`
  */
+import './lib/fake-home.mjs'
 import { Writable, PassThrough } from 'node:stream'
 import React from 'react'
 import xtermHeadless from '@xterm/headless'
@@ -268,9 +269,15 @@ stdin.write('\x03')
 await settle(() => draft() === '')
 stdin.write('/vim\r') // OFF — undo stack must be cleared
 await settled(() => notice(/vim mode off/i))
-stdin.write('\x1b') // vim off: Esc regains its clear-the-draft meaning
-await settled(() => draft() === '')
-check('vim off: Esc clears the draft again', draft() === '', JSON.stringify(draft()))
+await settle(() => badge() === 'none')
+stdin.write('esc-clear-probe')
+check('vim off: Escape probe starts non-empty', await settled(() => draft() === 'esc-clear-probe'), JSON.stringify(draft()))
+// An unconsumed bare ESC followed by the next 'a' is Alt+A (dashboard), not
+// two keys. CSI-u encodes the intended Escape without relying on its timeout;
+// the non-empty probe also proves the clearing action instead of waiting on
+// a draft that was already empty after `/vim`.
+stdin.write('\x1b[27u') // vim off: Esc regains its clear-the-draft meaning
+check('vim off: Esc clears the draft again', await settled(() => draft() === ''), JSON.stringify(draft()))
 stdin.write('ab') // type while vim is off
 await settle(() => draft() === 'ab')
 stdin.write('\x03')

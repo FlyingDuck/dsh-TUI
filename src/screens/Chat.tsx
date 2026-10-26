@@ -12,7 +12,7 @@ import { envThemeOverride } from '../components/design-system/ThemeProvider.js'
 import { resolveBrand, setActiveBrand } from '../branding.js'
 import { hasPath } from '../dsh-adapter/settingsEditor.js'
 import { planReload, type ReloadKind } from '../reload.js'
-import { AlternateScreen, Box, Image, Text, InputCaret, useInput, ScrollBox, type ScrollBoxHandle, useTheme, useTerminalSize } from '../ui.js'
+import { AlternateScreen, Box, Image, Text, InputCaret, useInput, useApp, useStdin, ScrollBox, type ScrollBoxHandle, useTheme, useTerminalSize } from '../ui.js'
 import * as tuiKit from '../ui.js'
 import { usePageInset } from '../components/PageMargin.js'
 import { POINTER } from '../terminal-utils/figures.js'
@@ -22,9 +22,11 @@ import { actionMatches, effectiveComboDisplay, primaryComboString } from '../uti
 import { formatTokens } from '../terminal-utils/format.js'
 import { formatClock } from '../trajectory/format.js'
 import { homeDir } from '../utils/paths.js'
+import { displayWorkingDirectory } from '../sessions/format.js'
+import { sessionWorkingDirectory } from '../channel/working-directory.js'
 import { execFileNoThrow } from '../utils/execFileNoThrow.js'
 import type { LlmModelInfo, LlmProviderInfo } from '../adapter/ports/channel-view.js'
-import { cleanBlockLines, cleanRenderText, cleanScalarText } from '../dsh-adapter/sanitize.js'
+import { cleanBlockLines, cleanCommandReport, cleanRenderText, cleanScalarText } from '../dsh-adapter/sanitize.js'
 import { readModelRecents, recordModelUse, type ModelRecentsRef } from '../modelRecents.js'
 import { WORKING_GATE_NOTICES } from '../commands.js'
 import type { ChannelUi as Channel } from '../adapter/channel/ui-policy.js'
@@ -57,10 +59,13 @@ import { AskUserQuestionPanel } from '../components/questions/AskUserQuestionPan
 import { ApprovalPanel } from '../components/approvals/ApprovalPanel.js'
 import { ExtensionDialog } from '../components/ExtensionDialog.js'
 import { consumeBoundaryRecoveryRemount } from '../ink/update-overflow-guard.js'
+import { InputEvent } from '../ink/events/input-event.js'
 import type { DOMElement } from '../ink/dom.js'
 import { useSearchHighlight } from '../ink/hooks/use-search-highlight.js'
-import { useTerminalTitle } from '../ink/hooks/use-terminal-title.js'
+import { ChatTitle } from '../components/ChatTitle.js'
 import { useTerminalFocus } from '../ink/hooks/use-terminal-focus.js'
+import { useProgramStatus, type ProgramBlockedPrompt } from '../ink/hooks/use-program-status.js'
+import { supportsProgramStatus } from '../ink/termio/osc7501.js'
 import { useCopyOnSelect } from '../ink/hooks/use-copy-on-select.js'
 import { useSelection } from '../ink/hooks/use-selection.js'
 import { NoSelect } from '../ink/components/NoSelect.js'
@@ -79,6 +84,7 @@ import { PromptInput, composerImageRefsForText, type PromptController } from '..
 import { turnUsageParts } from '../components/TurnUsageRow.js'
 import { AgentTranscriptScene } from './AgentTranscriptScene.js'
 import { agentViewStore } from '../components/sidePanel/agentViewStore.js'
+import { subagentFailureRead, subagentFailureScope } from '../components/sidePanel/subagentFailureRead.js'
 import { agentComposeTargetOf, type AgentComposeTarget, type AgentMessageView, type AgentViewSource } from '../components/messages/agentTeam.js'
 import { resolveBindingGeneration, type PromptDraftCache } from '../components/promptDraftCache.js'
 import type { InjectController } from '../dsh-adapter/inject-channel.js'
@@ -129,7 +135,7 @@ import { PluginManagePane } from '../components/PluginManagePane.js'
 import type { SdkInstaller, SdkInstallSurface } from '../agent/backend.js'
 import type { PluginInstallFlow, PluginInstallSink, PluginInstallStep } from '../dsh-adapter/plugin-install.js'
 import type { PluginManageFlow, PluginManageSink, PluginManageStep } from '../dsh-adapter/plugin-manage.js'
-import type { TeamCommandOutcome, TeamCommandSink } from '../dsh-adapter/team-mode.js'
+import type { TeamCommandSink } from '../dsh-adapter/team-mode.js'
 import { teamMemberCounts } from '../components/teamRoster.js'
 import { usePluginWriteFlow } from './chat/usePluginWriteFlow.js'
 import { ChannelPicker } from '../components/ChannelPicker.js'
@@ -163,7 +169,6 @@ import { statSync } from 'node:fs'
 import { setClipboard } from '../ink/termio/osc.js'
 import { TerminalWriteContext } from '../ink/useTerminalNotification.js'
 import instances from '../ink/instances.js'
-import { useAnimationFrame } from '../ink/hooks/use-animation-frame.js'
 import { useExternalVersion } from '../hooks/useExternalVersion.js'
 import { TrajectoryScene } from './TrajectoryScene.js'
 import { markHomeSeen } from '../homePrefs.js'
@@ -237,6 +242,16 @@ const LOCAL_BLOCK_CELLS = 4000
  *  file, but a healthy import of thousands of conversations finishes well
  *  inside this; without a cap a wedged child would hang the loop forever. */
 const MIGRATE_CHILD_TIMEOUT_MS = 30 * 60 * 1000
+
+/**
+ * How long an interrupt may stay unconverged before the TUI says so. A normal
+ * abort ends the turn in well under a second; a tool that ignores its
+ * `AbortSignal` keeps the agent loop waiting forever (dsh-agent-loop awaits
+ * every dispatched tool on abort), so `working`/`cancelPending` never clear.
+ * The notice names `/restart` as the recovery hatch; this only ends the silent
+ * dead end in which every key seemed to do nothing.
+ */
+const INTERRUPT_STUCK_MS = 10_000
 /**
  * 落地页参数行四段能点开的既有选择器（第五版）：模型 → /model、思考深度 →
  * /effort、模式 → /plan、权限预设 → /permission。盖在落地页之上时键盘归
@@ -335,9 +350,6 @@ function contextOccupancyLine(channel: Channel): string | undefined {
     window: formatTokens(occupancy.contextWindow),
   })
 }
-
-/** Terminal-title spinner frames. */
-const TITLE_SPINNER_FRAMES = ['⠂', '⠐']
 
 /** Searchable transcript text for one row (`/` incsearch):
  *  user text, assistant text, thinking, tool args/results, local output). */
@@ -522,11 +534,11 @@ export function Chat({
    */
   onPluginManage?: (args: string, sink: PluginManageSink) => PluginManageFlow | undefined
   /**
-   * `/team [status] | on | off`, wired to `createTeamCommandEntry`: on/off
-   * hand back a lifecycle flow on the Agent Teams bundle (same pane as
-   * `/plugin`), status a report. `undefined` on a backend without it.
+   * `/team [status]`, wired to `createTeamCommandEntry`: a report, or the
+   * enable/migration hint when the team service is not mounted. `undefined`
+   * on a backend without it.
    */
-  onTeamCommand?: (args: string, sink: TeamCommandSink) => TeamCommandOutcome
+  onTeamCommand?: (args: string, sink: TeamCommandSink) => Promise<readonly string[]>
   /** 启动参数（Config 行 / DSH_TUI_BACKEND）压过了记忆：选择器明说。 */
   kernelPinned?: boolean
   /**
@@ -599,6 +611,7 @@ export function Chat({
    */
   promptControllerRef?: React.RefObject<PromptController | null>
 }) {
+  const { internal_eventEmitter: inputEmitter } = useStdin()
   const writeRaw = React.useContext(TerminalWriteContext)
   // Re-render whenever the channel mutates; rows/status are read fresh below.
   // DEFAULT lane on purpose (useExternalVersion): the channel version bumps
@@ -609,8 +622,10 @@ export function Chat({
   // the process (beta.3; the reveal-store half was PR #680, this is the
   // channel half — the surviving source on Windows timer granularity).
   useExternalVersion(channel.subscribe, () => channel.version)
-  // Re-render on language switches so the whole UI hot-swaps its strings.
-  React.useSyncExternalStore(subscribeLang, getLang)
+  const failureScope = subagentFailureScope(channel)
+  // Re-render on language switches so the whole UI hot-swaps its strings; the
+  // value itself is what memoized strings key their language dependency on.
+  const lang = React.useSyncExternalStore(subscribeLang, getLang)
   const promptEditorOpen = usePromptEditorOpen()
   // The pending ask-user-question (DSH user-interaction seam): the model's
   // `ask_user_question` tool parks here until the panel is answered.
@@ -661,6 +676,21 @@ export function Chat({
     subscribeStatus,
     () => statusContributions.getViewSnapshot(),
   )
+  // Plugin footer fields (tuiStatus.setField): same subscription/store as the
+  // text line, own snapshot — a mutation rebuilds only the affected list.
+  const statusFields = React.useSyncExternalStore(
+    subscribeStatus,
+    () => statusContributions.getFieldSnapshot(),
+  )
+  // A plugin's footer-field click that threw is logged by the service; the
+  // user-facing signal is a toast naming the key (same shape as the shortcut
+  // handler above). The service never lets the throw reach the renderer.
+  React.useEffect(() => {
+    statusContributions.setFieldErrorHandler(key => {
+      channel.notify(t('ext-status-field-failed', { key }), { color: 'error', timeoutMs: 4000 })
+    })
+    return () => statusContributions.setFieldErrorHandler(undefined)
+  }, [statusContributions, channel])
   // Shortcut handler failures surface as toasts (the registry also logs
   // them); the hook is re-pointed on every mount so a stale closure never
   // outlives its channel.
@@ -962,9 +992,8 @@ export function Chat({
   /**
    * 打开**整屏界面**的命令（第七版）：从落地页触发这些命令时**不收掉落地页**
    * ——整屏盖在落地页之上渲染（它们的 early-return 排在落地页分支之前），
-   * Esc 退出整屏回到落地页（草稿/参数/焦点原样保留）。这是「从启动页进入
-   * 对话页的唯一路径 = Enter 提交一条非命令消息」的落地：任何返回键都不再
-   * 把人甩到对话页。其余命令（star / update / help / 转录输出类）的反馈在
+   * Esc 退出整屏回到落地页（草稿/参数/焦点原样保留），返回键不会切到对话页。
+   * 其余命令（star / update / help / 转录输出类）的反馈在
    * 对话页，仍按旧约收掉落地页再执行。
    */
   const launchpadScreenCommands = React.useMemo(
@@ -1072,6 +1101,10 @@ export function Chat({
       runSdkInstall(dir)
     })
   }
+  /** `/plugin` reports keep section indentation and blank rows. */
+  const pushPluginLocal = (lines: readonly string[]): void => {
+    channel.pushLocal('/plugin', lines, { preserveWhitespace: true })
+  }
   /**
    * `/plugin install <spec>` 的步骤态（C-4）。六件套（ref / state / 收尾 / 结算 /
    * 栅栏 / 起步）与 manage 侧共用 `usePluginWriteFlow`，两处的差异只有「关浮层
@@ -1081,7 +1114,7 @@ export function Chat({
     overlayKind: 'plugin-install',
     overlay,
     dispatchOverlay,
-    pushLocal: lines => channel.pushLocal('/plugin', lines),
+    pushLocal: pushPluginLocal,
     initialStep: { kind: 'done' },
     // 装了半截就关浮层会把 profile 留在半装状态：取消由服务自己结算（回滚）。
     cancelOnClose: flow => flow.cancel(),
@@ -1093,7 +1126,7 @@ export function Chat({
       binding: () => channel.agentBindingGeneration,
       // 回合运行中改 profile 会触发应用／HMR：门禁在流程里（inspect 之前与写入之前各查一次）。
       busy: () => channel.working,
-      onLines: lines => channel.pushLocal('/plugin', lines),
+      onLines: pushPluginLocal,
     })
     if (flow === undefined) return false
     pluginInstall.start(flow, flow.begin())
@@ -1119,7 +1152,7 @@ export function Chat({
     overlayKind: 'plugin-manage',
     overlay,
     dispatchOverlay,
-    pushLocal: lines => channel.pushLocal('/plugin', lines),
+    pushLocal: pushPluginLocal,
     initialStep: { kind: 'done' },
     failureLine: error => t('plugins-manage-failed', { reason: cleanScalarText(error, COMMAND_RESULT_CELLS) }),
   })
@@ -1134,7 +1167,7 @@ export function Chat({
       binding: () => channel.agentBindingGeneration,
       // 回合运行中改 profile 会触发应用／HMR：门禁在流程里（解析之前与写入之前各查一次）。
       busy: () => channel.working,
-      onLines: lines => channel.pushLocal('/plugin', lines),
+      onLines: pushPluginLocal,
       teamActiveMembers: teamMembers,
     })
     if (flow === undefined) return false
@@ -1431,6 +1464,38 @@ export function Chat({
   const questionMinimized = questionSnapshot !== null && minimizedQuestionKey === questionSnapshot.key
   /** Fold state for the GoalTodoPanel todo section (ctrl/cmd+q or click). */
   const [todoCollapsed, setTodoCollapsed] = React.useState(false)
+  // Dismiss only this idle projection; new goal/todo data or a session switch
+  // reveals the footer again without changing the backend's canonical state.
+  const [todoFooterOverride, setTodoFooterOverride] = React.useState<{
+    hidden: boolean
+    agentId: string
+    goal: Channel['goal']
+    todos: Channel['todos']
+  } | undefined>(undefined)
+  const todoFooterOverrideMatches = !channel.working && todoFooterOverride !== undefined
+    && todoFooterOverride.agentId === channel.agentId
+    && todoFooterOverride.goal === channel.goal
+    && todoFooterOverride.todos === channel.todos
+  const completedTodoSnapshot = React.useRef<{
+    agentId: string
+    goal: Channel['goal']
+    todos: Channel['todos']
+  } | undefined>(undefined)
+  if (channel.goal?.phase !== 'complete') completedTodoSnapshot.current = undefined
+  else if (channel.working || completedTodoSnapshot.current?.goal !== channel.goal
+    || completedTodoSnapshot.current?.agentId !== channel.agentId) {
+    completedTodoSnapshot.current = { agentId: channel.agentId, goal: channel.goal, todos: channel.todos }
+  }
+  const completedTodoFooter = channel.goal?.phase === 'complete' && !channel.working
+    && completedTodoSnapshot.current?.todos === channel.todos
+  const todoFooterHidden = todoFooterOverrideMatches ? todoFooterOverride!.hidden : completedTodoFooter
+  const toggleTodoFooter = (): void => {
+    if (channel.working) setTodoCollapsed(previous => !previous)
+    else setTodoFooterOverride({
+      hidden: !todoFooterHidden,
+      agentId: channel.agentId, goal: channel.goal, todos: channel.todos,
+    })
+  }
   const [thinkingVisible, setThinkingVisible] = React.useState(true)
   /** ctrl+r history-search entries (loaded on open, persists). */
   const [historyEntries, setHistoryEntries] = React.useState<readonly HistoryEntry[]>([])
@@ -1440,10 +1505,11 @@ export function Chat({
    *  a row they are no longer looking at). */
   const rewindRequestRef = React.useRef(0)
   /** /btw side-question thread: pure UI state in btwThreads — the answers
-   *  never enter the transcript or the session log. The floating overlay is
-   *  only the FALLBACK surface (btw panel not enabled); with the panel
-   *  enabled the same thread routes to the sidebar instead — one answer,
-   *  exactly one surface. */
+   *  never enter the transcript or the session log. Two surfaces, one owner:
+   *  the sidebar panel when the split can render AND is showing the btw
+   *  panel, otherwise the floating overlay in the conversation. This flag
+   *  records that the fallback is wanted; `btwOverlayVisible` decides whether
+   *  it actually owns the screen. */
   const [btwOverlayOpen, setBtwOverlayOpen] = React.useState(false)
   /** ⤢ fullscreen thread scene (openPanelFullscreen 'btw' route). */
   const [btwSceneOpen, setBtwSceneOpen] = React.useState(false)
@@ -1880,14 +1946,16 @@ export function Chat({
    * in the effect below) resolves every clickable target the transcript
    * renders — http(s) links open the browser, `dsh-file:`/`file://` paths
    * open the file-action menu. `dsh-file:` payloads are RAW display paths
-   * (possibly relative), so they resolve against the CURRENT channel cwd
-   * at click time (read through a ref so this callback keeps a stable
-   * identity — it is threaded into memoized row components).
+   * (possibly relative), so they resolve against the session's CURRENT
+   * directory at click time — where it moved after opening, else its cwd
+   * (read through a ref so this callback keeps a stable identity — it is
+   * threaded into memoized row components).
    */
-  const cwdRef = React.useRef(channel.cwd)
+  const currentCwd = sessionWorkingDirectory(channel)
+  const cwdRef = React.useRef(currentCwd)
   React.useEffect(() => {
-    cwdRef.current = channel.cwd
-  }, [channel.cwd])
+    cwdRef.current = currentCwd
+  }, [currentCwd])
   const openFileActions = React.useCallback((rawPath: string): void => {
     const resolved = resolveTargetPath(rawPath, cwdRef.current)
     // Whether the target is a directory decides the first menu row's label
@@ -2151,6 +2219,7 @@ export function Chat({
    * the user into a different conversation.
    */
   const promptDraftRef = React.useRef<PromptDraftCache>({ current: null })
+  const launchpadPendingInputRef = React.useRef<InputEvent['keypress'][]>([])
   /**
    * Latest channel for the unmount release below: that effect must not re-run
    * on a channel identity change, yet its cleanup must release against the
@@ -2252,6 +2321,7 @@ export function Chat({
     // A stored draft can only belong to the conversation being replaced: the
     // composer is the one that writes it, and it writes it on the way out.
     promptDraftRef.current.current = null
+    launchpadPendingInputRef.current = []
     if (pendingFillRef.current === draftSessionId) {
       pendingFillRef.current = null
       return
@@ -2337,12 +2407,10 @@ export function Chat({
   loadingStartTimeRef.current = channel.turnStart
   const thinkingStatus = useThinkingStatus(channel.spinnerMode === 'thinking')
 
-  // Terminal tab title: the session
-  // title when set, else "dsh-TUI"; a `⠂/⠐` spinner prefix while a turn is
-  // working (960ms cadence, only while the terminal is focused), a static
-  // `✦` otherwise. dsh-TUI brands the idle prefix with the DeepSeek whale.
-  const [titleFrame, setTitleFrame] = React.useState(0)
   const terminalFocused = useTerminalFocus()
+  // Gate the stream this app renders to; embedders may replace process.stdout.
+  const { stdout: appStdout } = useApp()
+  const programStatusEnabled = React.useMemo(() => supportsProgramStatus(appStdout.isTTY === true), [appStdout])
   // Mouse text selection auto-copy: active only in
   // fullscreen (<AlternateScreen> supplies mouse tracking); a no-op
   // subscription in inline mode, where selection belongs to the terminal.
@@ -2399,19 +2467,40 @@ export function Chat({
     hasSelection: hasMouseSelection,
     getState: getMouseSelectionState,
   } = useSelection()
-  React.useEffect(() => {
-    if (!channel.working || !terminalFocused) return
-    const interval = setInterval(() => {
-      setTitleFrame(f => (f + 1) % TITLE_SPINNER_FRAMES.length)
-    }, 960)
-    return () =>{  clearInterval(interval) }
-  }, [channel.working, terminalFocused])
-  const titlePrefix = channel.working
-    ? (TITLE_SPINNER_FRAMES[titleFrame] ?? '✦')
-    : '✦'
-  useTerminalTitle(
-    `${titlePrefix} 🐋 ${channel.sessionTitle}`,
-  )
+
+  // OSC 7501 program status: tell the terminal (and any agentic inbox) whether
+  // this session is working, parked on the user, or finished. Precedence
+  // matches the UI's own: a parked ask outranks a running turn. The pending
+  // prompt is reduced to the one-line message the protocol carries.
+  const programStatusBlocked = React.useMemo<ProgramBlockedPrompt | null>(() => {
+    if (approvalSnapshot !== null) {
+      const detail = approvalSnapshot.command ?? approvalSnapshot.reason ?? approvalSnapshot.title
+      return {
+        kind: 'permission',
+        message: t('program-status-approval', {
+          tool: detail === undefined
+            ? approvalSnapshot.toolName
+            : `${approvalSnapshot.toolName} · ${detail}`,
+        }),
+      }
+    }
+    if (dialogSnapshot !== null) {
+      return { kind: 'question', message: t('program-status-dialog', { title: dialogSnapshot.title }) }
+    }
+    if (questionSnapshot !== null) {
+      const { header, question, purpose } = questionSnapshot.question
+      return { kind: purpose === 'auth' ? 'auth' : 'question', message: t('program-status-question', { question: header ?? question }) }
+    }
+    return null
+  }, [approvalSnapshot, dialogSnapshot, questionSnapshot, lang])
+  // The hook reads the channel's own projected fields (`working`,
+  // `turnOutcome` from `turn.end.reason`, the title and the session id), so
+  // the usage ledger's stale outcome can never stand in for the turn's close.
+  useProgramStatus({
+    channel,
+    blocked: programStatusBlocked,
+    enabled: programStatusEnabled,
+  })
 
   const handleWorkspaceResult = (result: TuiWorkspaceCommandResult): void => {
     workspaceFlowAbortRef.current = null
@@ -2542,7 +2631,7 @@ export function Chat({
    * Dispatch a slash command; false lets the input flow to the model.
    * Built-in names run the local switch; anything registered by a DSH
    * plugin (plan/goal/…) dispatches through the command registry, whose
-   * result text lands as a notification. `rawInput` carries the text after
+   * result text lands as a local report for generic plugin commands. `rawInput` carries the text after
    * the command name (`/plan off` → ` off`).
    *
    * `render.block` prints a multi-line report the way `/plugins` prints one:
@@ -2556,7 +2645,7 @@ export function Chat({
     name: string,
     rawInput: string,
     images: readonly ComposerImageRef[] = [],
-    render?: { readonly block?: boolean },
+    render?: { readonly block?: boolean; readonly report?: boolean },
   ): Promise<boolean> => {
     const originAgentBinding = channel.agentBindingGeneration
     return channel.runExternalCommandOutcome(name, rawInput, images).then((outcome) => {
@@ -2565,7 +2654,17 @@ export function Chat({
         channel.notify(t('command-not-found', { name }), { color: 'error' })
         return false
       }
-      if (render?.block === true && outcome.kind !== 'error') {
+      if (render?.report === true) {
+        const { lines, truncated } = cleanCommandReport(outcome.text)
+        if (truncated) lines.push(t('command-output-truncated'))
+        // The report already has a cell cap. Avoid a second UTF-16 preview cut
+        // splitting an emoji or a combining sequence in the local row sink.
+        if (lines.length > 0) channel.pushLocal(`/${name}`, lines, { lineLimit: 65_536, preserveWhitespace: true })
+        if (outcome.kind === 'error') {
+          const cleaned = cleanRenderText(outcome.text, COMMAND_RESULT_CELLS)
+          if (cleaned !== '') channel.notify(cleaned, { color: 'error' })
+        }
+      } else if (render?.block === true && outcome.kind !== 'error') {
         // Per-line sanitize: the newlines here are the report's structure.
         const lines = cleanBlockLines(outcome.text, LOCAL_BLOCK_CELLS)
         if (lines.length > 0) channel.pushLocal(`/${name}`, lines, { lineLimit: LOCAL_BLOCK_CELLS })
@@ -2745,6 +2844,28 @@ export function Chat({
     if (channel.ready !== false || (name !== undefined && isBootSafeCommand(name))) return false
     channel.notify(t('startup-not-ready', { backend: kernelCurrentOption?.shortLabel ?? channel.backendCapabilities.backendId }), { color: 'warning', timeoutMs: 2500 })
     return true
+  }
+
+  /** Move the unsent draft to chat, inserting a newline at the launchpad caret. */
+  const newlineLaunchpad = (text: string, cursor: number): void => {
+    promptDraftRef.current.current = {
+      ownerAgentId: String(channel.agentId),
+      bindingGeneration: resolveBindingGeneration(channel),
+      value: text.slice(0, cursor) + '\n' + text.slice(cursor),
+      cursor: cursor + 1,
+      foldBlock: null,
+      expanded: false,
+      vimEnabled: false,
+      vimInsert: true,
+      images: [...launchpadImagesRef.current],
+    }
+    // The composer snapshot now owns the capabilities behind the image chips.
+    launchpadImagesRef.current.clear()
+    setSupervisorOpen(false)
+    setLaunchpadOpen(false)
+    setLaunchpadFocus(-1)
+    setLaunchpadDraft('')
+    setLaunchpadCaret(0)
   }
 
   /**
@@ -3525,7 +3646,7 @@ export function Chat({
           `${t('status-model', { model: channel.model })}${channel.reasoningEffort ? ` · ${capitalize(channel.reasoningEffort)} effort` : ''}`,
           `${t('status-state', { state: channel.working ? t('status-working') : t('status-idle') })}`,
           `${t('status-session', { id: channel.agentId })}`,
-          `${t('status-dir', { cwd: channel.displayCwd })}${channel.gitBranch ? ` · ${channel.gitBranch}` : ''}`,
+          `${t('status-dir', { cwd: displayWorkingDirectory(channel) })}${channel.gitBranch ? ` · ${channel.gitBranch}` : ''}`,
           t('tokens-session-total', {
             input: formatTokens(channel.tokens.input),
             output: formatTokens(channel.tokens.output),
@@ -3772,30 +3893,20 @@ export function Chat({
         const originAgentBinding = channel.agentBindingGeneration
         void channel.pluginsInfo(rawInput).then((lines) => {
           if (channel.agentBindingGeneration !== originAgentBinding) return
-          channel.pushLocal('/plugin', lines)
+          pushPluginLocal(lines)
         })
         return true
       }
       case 'team': {
-        // `/team` 是团队 bundle 的启停（team-mode.ts）：on/off 走与 /plugin 同一个
-        // 生命周期流程与确认浮层，status 是一段报告；都按发起时的绑定落行。
+        // `/team` 只报告团队状态（team-mode.ts）；开关是 /plugin enable|disable。
+        // 服务未挂载时这一行不在命令表里，但手敲仍会走到这里，拿回开启提示。
         setHelpOpen(false)
         if (onTeamCommand === undefined) {
           channel.pushLocal('/team', [t('team-cmd-unavailable')])
           return true
         }
         const originAgentBinding = channel.agentBindingGeneration
-        const outcome = onTeamCommand(rawInput, {
-          binding: () => channel.agentBindingGeneration,
-          busy: () => channel.working,
-          onLines: lines => channel.pushLocal('/team', lines),
-          members: teamMembers,
-        })
-        if (outcome.kind === 'flow') {
-          pluginManage.start(outcome.flow, outcome.flow.begin())
-          return true
-        }
-        void outcome.lines.then((lines) => {
+        void onTeamCommand(rawInput, { members: teamMembers }).then((lines) => {
           if (channel.agentBindingGeneration !== originAgentBinding) return
           channel.pushLocal('/team', [...lines])
         }, (error: unknown) => {
@@ -4219,13 +4330,21 @@ export function Chat({
         // (cordis.yml root config, frozen fullscreen layout, newly built
         // code), so /restart respawns the process with the original argv and
         // resumes this session — the /update handoff minus the pnpm step.
+        // Allowed mid-turn on purpose: a turn whose abort never converges
+        // (a tool ignoring its AbortSignal) can leave `working` true forever,
+        // and refusing the one command that can rebuild the process would
+        // leave the user with no way out. The handoff notice written by the
+        // exit funnel owns the visible copy (and says what the restart
+        // interrupts); this toast only covers embedders whose onRestart does
+        // not tear the screen down.
         setHelpOpen(false)
         if (onRestart === undefined) {
           channel.notify(t('restart-unavailable'), { color: 'warning' })
-        } else if (channel.working) {
-          channel.notify(t(WORKING_GATE_NOTICES.restart), { color: 'warning' })
         } else {
-          channel.notify(t('restart-starting'))
+          channel.notify(
+            t(channel.working ? 'restart-during-turn' : 'restart-starting'),
+            channel.working ? { color: 'warning', timeoutMs: 6_000 } : undefined,
+          )
           onRestart()
         }
         return true
@@ -4276,9 +4395,12 @@ export function Chat({
       }
       case 'btw': {
         // `/btw`：单轮无工具侧问，线程只在内存里（btwThreads，按会话
-        // 隔离），不打断主回合、不写会话历史。空参数只提示用法。启用了
-        // btw 面板就进面板线程（有模态界面时不抢开，只标未读）；没启用
-        // 就用浮层。同一个问答只出现在一处。
+        // 隔离），不打断主回合、不写会话历史。空参数只提示用法。分栏
+        // 渲染得出来才进面板线程；否则退浮层——面板「已启用」只是配置，
+        // 不代表分栏真的上屏（窄屏 / inline / 编辑器展开 /
+        // splitEnabled=false 都会把它掩掉，issue #1631）。屏被别的浮层或
+        // 整屏界面占着时两个表面都不抢开，只发通知。同一个问答只出现在
+        // 一处。
         setHelpOpen(false)
         const question = rawInput.trim()
         if (!question) {
@@ -4290,10 +4412,15 @@ export function Chat({
           channel.notify(t('btw-thread-busy'), { color: 'warning', timeoutMs: 3000 })
           return true
         }
-        if (sidePanel.enabledPanelIds.includes('btw')) {
-          if (btwSurfaceFree()) sidePanel.openPanel('btw')
+        const btwPanelEnabled = sidePanel.enabledPanelIds.includes('btw')
+        if (btwSurfaceFree()) {
+          if (btwPanelEnabled && sidePanel.splitAvailable) sidePanel.openPanel('btw')
+          else setBtwOverlayOpen(true)
         } else {
-          setBtwOverlayOpen(true)
+          // 屏被别的浮层/整屏界面占着：侧问照常发出，但只在通知通道里说一
+          // 句——既不把答案静默塞进看不见的地方，也不挂一个既看不见、又
+          // 会先吃掉按键的浮层。
+          channel.notify(t('btw-surface-busy'), { color: 'warning', timeoutMs: 4000 })
         }
         return true
       }
@@ -4328,7 +4455,7 @@ export function Chat({
         )
         if (external) {
           setHelpOpen(false)
-          return runExternalCommand(name, rawInput, images)
+          return runExternalCommand(name, rawInput, images, { report: true })
         }
         return false
       }
@@ -4452,6 +4579,25 @@ export function Chat({
     editorOpen: promptEditorOpen,
   })
   /**
+   * 「面板上屏」不等于「分栏在渲染」：分栏画出的是 activePanelId 那一块，
+   * 而活动面板默认是启用列表第一项。浮层只在侧栏真的显示 btw 线程时让位；
+   * 侧栏停在别的面板上时把浮层卸掉，等于让用户什么都看不到（issue #1631
+   * 的同一条静默路径）。
+   */
+  const btwPanelOnScreen =
+    sidePanel.enabledPanelIds.includes('btw') && sidePanel.split && sidePanel.activePanelId === 'btw'
+  /**
+   * 浮层是否真的占着屏幕（因而可以接管输入）。渲染门与所有「让位 / 暂停
+   * 输入」的判定都读这一个值：`btwOverlayOpen` 只是「想要浮层」，分栏重新
+   * 出现后它可能为真却什么都不画——那时不能再让 PromptInput 与 Chat 的按键
+   * 处理器让位（否则 composer 消失、Esc/Ctrl+C 都失效）。
+   */
+  // 编辑器展开会收起分栏；此时不能复活浮层并暂停 PromptInput，否则编辑器
+  // 发布/撤下与分栏恢复会循环触发。主任务问卷也先接管显示和键盘，结束后
+  // 再恢复浮层请求，保留在途侧问。
+  const btwOverlayVisible = btwOverlayOpen && !btwPanelOnScreen
+    && !promptEditorOpen && questionSnapshot === null
+  /**
    * 「全屏」出口（PanelBar 的 ⤢）：把侧栏里那个面板的内容切到它原本的整屏
    * 形态。只映射**真的有整屏对应物**的面板 id（能力位 capabilities.fullscreen
    * 决定按钮画不画，这里决定点了去哪）；没映射到的 id 静默无操作——按钮与
@@ -4521,7 +4667,6 @@ export function Chat({
     // oxlint-disable-next-line react-hooks/exhaustive-deps
     [trajectory.nodes, trajectory.counts.rows, wakeWidth],
   )
-  const [wakeTickRef, wakeTime] = useAnimationFrame(channel.working ? 120 : null)
   /**
    * The key hint beside the strip retires itself once the trajectory has been
    * opened — teaching belongs in the first minute, not on every frame forever.
@@ -4663,7 +4808,7 @@ export function Chat({
   const lastModalEnterAtRef = React.useRef(0)
   const couponVisible = coupon !== null && starModal === null
     && approvalSnapshot === null && dialogSnapshot === null && questionSnapshot === null
-    && overlay.kind === 'none' && !btwOverlayOpen && recap === null
+    && overlay.kind === 'none' && !btwOverlayVisible && recap === null
     && !supervisorOpen && !treeOpen && !settingsOpen && !jobsPanelOpen
     && !sceneOpen && !subagentDashboardOpen && subagentDetailId === null
     && !btwSceneOpen
@@ -4673,6 +4818,39 @@ export function Chat({
   const closeCoupon = React.useCallback(() => {
     if (coupon !== null) bonusNotices?.dismiss(coupon.orderId)
   }, [bonusNotices, coupon])
+
+  /**
+   * Escalation surface for a wedged abort. `cancelPending` means a turn was
+   * asked to stop and has not produced its terminal event yet; a tool that
+   * never settles can hold that state forever. The channel-side `cancel()`
+   * ignores repeats while the abort converges, so a repeated Esc used to be a
+   * silent no-op — the user's "I pressed Esc and nothing happened". The
+   * watchdog raises the warning once per interrupt episode and Esc answers
+   * every press; `/restart` (no longer gated on `working`) is the way out.
+   */
+  const interruptWatchdogRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
+  const interruptWarnedRef = React.useRef(false)
+  const clearInterruptWatchdog = React.useCallback((): void => {
+    if (interruptWatchdogRef.current !== null) clearTimeout(interruptWatchdogRef.current)
+    interruptWatchdogRef.current = null
+  }, [])
+  React.useEffect(() => {
+    if (!channel.working || !channel.cancelPending) {
+      // The turn settled (or the session was replaced): the next interrupt
+      // episode starts with a fresh warning.
+      clearInterruptWatchdog()
+      interruptWarnedRef.current = false
+      return
+    }
+    if (interruptWatchdogRef.current !== null) return
+    interruptWatchdogRef.current = setTimeout(() => {
+      interruptWatchdogRef.current = null
+      if (!channel.working || !channel.cancelPending || interruptWarnedRef.current) return
+      interruptWarnedRef.current = true
+      channel.notify(t('interrupt-stuck'), { color: 'warning', timeoutMs: 10_000 })
+    }, INTERRUPT_STUCK_MS)
+  }, [channel.working, channel.cancelPending])
+  React.useEffect(() => () => clearInterruptWatchdog(), [clearInterruptWatchdog])
 
   useInput((input, key, event) => {
     // 开屏"求 star"弹窗开着时键盘全归它（↑/↓/Enter/Esc 由它自己的
@@ -4685,7 +4863,7 @@ export function Chat({
     // suspended to preserve async command drafts, making this guard also
     // essential for Ctrl+C: it must never clear the hidden composer.
     if (
-      btwOverlayOpen
+      btwOverlayVisible
       || overlay.kind === 'tips'
       || (recap !== null && (!recap.auto || recap.expanded))
     ) return
@@ -5586,8 +5764,9 @@ export function Chat({
         setSelectedId(null)
       }
     } else if (key.escape && promptControllerRef.current?.consumeEscape()) {
-      // Selection/editor Esc stays with the composer even though Chat's
-      // global listener runs first. Consume it before interrupting the turn.
+      // Local menu/preview/selection/editor Esc stays with the composer even
+      // though Chat's global listener runs first. Only an unconsumed Esc
+      // reaches the working-turn interrupt below.
       event.stopImmediatePropagation()
     } else if (key.escape && channel.working && !helpOpen && !promptControllerRef.current?.vimActive()) {
       // Esc interrupts a running turn (the prompt input
@@ -5600,8 +5779,20 @@ export function Chat({
       // vim mode (either submode) yields: there Esc is a MODE key (INSERT→
       // NORMAL, NORMAL = no-op/cancel pending d) and the prompt owns it;
       // interrupting still works via Ctrl+C / Ctrl+Enter.
-      if (channel.pending.length > 0) {
-        if (channel.interruptAndDock() === 0) channel.cancel()
+      const undocked = channel.pending.some(item => item.docked !== true)
+      if (undocked) {
+        // Docking is Esc's documented meaning for queued rows, and it starts
+        // its own interrupt; keep it even while a plain abort is in flight.
+        if (channel.interruptAndDock() === 0 && !channel.cancelPending) channel.cancel()
+      } else if (channel.cancelPending) {
+        // The abort is already in flight: `cancel()`/`interruptAndDock()`
+        // ignore repeats by contract, so answer the press instead of
+        // swallowing it. Past the watchdog window the turn is wedged, and
+        // the warning names `/restart` (allowed mid-turn) as the way out.
+        channel.notify(t(interruptWarnedRef.current ? 'interrupt-stuck' : 'interrupt-pending'), {
+          color: 'warning',
+          timeoutMs: interruptWarnedRef.current ? 10_000 : 4_000,
+        })
       } else {
         channel.cancel()
       }
@@ -5702,10 +5893,8 @@ export function Chat({
       // Consume the alt combo so it never falls through as text.
       event.stopImmediatePropagation()
     } else if (actionMatches('todoFold', input, key)) {
-      // Fold/unfold the GoalTodoPanel todo section (default Ctrl+Q) — works
-      // mid-turn too: the collapsed line keeps the done/total count and the
-      // live task preview, so long todo lists stop crowding the prompt.
-      setTodoCollapsed(previous => !previous)
+      // Fold running work; hide/restore the idle footer without mutating todos.
+      toggleTodoFooter()
       // Consume: one press, one meaning.
       event.stopImmediatePropagation()
     } else if (actionMatches('star', input, key)) {
@@ -6270,7 +6459,14 @@ export function Chat({
           {overlay.kind === 'search' && <TranscriptSearch query={searchQuery} cursorOffset={searchCursor} count={searchCount} current={searchCurrent} />}
     </>
   )
-    const screenOpen = channel.pluginScene !== undefined || supervisorOpen || settingsOpen
+  // Every scene retains the title, while its frame state stays in a null leaf.
+  const withTitle = (content: React.ReactNode): React.ReactNode => (
+    <>
+      <ChatTitle title={channel.sessionTitle} working={channel.working} focused={terminalFocused} />
+      {content}
+    </>
+  )
+  const screenOpen = channel.pluginScene !== undefined || supervisorOpen || settingsOpen
     || subagentDetailId !== null || subagentDashboardOpen || sceneOpen
     || agentView !== null
     || launchpadShown || onboardingOpen
@@ -6280,7 +6476,7 @@ export function Chat({
         {interruptPanel}
       </Box>
     )
-    return fullscreen ? node : <AlternateScreen>{node}</AlternateScreen>
+    return withTitle(fullscreen ? node : <AlternateScreen>{node}</AlternateScreen>)
   }
 
   // A plugin scene (dsh-tui-scenes) takes the whole terminal the same way
@@ -6309,7 +6505,7 @@ export function Chat({
         {renderScene ? renderScene(pluginScene.id, channel) : <Text>Scene unavailable: {pluginScene.id}</Text>}
       </PluginSceneBoundary>
     )
-    return fullscreen ? node : <AlternateScreen>{node}</AlternateScreen>
+    return withTitle(fullscreen ? node : <AlternateScreen>{node}</AlternateScreen>)
   }
 
   /**
@@ -6340,7 +6536,7 @@ export function Chat({
         }}
       />
     )
-    return fullscreen ? node : <AlternateScreen>{node}</AlternateScreen>
+    return withTitle(fullscreen ? node : <AlternateScreen>{node}</AlternateScreen>)
   }
 
 
@@ -6421,9 +6617,16 @@ export function Chat({
         }}
       />
     )
+    // Tooltip 单例层挂在最外层末尾：被截断的工作区路径条 hover 后由它画完整路径。
+    const supervisorScene = (
+      <>
+        {supervisorNode}
+        <TooltipLayer />
+      </>
+    )
     // Inline hosts enter the alternate screen for the duration; full-screen
     // hosts are already in it and must not nest a second one.
-    return fullscreen ? supervisorNode : <AlternateScreen>{supervisorNode}</AlternateScreen>
+    return withTitle(fullscreen ? supervisorScene : <AlternateScreen>{supervisorScene}</AlternateScreen>)
   }
 
   // The session tree follows the browser's rule exactly: it REPLACES the
@@ -6445,15 +6648,15 @@ export function Chat({
         }}
       />
     )
-    return fullscreen ? tree : <AlternateScreen>{tree}</AlternateScreen>
+    return withTitle(fullscreen ? tree : <AlternateScreen>{tree}</AlternateScreen>)
   }
 
   // The settings screen follows the browser's rule exactly: it REPLACES the
   // conversation (an early return after every hook above has run), so there
   // is no transcript underneath to be repainted or bled through.
   if (settingsOpen && launchpadGate()) {
-    const screen = <Settings channel={channel} onClose={() => setSettingsOpen(false)} />
-    return fullscreen ? screen : <AlternateScreen>{screen}</AlternateScreen>
+    const screen = <Settings channel={channel} onClose={() => setSettingsOpen(false)} statusFields={statusFields} />
+    return withTitle(fullscreen ? screen : <AlternateScreen>{screen}</AlternateScreen>)
   }
 
   // Main-screen read-only Agent View: a scene over the mounted Chat, with no
@@ -6476,6 +6679,7 @@ export function Chat({
     const viewScene = (
       <AgentTranscriptScene
         subagent={viewSubagent}
+        onFailureRead={agent => subagentFailureRead.acknowledge(failureScope, agent)}
         source={agentView.source}
         onExit={() => exitAgentView(agentView.source)}
         {...(loadTranscript === undefined ? {} : { loadTranscript })}
@@ -6487,7 +6691,7 @@ export function Chat({
         onSwitchAgent={switchViewedAgent}
       />
     )
-    return fullscreen ? viewScene : <AlternateScreen>{viewScene}</AlternateScreen>
+    return withTitle(fullscreen ? viewScene : <AlternateScreen>{viewScene}</AlternateScreen>)
   }
 
   // Subagent detail scene: displays detailed view of a specific subagent.
@@ -6506,6 +6710,7 @@ export function Chat({
     const scene = (
       <SubagentDetailScene
         subagent={subagent}
+        onFailureRead={agent => subagentFailureRead.acknowledge(failureScope, agent)}
         onInterrupt={(id) => channel.subagentControl?.interrupt(id)}
         {...(channel.subagentControl?.history === undefined ? {} : { loadTranscript: channel.subagentControl.history })}
         onOpenView={() => openAgentView(subagent.agentId, { kind: 'agent-detail', agentId: subagent.agentId })}
@@ -6517,7 +6722,7 @@ export function Chat({
         }}
       />
     )
-    return fullscreen ? scene : <AlternateScreen>{scene}</AlternateScreen>
+    return withTitle(fullscreen ? scene : <AlternateScreen>{scene}</AlternateScreen>)
   }
 
   // Jobs panel: background jobs (running/killed) with kill/inspect actions.
@@ -6538,7 +6743,7 @@ export function Chat({
         }}
       />
     )
-    return fullscreen ? panel : <AlternateScreen>{panel}</AlternateScreen>
+    return withTitle(fullscreen ? panel : <AlternateScreen>{panel}</AlternateScreen>)
   }
 
   // ⤢ btw thread scene (openPanelFullscreen 'btw'): the whole-terminal form
@@ -6554,7 +6759,7 @@ export function Chat({
         onFocusChat={sidePanel.focusChat}
       />
     )
-    return fullscreen ? scene : <AlternateScreen>{scene}</AlternateScreen>
+    return withTitle(fullscreen ? scene : <AlternateScreen>{scene}</AlternateScreen>)
   }
 
   // Subagent dashboard: displays all active and completed subagents.
@@ -6576,14 +6781,14 @@ export function Chat({
         onClose={() => setSubagentDashboardOpen(false)}
       />
     )
-    return fullscreen ? dashboard : <AlternateScreen>{dashboard}</AlternateScreen>
+    return withTitle(fullscreen ? dashboard : <AlternateScreen>{dashboard}</AlternateScreen>)
   }
 
   /** Prompt input is inert while a modal dialog owns the keyboard. The
    *  overlay union covers every picker/dialog and /tips in one check;
    *  message-selection mode and the /btw panel live outside it. */
   const promptSelectionActive =
-    selectionActive || overlay.kind !== 'none' || btwOverlayOpen
+    selectionActive || overlay.kind !== 'none' || btwOverlayVisible
 
   // These panels replace the visible composer, but PromptInput remains
   // mounted (suspended) so an async registry command cannot lose its exact
@@ -6593,7 +6798,7 @@ export function Chat({
     || dialogSnapshot !== null
     || overlay.kind === 'tips'
     || (recap !== null && (!recap.auto || recap.expanded))
-    || btwOverlayOpen
+    || btwOverlayVisible
     || questionPanelNode !== null
     || starModal !== null
     || couponVisible
@@ -6608,7 +6813,7 @@ export function Chat({
   // whole app back to the main screen.
   if (sceneOpen && launchpadGate()) {
     const scene = <TrajectoryScene channel={channel} build={trajectory} onClose={closeScene} />
-    return fullscreen ? scene : <AlternateScreen>{scene}</AlternateScreen>
+    return withTitle(fullscreen ? scene : <AlternateScreen>{scene}</AlternateScreen>)
   }
 
   /**
@@ -6617,8 +6822,9 @@ export function Chat({
    * 第七版渲染姿态：early-return 排在**所有整屏界面（会话浏览器 / 设置 /
    * 任务面板 / 家谱 / 子代理 / 轨迹场景）之后**——从落地页打开的整屏盖在
    * 落地页之上，Esc 退出整屏回到这里（草稿/参数/焦点原样保留）。硬约束：
-   * 从启动页进入对话页的唯一路径是**提交一条非命令消息**（Enter 发送）；
-   * 任何 Esc/返回都回到启动页。参数行点开的选择器经 `pickerPanels` +
+   * Enter 发送非命令消息后进入对话页；Shift/Option+Enter 则带着未发送的
+   * 草稿进入对话页，并在当前光标处换行。Esc/返回都回到启动页。
+   * 参数行点开的选择器经 `pickerPanels` +
    * `inputPaused` 渲染在本屏之上，Esc 关掉它也回到这里。
    */
   if (launchpadShown) {
@@ -6706,11 +6912,12 @@ export function Chat({
         }}
         onQueryChange={changeLaunchpadDraft}
         onSubmit={submitLaunchpad}
+        onNewline={newlineLaunchpad}
+        onHandoffInput={event => launchpadPendingInputRef.current.push(event.keypress)}
         onFocusChange={setLaunchpadFocus}
         onAction={(action) => {
           // 第八版（用户实测：「刚点帮助，不知道为什么直接进入聊天页面了」）：
-          // 帮助**不属于**离开启动页的两条路（Enter 发非命令消息 / 会话浏览
-          // 里选中会话）——它盖在落地页之上（overlay kind 'help'），再点同一
+          // 帮助盖在落地页之上（overlay kind 'help'），再点同一
           // 入口 = 收起（与参数段同一条切换语义）。
           if (action.command === 'help') {
             dispatchOverlay(overlay.kind === 'help'
@@ -6792,7 +6999,7 @@ export function Chat({
         <TooltipLayer invalidationKey={overlay.kind} />
       </>
     )
-    return fullscreen ? node : <AlternateScreen>{node}</AlternateScreen>
+    return withTitle(fullscreen ? node : <AlternateScreen>{node}</AlternateScreen>)
   }
 
   // 浮层整体挂载条件：与内部各面板的可见条件同值（数据门在
@@ -6850,8 +7057,8 @@ export function Chat({
     )
     : null
 
-  return (
-    <Box ref={wakeTickRef} flexDirection="column" flexGrow={1} width="100%">
+  return withTitle(
+    <Box flexDirection="column" flexGrow={1} width="100%">
       {/* 分栏布局：geometry 为 null（收起 / 窄屏 / inline / 编辑器展开）
           时 SidePanelLayout 原样渲染 children，与现状逐字节一致；分栏时
           左栏拿到 chatColumns 的 TerminalSizeContext 覆盖与出血边界。 */}
@@ -7069,11 +7276,13 @@ export function Chat({
         )}
         {/* 分栏且 todo Panel 已启用时，Goal/Todo 由右栏 Panel 承载，
             底部 chrome 不再挂载（窄屏 / inline / 未启用时保留现状）。 */}
-        {!(sidePanel.split && sidePanel.enabledPanelIds.includes('todo')) && (
+        {!(sidePanel.split && sidePanel.enabledPanelIds.includes('todo'))
+          && !todoFooterHidden && (
           <GoalTodoPanel
             channel={channel}
             collapsed={todoCollapsed}
-            onToggle={() => setTodoCollapsed(previous => !previous)}
+            onToggle={toggleTodoFooter}
+            idleDismissal
           />
         )}
         {recap !== null && recap.auto && !recap.expanded && (
@@ -7173,8 +7382,11 @@ export function Chat({
               }}
             />
           </Box>
-        ) : btwOverlayOpen && !sidePanel.enabledPanelIds.includes('btw') ? (
-          // 浮层只在 btw 面板未启用时显示；面板中途被启用就立即让位。
+        ) : btwOverlayVisible ? (
+          // 浮层只在 btw 线程没有真正上屏时显示：面板未启用，或分栏渲不
+          // 出来（窄屏 / inline / splitEnabled=false），或分栏
+          // 在、但画的是别的面板。侧栏真的显示 btw 线程时浮层立即让位——
+          // 单一 surface（判定见 btwPanelOnScreen）。
           <Box flexDirection="column" marginTop={1}>
             <BtwPanelFallback
               thread={btwOverlayThread}
@@ -7201,6 +7413,13 @@ export function Chat({
           // 先闪一帧 toast 再消失。
           toastSuppressed={petSaysNotices}
           draftCache={promptDraftRef.current}
+          onInputReady={() => {
+            // Restore the draft and register the composer listener before
+            // replaying keys captured during the launchpad's final stdin batch.
+            const pending = launchpadPendingInputRef.current
+            launchpadPendingInputRef.current = []
+            for (const keypress of pending) inputEmitter.emit('input', new InputEvent(keypress))
+          }}
           helpOpen={helpOpen}
           onToggleHelp={() =>{  setHelpOpen(previous => !previous) }}
           onRunCommand={runCommand}
@@ -7258,6 +7477,7 @@ export function Chat({
         <StatusLine
           channel={channel}
           onHeightChange={setFooterRows}
+          pluginFields={statusFields}
           activity={workingActivity}
           selectionActive={selectionActive}
           helpOpen={helpOpen}
@@ -7272,7 +7492,6 @@ export function Chat({
               : {
                   band: wakeBand,
                   hint: trajectorySeen ? undefined : primaryComboString('trajectory'),
-                  tick: Math.floor(wakeTime / 120),
                   onOpen: openScene,
                   hoverHint: primaryComboString('trajectory'),
                 }
@@ -7285,7 +7504,7 @@ export function Chat({
           { left: 0, top: 0, columns: chatColumns, rows: upperRows },
           { left: chatColumns + 1, top: 0, columns: sidePanel.panelColumns, rows: upperRows },
         ]}
-        invalidationKey={`${overlay.kind}:${dialogOverlayOpen}:${btwOverlayOpen}:${sidePanel.split}:${chatColumns}:${footerRows}`}
+        invalidationKey={`${overlay.kind}:${dialogOverlayOpen}:${btwOverlayVisible}:${sidePanel.split}:${chatColumns}:${footerRows}`}
         subscribeInvalidation={subscribeTooltipInvalidation}
       />
       {/* 全屏草稿编辑浮层：必须挂在 TooltipLayer 之后，才能盖住包括

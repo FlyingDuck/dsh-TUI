@@ -1,6 +1,10 @@
 # Interaction and Commands
 
 [Documentation index](README.md) · [简体中文](interaction.md)
+`Ctrl+Q` folds running todos; while idle it hides/restores the goal/todo footer. Clicking the idle todo header hides it too. New goal/todo data or another session shows it again. Completed goals leave the footer once idle; their history remains in the Todo side panel.
+
+
+Fullscreen text selection belongs to its starting pane (chat, sidebar or one diff column). Dragging diagonally across rows, double-clicking words and triple-clicking lines retain that ownership. Copy ignores gutters and joins only that pane’s soft wraps, preserving source newlines. Scrolling the other pane does not move or invalidate the selection. Divider dragging resizes without selecting text.
 
 ## Input and global shortcuts
 
@@ -12,11 +16,11 @@
 | `Shift+Enter` / `Ctrl+J` | Insert a newline at the caret; `Ctrl+J` (LF) is the fallback when the terminal cannot report the Shift modifier; macOS Terminal.app uses `Option+Enter` |
 | `Shift+Tab` | Cycle the configured session modes (default: default → plan → full-access) |
 | `Alt/Option+Up` | Pull the latest undelivered message back into the editor |
-| `Up/Down` | Select menu items; in ordinary input, browse history or move through multiline text |
+| `Up/Down` | Select menu items; in ordinary input, browse history or move through multiline text. From the second line, `Up` still reaches an empty first line rather than skipping it for history |
 | `Ctrl+V` / `Alt+V` | Insert clipboard text or files; images are sent as durable attachments. Use `Alt+V` when the terminal intercepts `Ctrl+V` |
 | `Ctrl+G` | Edit the current input in an external editor (`$VISUAL` → `$EDITOR`); saving and quitting fills it back, `:cq`/non-zero exit keeps the draft; with neither variable set the TUI asks you to configure one (no `vi` fallback) |
 | `Ctrl+Shift+E` | Expand the fullscreen draft editor (or click the `⛶` affordance at the end of the input row): line numbers + current-line highlight + live line/char stats<br>`Enter` inserts a newline, `Ctrl+Enter` or the Send button sends, `Esc` or the Collapse button keeps the draft and returns<br>wheel-scrolls freely; click/drag/double-click selection work as in the inline prompt; remappable via `/settings` |
-| `Esc` | Ladder: close help → close the image preview → close the command menu → close the file menu (only the current `@` token)<br>→ **with a selection in the prompt input: only clear it (text untouched)** → with the held-queue selector open: only leave the selector → interrupt the turn and hold the queued messages (no automatic re-send, see "Message delivery semantics") → clear non-empty input → double-tap on empty input = rewind<br>in fullscreen, an active mouse selection is cleared first (not copied) |
+| `Esc` | Ladder: close help → close the image preview → close the command menu → close the file menu (only the current `@` token)<br>→ with the held-queue selector open: only leave the selector → **with a selection in the prompt input: only clear it (text untouched)** → collapse the draft editor → unfold a pasted block → remove context chips → interrupt the turn and hold the queued messages (ordinary draft kept; no automatic re-send, see "Message delivery semantics") → clear non-empty idle input → double-tap on empty idle input = rewind<br>in fullscreen, an active mouse selection is cleared first (not copied) |
 | `Ctrl+Z` | Undo the prompt draft's last word-level edit (text, caret and images together). Draft-only: a submit, a history recall (`Ctrl+R`/`↑`) or a session switch ends the history; it is NOT the message/conversation rewind behind `Esc Esc`. Remappable via `/settings` |
 | `Esc` / `Ctrl+C` / `Enter` while an image preview is open | Close the preview and restore the surface underneath; other keys are not passed through |
 | `Left` / `Right` in the image modal | Previous / next image, no wrapping; caret peeks keep arrows with the prompt |
@@ -118,9 +122,10 @@ results back to the chat screen and add no new behavior.
   jobs`; update detected → `Update available`; usage milestone reached and never starred → `Feed us a
   star`; fallback `Help`). Full screens opened from the launchpad (sessions & workspaces / settings /
   background jobs / the family tree / the wizard) render **above the launchpad** — `Esc` closes them
-  back onto the launchpad (draft, params and focus intact); **the only way off the launchpad into the
-  chat is submitting a non-command line with Enter**. Overlays on the launchpad side (pickers, the
-  command palette) are a **clean cutout** — every cell in the overlay rect is space-filled (host
+  back onto the launchpad (draft, params and focus intact); there are two ways off the launchpad into
+  the chat: submit a non-command line with Enter, or press `Shift+Enter` (`Option+Enter`) in the input
+  to carry the unsent draft over and start a new line at the caret. Overlays on the launchpad side
+  (pickers, the command palette) are a **clean cutout** — every cell in the overlay rect is space-filled (host
   glyphs never bleed through), yet no background color is emitted (no white block; Kitty splash
   art still shows through the terminal-default cells; the chat page's pickers are unaffected).
 - **Tips line**: click to rotate (three tips cycle; the first-run tip has top priority and never rotates);
@@ -157,13 +162,13 @@ results back to the chat screen and add no new behavior.
 | Key | Behavior |
 | --- | --- |
 | `Left/Right` | Move by character; **with a selection, collapse to the corresponding edge** |
-| `Ctrl+Left/Right` | Move by word |
+| `Ctrl+Left/Right` / `Alt/Option+Left/Right` | Move by whitespace-delimited words; also supported on the launchpad |
 | `Home/End` | Move to the start/end of the current logical line |
 | `Ctrl+A` / `Ctrl+E` | logical line start / end (readline parity) |
 | `Alt+A` / `Alt+E` | open the subagent dashboard / expand or fold hidden older rows in long transcripts |
-| `Ctrl+U` | Delete before the caret |
+| `Ctrl+U` | Delete to the current line start, preserving text to the right; also supported in the focused launchpad input, with image chips removed whole |
 | `Ctrl+K` | Delete after the caret |
-| `Ctrl+W` | Delete the preceding word |
+| `Ctrl+W` / `Alt/Option+Backspace` | Delete the preceding word; staged image attachments are removed whole |
 | `Backspace` / `Delete` | Delete the character before / after the caret; **with a selection, delete the whole selection** |
 | Typing | **Replaces an active selection** (standard editor semantics), caret after the inserted text |
 
@@ -243,6 +248,7 @@ Type `@` at **any position** of the message to open file completion.
 - Keep typing to filter; `Tab`/`Enter` to pick; directories can be entered further.
 - Plain fragments match **fuzzily** — `@ment` matches `src/utils/mentions.ts` (prefix/boundary and short-path boosts).
 - Path-shaped queries (`@src/`, `@./`, `@../`, `@~/`, `@D:\`, or anything containing a separator) read **only that directory** for local completion.
+- `@~/` lists completion candidates from the running host's user home. Accept a directory to continue completing its subdirectories; candidates preserve the typed path spelling.
 - `Esc` closes only the current `@` token's menu; async refreshes keep your selected candidate.
 - Text files and directory listings are attached as text; PNG, JPEG, WebP, and GIF files are sent as durable Harness image blocks.
 - Reads use the active workspace filesystem, including provider-owned workspaces.
@@ -328,6 +334,17 @@ While the model is working, three paths have different placement:
     Claude CLI that cannot withdraw them, or when the withdrawal request fails,
     the backend still runs them next turn; dsh-TUI stops holding them, says so,
     and never sends them twice.
+
+### Plugin relay display
+
+A plugin message opts into a transcript bubble only with a durable `plugin:…` source,
+`form: 'relay'`, and non-empty `transcript.text`; other injections remain model-facing only,
+and `agent/inbox/spliced` itself adds no duplicate rows. A valid plugin name and
+`receive` / `ask` / `reply` action form the `✉ <plugin> · <action> ← <sender>` header;
+otherwise only the sender is shown. Long bodies keep three lines plus a fold hint (up to four
+lines display directly); click the hint or press `Ctrl+O` to expand. `/export` retains separate relay
+sections; model occupancy counts the actual injected content. Payload fields:
+[user guide §4.10](user-guide.en.md#410-plugin-relay-messages).
 
 ## Session workflows
 
@@ -466,7 +483,8 @@ completes, and may reply with a summary toast.
 
 `/btw <question>` asks a quick side question without disturbing the main task: it reuses
 the current session context (system prompt + existing history) for a single **tool-less,
-one-turn** model call, and shows the answer in a scrollable panel.
+one-turn** model call, and shows the answer in a scrollable panel (the sidebar panel, or
+an overlay in the conversation).
 
 Notes:
 
@@ -482,6 +500,8 @@ Notes:
 - Clicking the **message area** (question or answer text) only hands the column focus to the panel, exactly like clicking anywhere else in it — it never injects anything; `s` is the only way in.
 - The `⤢` full-screen scene shares the sidebar's keys and selection state (both read the same thread store); the only difference is that after sending it steps aside and returns you to the main composer.
 - Triggering `/btw` again aborts the previous side question.
+- **Which surface shows the answer** follows whether the split can actually render: under `fullscreen` at a content width of ≥93 columns, with `sidePanel.splitEnabled` on, no fullscreen draft editor open, and the btw panel enabled, it goes to the sidebar panel; otherwise it falls back to an overlay in the conversation. One exchange never shows in two places; when the split comes back, the overlay only yields while the sidebar is actually showing the **btw** panel — a split parked on another panel leaves the overlay where it is. When another overlay or fullscreen view owns the screen, the question is still sent, but the only feedback is a notice (the fullscreen draft editor covers that notice).
+- An open side-question overlay yields to a main-task questionnaire or the fullscreen draft editor. Answering the questionnaire or collapsing the editor restores the side question according to the current layout, preserving the running side question and editor draft. While the questionnaire is visible, `Enter` answers it.
 
 ### Trajectory scene (/trace / Ctrl+T)
 
@@ -642,6 +662,7 @@ In inline mode, the terminal emulator owns native scrollback and selection.
 - **Double/triple click** — Select and copy a word/line (exception: the
   `scrollGutter: scrollbar` track is a drag target, so multi-clicks there no longer select a line).
 - **`Esc`** — Cancel an active drag (or an existing selection) without copying.
+- **Code blocks** — A body-anchored selection joins soft-wrapped rows without frame padding or extra newlines, for light and full frames. Hard line breaks and hard-line insets keep their existing screen-copy behavior; this is not a byte-for-byte source export.
 - **Single-click a message row** — Plain text rows (user/assistant) do nothing — the
   transcript is a reading surface, selection is the mouse's job there.
 - **Single-click a tool card / thinking / compact summary** — Expand / collapse (header
@@ -723,6 +744,7 @@ When the model invokes the questionnaire tool, its panel temporarily owns the ke
 | `Esc` (from question 1) | Cancel the whole batch; the model receives `ASK_CANCELLED` |
 | `Ctrl+C` | Cancel the whole batch from any question; the model receives `ASK_CANCELLED` (a harness-side abort still reports `ASK_ABORTED`) |
 | `Ctrl+K` | Fold/unfold the ask_user_question questionnaire panel (the ask keeps waiting; while folded, `Esc`/`Ctrl+C` expand first) |
+| `Alt+Up` / `Alt+Down` | Page through question text and details inside their fixed-height area without moving the answer focus; remappable in `/settings` → `Shortcuts`. Fullscreen also supports the wheel over the body |
 
 The last row is a free-form input line:
 
@@ -756,8 +778,9 @@ in the review panel (the dedicated decision layout for `intent: plan-review`):
 ## Tool approval
 
 When the permission layer issues an `approval/request`, the approval panel shows the tool
-name, the full command extracted from the paired tool call, and the reason. It temporarily
-owns the keyboard (when a questionnaire is also pending, approval takes priority):
+name and previews the paired tool call's command and reason. Very short terminals use a
+compact layout with the full preview in a fixed-height area. The panel temporarily owns
+the keyboard (when a questionnaire is also pending, approval takes priority):
 
 | Key | Behavior |
 | --- | --- |
@@ -765,6 +788,7 @@ owns the keyboard (when a questionnaire is also pending, approval takes priority
 | `1` / `2` | Allow (this time only) / deny |
 | `Enter` | Submit the focused item |
 | `Esc` / `Ctrl+C` | Deny (fail closed) |
+| `Alt+Up` / `Alt+Down` | Page through the full preview in a compact approval panel on very short terminals without moving the choice focus; fullscreen also supports the wheel over the preview |
 
 The protocol offers only "allow once / deny" — there is **no "always allow"**.
 
@@ -794,6 +818,7 @@ The command menu merges local commands with the DSH command registry. Type `/` t
 - `/clear`, `/compact`, `/export`, `/btw`.
 - `/trace` — trajectory scene, also `Ctrl+T`.
 - `/rewind` — time travel, same as double-`Esc` on an empty input.
+- `/restart` — install nothing, restart and resume this session. Ordinary restarts and successful updates replace the process on non-Windows runtimes with `process.execve`; other runtimes and kernel switches retain supervised handoff. A `dsh --profile`-delegated launch stays on that path until a cold launch or kernel switch (user guide §4.1).
 - `/tree` — session family tree: every fork branch stitched together; hover previews a node,
   click opens a rewind / fork-here / adopt-branch menu.
 - `/fork` — copy the current session into a resumable twin; the original is untouched.
@@ -803,6 +828,7 @@ The command menu merges local commands with the DSH command registry. Type `/` t
 - `/context`, `/status`, `/cost`, `/balance` — official DeepSeek balance: summary row + hover details, click to refresh.
 - `/config`, `/doctor`, `/init`, `/agents`, `/jobs` — background jobs panel: status/elapsed/exit code, `k` kills; with the split layout on and the terminal wide enough it opens as a right-column panel instead (narrow terminals and inline mode keep the full-screen panel).
 - `/settings`.
+- `/version` — bean build identity, git description (including `-dirty`), branch/commit, build time, resolved DSH kernel version, installation source and embedded self-use notes; without a stamp it reports the fallback instead of guessing identity (user guide §3.2).
 
 **Model and display**
 

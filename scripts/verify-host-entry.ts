@@ -25,7 +25,9 @@ const check = (label: string, ok: boolean, detail?: unknown): void => {
   console.log(`PASS ${label}`)
 }
 
-const root = mkdtempSync(join(tmpdir(), 'verify-host-entry-'))
+// Host discovery returns real paths; keep fixture expectations canonical too
+// (macOS temp directories may enter through the /var -> /private/var alias).
+const root = realpathSync(mkdtempSync(join(tmpdir(), 'verify-host-entry-')))
 const memory = join(root, 'kernel.json')
 const noMemory = join(root, 'absent.json')
 writeFileSync(memory, JSON.stringify({ backend: 'claude' }))

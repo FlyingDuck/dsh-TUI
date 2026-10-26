@@ -670,9 +670,14 @@ function HeaderTitle({ name, title, isTerminal, folded, displayArgs, argsLanguag
       </Box>
     )
   }
-  const space = trimmed.indexOf(' ')
-  const head = space === -1 ? trimmed : trimmed.slice(0, space)
-  const tail = space === -1 ? '' : trimmed.slice(space)
+  // The accent covers the leading word only. A title written as `Name(args)`
+  // (the session-search cards, or any presenter that echoes its input the way
+  // the terminal card does) has no space to split on, so the opening paren is
+  // a delimiter too — otherwise the whole header would carry the tool tone.
+  const cuts = [trimmed.indexOf(' '), trimmed.indexOf('(')].filter(at => at > 0)
+  const cut = cuts.length === 0 ? -1 : Math.min(...cuts)
+  const head = cut === -1 ? trimmed : trimmed.slice(0, cut)
+  const tail = cut === -1 ? '' : trimmed.slice(cut)
   return (
     <Box flexWrap="nowrap" {...headerTooltip}>
       <Text bold color={nameColor} wrap="truncate-end">
@@ -766,9 +771,11 @@ export function AssistantToolUseMessage({
 
   // Body lines: the structured view first, raw result text as the fallback
   // (tools without a presenter, or a folded row awaiting loadOlder).
-  // Wide terminals render diffs as a two-pane side-by-side instead: one
-  // source line per terminal row (truncate) keeps the panes row-aligned,
-  // which the flat add/del line model cannot express.
+  // Wide terminals render diffs as a two-pane side-by-side instead: the
+  // collapsed preview keeps one source line per terminal row (truncate) so the
+  // card keeps a fixed height, while the expanded view wraps each pane and pads
+  // the shorter side so the two stay row-aligned. Neither fits the flat
+  // add/del line model.
   const { columns } = useTerminalSize()
   // Interactive rows grow a ▾/▴ disclose column while the pointer dwells
   // (fixed, no layout shift elsewhere). The tooltip resolves at show time —

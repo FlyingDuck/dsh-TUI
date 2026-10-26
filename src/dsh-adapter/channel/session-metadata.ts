@@ -4,6 +4,7 @@ import { createUserMessage, type Message } from '@deepseek-ai/dsh-llm'
 import type { Context } from '@deepseek-ai/cordis'
 import { clearResumeTarget, forgetSession, readResumeTarget, touchSession, writeResumeTarget } from '../../sessionHistory.js'
 import { t } from '../../i18n.js'
+import { WORKING_GATE_NOTICES } from '../../commands.js'
 import { appendSessionTitle, deleteSessionLog, userTitleData } from '../compat/index.js'
 import { snapshotLiveSessionEvents } from '../compat/liveSession.js'
 import { collectRecentActivity, parseRecapResponse, RECAP_RECENT_CHARS, wrapRecapPrompt } from '../recap.js'
@@ -72,6 +73,16 @@ export function createSessionMetadataActions(ctx: Context, deps: {
   const withOwnerSignal = (signal?: AbortSignal): AbortSignal =>
     signal === undefined ? deps.owner.signal : AbortSignal.any([signal, deps.owner.signal])
 
+  // The public registry-global getter is independent of workspace sessionIds:
+  // archived sessions deliberately retain their workspace accounting slot.
+  const archiveProjection = (): ((row: SessionSummary) => SessionSummary) => {
+    const registry = ctx.get('workspaceRegistry') as { readonly archivedSessionIds?: readonly string[] } | undefined
+    // Older hosts lack this capability. A present getter that throws must
+    // reject the listing rather than masquerading as an empty archive set.
+    const archived = new Set(registry?.archivedSessionIds ?? [])
+    return row => ({ ...row, archived: archived.has(row.id) })
+  }
+
   let lastListing: { source: SessionSource | symbol; rows: readonly SessionSummary[] } | undefined
   const remember = (source: SessionSource, rows: readonly SessionSummary[]): void => {
     lastListing = { source: source.identity ?? source, rows }
@@ -81,9 +92,10 @@ export function createSessionMetadataActions(ctx: Context, deps: {
     if (source === undefined) return undefined
     // Providers without a durable scope still keep same-instance reopen fast.
     // A replaced service never inherits this in-memory view.
-    return lastListing?.source === (source.identity ?? source)
+    const rows = lastListing?.source === (source.identity ?? source)
       ? lastListing.rows
       : readListingSnapshot(source)
+    return rows?.map(archiveProjection())
   }
   const listing = createSessionListing({
     owner: deps.owner,
@@ -106,17 +118,20 @@ export function createSessionMetadataActions(ctx: Context, deps: {
         if (listingCurrent()) deps.setPersistedSessions([])
         return []
       }
+      const projectArchive = archiveProjection()
       let summaries: readonly SessionSummary[] = []
       summaries = await listSummaries(source, deps.owner.signal, enriched => {
         if (!listingCurrent()) return
+        enriched = projectArchive(enriched)
         summaries = summaries.map(row => row.id === enriched.id ? enriched : row)
         remember(source, summaries)
         deps.setPersistedSessions(summaries)
         onEnriched(enriched)
       }, rows => {
-        if (listingCurrent()) onPartial(rows)
+        if (listingCurrent()) onPartial(rows.map(projectArchive))
       }, deps.cwd?.())
       if (!listingCurrent()) return []
+      summaries = summaries.map(projectArchive)
       remember(source, summaries)
       deps.setPersistedSessions(summaries)
       return summaries
@@ -294,7 +309,7 @@ export function createSessionMetadataActions(ctx: Context, deps: {
     const capture = deps.binding.capture()
     if (!current(capture)) return { ok: false, reason: 'cancelled' }
     if (deps.working()) {
-      deps.notify(t('new-session-while-working'), { color: 'warning' })
+      deps.notify(t(WORKING_GATE_NOTICES.rollover), { color: 'warning' })
       return { ok: false, reason: 'working' }
     }
     let liveTitle = ''

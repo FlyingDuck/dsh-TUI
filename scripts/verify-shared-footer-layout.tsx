@@ -42,6 +42,7 @@ const [
   import('../src/minimalUiMode.js'),
   import('./lib/term-test.mjs'),
 ])
+const { TuiStatusStore } = await import('../src/dsh-adapter/status.js')
 const { createRoot, AlternateScreen, ThemeProvider } = ui
 const { settled, viewportLines } = termTest
 const ROWS = 38
@@ -125,6 +126,7 @@ async function mount({ columns = 144, fullscreen = true } = {}) {
   const questions = new QuestionStore()
   const approvals = new ApprovalStore()
   const { channel, submitted } = makeChannel()
+  const status = new TuiStatusStore()
   const previousInk = instances.get(process.stdout)
   const app = await createRoot({ stdout, stderr, stdin, patchConsole: false, exitOnCtrlC: false, terminalImages: false })
   const ink = instances.get(stdout)
@@ -134,7 +136,7 @@ async function mount({ columns = 144, fullscreen = true } = {}) {
   const body = (
     <ThemeProvider theme="dark"><PageMargin>
       <Chat fullscreen={fullscreen} channel={channel as unknown as React.ComponentProps<typeof Chat>['channel']}
-        questionStore={questions} approvalStore={approvals} onExit={() => {}} />
+        questionStore={questions} approvalStore={approvals} extensionStatus={status} onExit={() => {}} />
     </PageMargin></ThemeProvider>
   )
   app.render(fullscreen ? <AlternateScreen>{body}</AlternateScreen> : body)
@@ -196,7 +198,7 @@ async function mount({ columns = 144, fullscreen = true } = {}) {
   await flush()
   check('fixture reached a painted Chat footer', await settled(() => rowOf(MODEL) >= 0), snapshot())
   return {
-    app, ink, stdout, stdin, term, channel, submitted, questions, approvals,
+    app, ink, stdout, stdin, term, channel, submitted, questions, approvals, status,
     flush, rect, layout, lines, rowOf, point, snapshot, assertShared,
     async resize(width: number) {
       term.resize(width, ROWS); stdout.columns = width; stdout.emit('resize')
@@ -300,6 +302,40 @@ await verify('footer preference heights are measured, not fixed', async () => {
     f.channel.emit()
     check('restoring preferences restores the measured footer height', await settled(() => f.rect('StatusLine')?.height === barOn.footer!.height), f.snapshot())
     await f.assertShared('restored footer')
+  } finally { await f.close() }
+})
+
+await verify('plugin fields use the shared footer and follow its width', async () => {
+  const f = await mount()
+  const owner = {}
+  let clicks = 0
+  const field = {
+    key: 'fixture:build', text: 'PLUGIN_FOOTER_FIELD', slot: 'right-tail' as const,
+    tone: 'accent' as const, maxCells: 24, minColumns: 120,
+    detail: 'PLUGIN_FOOTER_DETAIL', onClick: () => { clicks += 1 },
+  }
+  try {
+    f.channel.statusBar = { ...f.channel.statusBar, compact: false }
+    f.channel.emit()
+    const initial = await f.assertShared('before plugin field')
+    f.status.setField(field, 1, owner)
+    check('plugin field reaches the actual Chat footer', await settled(() => f.rowOf(field.text) >= 0), f.snapshot())
+    const geometry = await f.assertShared('plugin field visible')
+    const point = f.point(field.text)!
+    check('plugin field is below the split and right of its former divider', point.row >= geometry.footer!.y && point.col > geometry.divider!.x, f.snapshot())
+    f.stdin.write(`\x1b[<35;${point.col + 1};${point.row + 1}M`)
+    check('plugin field detail stays in the shared footer', await settled(() => f.rowOf(field.detail) >= geometry.footer!.y), f.snapshot())
+    f.stdin.write(`\x1b[<0;${point.col + 1};${point.row + 1}M\x1b[<0;${point.col + 1};${point.row + 1}m`)
+    check('plugin field click dispatches once', await settled(() => clicks === 1), String(clicks))
+    await f.resize(104)
+    check('plugin minColumns uses the full content width', await settled(() => f.rowOf(field.text) < 0), f.snapshot())
+    await f.assertShared('plugin field hidden at narrow width')
+    await f.resize(144)
+    check('widening restores the plugin field', await settled(() => f.rowOf(field.text) >= 0), f.snapshot())
+    await f.assertShared('plugin field restored')
+    check('plugin field disposer succeeds', f.status.clearFieldIf(field.key, 1, owner))
+    check('removing the field restores the original footer height', await settled(() => f.rowOf(field.text) < 0 && f.rect('StatusLine')?.height === initial.footer!.height), f.snapshot())
+    await f.assertShared('plugin field removed')
   } finally { await f.close() }
 })
 

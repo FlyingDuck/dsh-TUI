@@ -97,7 +97,7 @@ export const LOCAL_COMMANDS: LocalCommand[] = [
   { name: 'migrate', description: 'Import conversations from other coding agents (claude-code / codex / omp / zcode / grok-build)' },
   { name: 'init', description: 'Create AGENTS.md in the working directory' },
   { name: 'agents', description: 'Show subagents of this session' },
-  { name: 'team', description: 'Agent Teams: show status, or switch on / off (the team bundle)' },
+  { name: 'team', description: 'Agent Teams: show status while the team service is running' },
   { name: 'jobs', description: 'Show background jobs of this session' },
   { name: 'panel', description: 'Side panel: toggle / focus / zoom / switch panels' },
   // Model / display
@@ -119,7 +119,7 @@ export const LOCAL_COMMANDS: LocalCommand[] = [
   { name: 'hooks', description: 'Show hooks status' },
   { name: 'mcp', description: 'Show MCP status' },
   { name: 'skills', description: 'List available skills' },
-  { name: 'plugin', description: 'Show plugin diagnostics, and the plugins this profile added' },
+  { name: 'plugin', description: 'Show plugin diagnostics, added plugins, and switchable experimental features' },
   { name: 'update', description: 'Update dsh-tui and restart' },
   // Skills are discovered through the DSH registry and added at runtime.
   // A local entry of the same name would win the collision filter.
@@ -355,7 +355,8 @@ export const WORKING_GATE_NOTICES = {
   preset: 'preset-agent-running',
   workspace: 'workspace-switch-working',
   update: 'update-working',
-  restart: 'update-working',
+  // `/restart` deliberately has no gate: it is the recovery hatch for a turn
+  // whose abort never converges (see WORKING_CONVERSATION_COMMANDS).
   // `/resume` and the core's `/rewind` refuse mid-turn in the session-switch
   // transaction; under DSH the rewind extension instead CANCELS the turn and
   // re-arms (session-rewind.ts), so the refusal is the core's own path. The
@@ -395,6 +396,14 @@ export const GRAY_ZONE_EXEMPT_COMMANDS: readonly string[] = ['resume']
  * running turn keeps writing into it, `local-actions.ts`), and `exit` (with its
  * `quit`/`q` aliases) tears the process — and the running turn — down.
  *
+ * `/restart` belongs here too, and its presence is load-bearing: it respawns
+ * the process and resumes this session, which is the only way out of a turn
+ * whose abort never converges (a tool that ignores its `AbortSignal` leaves
+ * `working` true forever and every in-process gate stuck). Refusing it mid-turn
+ * produced the worst dead end of the bug report — "can't interrupt, and
+ * `/restart` says a turn is running". `Chat.tsx` answers it with a warning that
+ * the running turn is interrupted, then restarts.
+ *
  * `/rewind` used to live here, because it cancels only once a target is
  * CONFIRMED (`session-rewind.ts`) and replacing the conversation is its whole
  * purpose. It moved to {@link WORKING_GATE_NOTICES} when the session-switch
@@ -410,7 +419,7 @@ export const GRAY_ZONE_EXEMPT_COMMANDS: readonly string[] = ['resume']
  * see {@link GRAY_ZONE_EXEMPT_COMMANDS}.
  */
 export const WORKING_CONVERSATION_COMMANDS: readonly string[] = [
-  'clear', 'exit', 'quit', 'q',
+  'clear', 'exit', 'quit', 'q', 'restart',
 ]
 
 /**

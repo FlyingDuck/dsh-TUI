@@ -364,6 +364,7 @@ function ScrollBox({
       el.scrollTop ??= 0;
       el.onSelectionScroll = delta => handleRef.current?.scrollBy(delta);
       el.onStickyRestore = notify;
+      el.onScrollDrainEnd = notifyCoalesced;
       // A viewport-height change since the last layout pass means every
       // geometry-reading subscriber painted the previous bounds (the
       // renderer owns the write and this pass was otherwise silent). Wire

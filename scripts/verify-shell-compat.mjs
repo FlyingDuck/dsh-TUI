@@ -16,6 +16,7 @@ process.env.USERPROFILE = home
 process.env.DSH_HOME = home
 const { createChannel } = await import('../lib/types/dsh-adapter/channel.js')
 const { runForegroundShell } = await import('../lib/types/dsh-adapter/compat/shell.js')
+const { GIT_STATUS_COMMAND } = await import('../lib/types/utils/gitStatus.js')
 
 const output = (stdout = '', stderr = '', timedOut = false) => ({
   stdout: { text: stdout }, stderr: { text: stderr }, timedOut,
@@ -43,7 +44,7 @@ try {
   for (const api of ['run', 'execute']) {
     const requests = []
     const specs = []
-    let result = output(' main\n')
+    let result = output('# branch.oid 0123456789abcdef0123456789abcdef01234567\n# branch.head main\n')
     const shell = {
       resolve(value) {
         assert.equal(this, shell)
@@ -63,7 +64,7 @@ try {
     const { channel, messages } = channelFor(shell)
     try {
       assert.ok(await settled(() => channel.gitBranch === 'main'), `${api}: boot resolves git branch`)
-      assert.deepEqual(requests[0], { command: 'git branch --show-current', workdir: home, timeoutMs: 3000 })
+      assert.deepEqual(requests[0], { command: GIT_STATUS_COMMAND, workdir: home, timeoutMs: 3000 })
       result = output(' ok\n')
       await submitShell(channel, request.command, true)
       assert.deepEqual(requests[1], request)
@@ -112,8 +113,9 @@ try {
   } }
   const stale = channelFor(delayed)
   stale.channel.submit('!!late')
-  assert.ok(await settled(() => started.includes('late')), 'the submitted command must start before release')
-  assert.deepEqual(started, ['git branch --show-current', 'late'])
+  assert.ok(await settled(() => started.includes('late') && started.includes(GIT_STATUS_COMMAND)),
+    'both the submitted command and async status probe must start before release')
+  assert.deepEqual([...started].sort(), [GIT_STATUS_COMMAND, 'late'].sort())
   stale.channel.releaseContributions()
   const rowCount = stale.channel.rows.length
   resolve(output('late output'))

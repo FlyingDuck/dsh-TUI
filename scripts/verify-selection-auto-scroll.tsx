@@ -21,17 +21,21 @@ const [
   { PassThrough, Writable },
   React,
   { Terminal },
-  { createRoot, AlternateScreen, Box, Text, ScrollBox, NoSelect, useInput, useCopyOnSelect },
+  { createRoot, AlternateScreen, Box, Text, ScrollBox, useInput, useCopyOnSelect },
+  { SidePanelLayout },
   { useSelection },
   { default: instances },
+  { getSelectedText },
   { settled, sleep, viewportLines },
 ] = await Promise.all([
   import('node:stream'),
   import('react'),
   import('@xterm/headless'),
   import('../src/ui.js'),
+  import('../src/components/sidePanel/SidePanelLayout.js'),
   import('../src/ink/hooks/use-selection.js'),
   import('../src/ink/instances.js'),
+  import('../src/ink/selection.js'),
   import('./lib/term-test.mjs'),
 ])
 
@@ -57,9 +61,13 @@ async function verify(name: string, test: () => Promise<void>): Promise<void> {
   }
 }
 
-async function fixture(columns: number, options: { fullscreen?: boolean; optIn?: boolean; sidebar?: boolean; viewportHeight?: number; lines?: readonly string[] } = {}) {
+async function fixture(columns: number, options: { fullscreen?: boolean; optIn?: boolean; sidebar?: boolean; scrollSide?: 'chat' | 'panel'; nestedPane?: boolean; viewportHeight?: number; lines?: readonly string[] } = {}) {
   const fullscreen = options.fullscreen !== false
-  const chatWidth = options.sidebar === false ? columns : columns - 8
+  const panelOwner = options.sidebar !== false && options.scrollSide === 'panel'
+  const chatWidth = options.sidebar === false ? columns : panelOwner ? 8 : columns - 8
+  const panelWidth = columns - chatWidth - 1
+  const paneLeft = panelOwner ? chatWidth + 1 : 0
+  const paneWidth = panelOwner ? panelWidth : chatWidth
   const lines = options.lines ?? Array.from({ length: COUNT }, (_, index) => rowText(index))
   const terminal = new Terminal({ cols: columns, rows: ROWS, allowProposedApi: true })
   const frames: string[] = []
@@ -83,6 +91,8 @@ async function fixture(columns: number, options: { fullscreen?: boolean; optIn?:
     unref: () => stdin,
   })
   let handle: ScrollBoxHandle | null = null
+  let siblingHandle: ScrollBoxHandle | null = null
+  let siblingHeight: number | undefined
   let overlay = false
   let chrome = false
   let viewportHeight = options.viewportHeight ?? VIEWPORT
@@ -112,33 +122,47 @@ async function fixture(columns: number, options: { fullscreen?: boolean; optIn?:
 
   function Scene() {
     const viewport = chrome ? viewportHeight - 2 : viewportHeight
+    const transcript = (
+      <ScrollBox
+        key={transcriptKey}
+        ref={value => { handle = value }}
+        selectionAutoScroll={options.optIn !== false}
+        width={paneWidth}
+        height={viewport}
+        flexDirection="column"
+        flexShrink={0}
+      >
+        {options.nestedPane ? (
+          <Box selectionPane="nested-edge-pane" selectionPaneViewport width={12} flexDirection="column" flexShrink={0}>
+            {lines.map((line, index) => <Text key={index}>{line}</Text>)}
+          </Box>
+        ) : lines.map((line, index) => <Text key={index}>{line}</Text>)}
+      </ScrollBox>
+    )
+    const sibling = (
+      <ScrollBox ref={value => { siblingHandle = value }} height={siblingHeight ?? viewport} flexDirection="column" flexShrink={0}>
+        {Array.from({ length: COUNT }, (_, index) => <Text key={index}>P{String(index).padStart(3, '0')}</Text>)}
+      </ScrollBox>
+    )
     const content = (
       <Box flexDirection="column" height={ROWS}>
         <Input />
         <Box height={chrome ? 3 : 2} flexShrink={0}><Text>HEADER</Text></Box>
         <Box flexDirection="row" height={viewport} flexShrink={0}>
-          <ScrollBox
-            key={transcriptKey}
-            ref={value => { handle = value }}
-            selectionAutoScroll={options.optIn !== false}
-            width={chatWidth}
-            height={viewport}
-            flexDirection="column"
-            flexShrink={0}
-          >
-            {lines.map((line, index) => <Text key={index}>{line}</Text>)}
-          </ScrollBox>
-          {options.sidebar !== false && (
-            <NoSelect width={8} height={viewport} flexDirection="column" flexShrink={0}>
-              {Array.from({ length: viewport }, (_, index) => <Text key={index}>PANEL</Text>)}
-            </NoSelect>
+          {options.sidebar === false ? transcript : (
+            <SidePanelLayout
+              geometry={{ chat: chatWidth, panel: panelWidth }} focus="chat" availableRows={viewport}
+              side={panelOwner ? transcript : sibling}
+            >
+              {panelOwner ? sibling : transcript}
+            </SidePanelLayout>
           )}
         </Box>
         <Box height={2} flexShrink={0} flexDirection="column">
           <Text>PROMPT</Text><Text>FOOTER</Text>
         </Box>
         {overlay && (
-          <Box position="absolute" top={2} left={0} width={chatWidth} height={VIEWPORT}>
+          <Box position="absolute" top={2} left={paneLeft} width={paneWidth} height={VIEWPORT}>
             <ScrollBox width="100%" height={VIEWPORT} flexDirection="column">
               {Array.from({ length: COUNT }, (_, index) => <Text key={index}>MODAL-{index}</Text>)}
             </ScrollBox>
@@ -202,6 +226,9 @@ async function fixture(columns: number, options: { fullscreen?: boolean; optIn?:
   }
   return {
     ink, stdin, terminal, frames, scroll, seek, copies, press, motion, release, bounds, flush, pauseIsStable, dispose,
+    paneLeft, paneRight: paneLeft + paneWidth - 1,
+    sibling() { expect(siblingHandle, 'sibling pane has a real ScrollBox'); return siblingHandle },
+    async setSiblingHeight(height: number) { siblingHeight = height; await draw() },
     async setOverlay(value: boolean) { overlay = value; await draw() },
     async addChrome() { chrome = true; await draw() },
     async setHeight(height: number) { viewportHeight = height; await draw() },
@@ -350,28 +377,37 @@ async function reverseDirection(): Promise<void> {
   } finally { await f.dispose() }
 }
 
-async function multiClick(kind: 'word' | 'line'): Promise<void> {
-  const f = await fixture(60)
+async function multiClick(kind: 'word' | 'line', side: 'chat' | 'panel', direction: 'up' | 'down'): Promise<void> {
+  const f = await fixture(60, { scrollSide: side })
   try {
-    await f.seek(0)
-    const { top } = f.bounds()
-    const row = top + 1
-    f.press(7, row)
-    f.release(7, row)
-    f.press(7, row)
+    await f.seek(direction === 'down' ? 0 : COUNT - VIEWPORT)
+    const { top, bottom } = f.bounds()
+    const row = direction === 'down' ? top + 1 : bottom - 1
+    const clickCol = f.paneLeft + 7
+    f.press(clickCol, row)
+    f.release(clickCol, row)
+    f.press(clickCol, row)
     if (kind === 'line') {
-      f.release(7, row)
-      f.press(7, row)
+      f.release(clickCol, row)
+      f.press(clickCol, row)
     }
     expect(await settled(() => f.ink.selection.anchorSpan?.kind === kind && f.ink.selection.isDragging), `${kind} gesture starts through real multi-click input`)
+    expect(f.ink.selection.paneId !== undefined, 'the gesture owns a real SidePanelLayout pane')
     const before = f.copies().length
-    f.motion(rowText(0).length - 1, ROWS - 1)
-    expect(await settled(() => f.scroll().getScrollTop() === COUNT - VIEWPORT && f.scroll().getPendingDelta() === 0,
+    const col = direction === 'down' ? f.paneLeft + rowText(0).length - 1 : f.paneLeft
+    const edgeRow = direction === 'down' ? ROWS - 1 : 0
+    f.motion(col, edgeRow)
+    const destination = direction === 'down' ? COUNT - VIEWPORT : 0
+    expect(await settled(() => f.scroll().getScrollTop() === destination && f.scroll().getPendingDelta() === 0,
       { timeoutMs: 8000 }), `${kind} drag keeps scrolling with a stationary pointer`)
+    expect(f.ink.selection.anchor!.col >= f.paneLeft && f.ink.selection.anchor!.col <= f.paneRight,
+      'the raw clamped anchor stays inside its pane for subsequent follow picks')
+    expect(f.sibling().getScrollTop() === 0, 'edge ticks never scroll the sibling pane')
     expect(f.copies().length === before, `${kind} edge ticks do not copy before release`)
-    f.release(rowText(0).length - 1, ROWS - 1)
+    f.release(col, edgeRow)
     expect(await settled(() => f.copies().length === before + 1), `${kind} release copies once`)
-    const expected = kind === 'line' ? selectedRows(1, COUNT - 1) : `text\n${selectedRows(2, COUNT - 1)}`
+    const expected = direction === 'up' ? selectedRows(0, COUNT - 2)
+      : kind === 'line' ? selectedRows(1, COUNT - 1) : `text\n${selectedRows(2, COUNT - 1)}`
     expect(f.copies().at(-1) === expected, `${kind} copy preserves the original multi-click bounds: ${JSON.stringify(f.copies().at(-1))}`)
   } finally { await f.dispose() }
 }
@@ -458,11 +494,11 @@ async function viewportShrink(): Promise<void> {
   } finally { await f.dispose() }
 }
 
-async function wrappedUnicode(): Promise<void> {
+async function wrappedUnicode(sidebar: boolean): Promise<void> {
   const lines = Array.from({ length: 12 }, (_, index) => `C${String(index).padStart(3, '0')} 界e\u0301👩‍💻 alpha beta gamma delta`)
-  // Soft-wrap metadata is row-wide: a separately painted sidebar is covered
-  // by the ownership cases, not mixed into this logical-line copy assertion.
-  const f = await fixture(20, { lines, sidebar: false })
+  // Both modes give the transcript twenty cells; a real sibling pane must
+  // not replace its wrap metadata or contribute any copied glyphs.
+  const f = await fixture(sidebar ? 28 : 20, { lines, sidebar })
   try {
     await f.seek(0)
     const { top } = f.bounds()
@@ -474,6 +510,59 @@ async function wrappedUnicode(): Promise<void> {
     f.release(19, ROWS - 1)
     expect(await settled(() => f.copies().length === 1), 'wrapped Unicode gesture copies once')
     expect(f.copies()[0] === lines.join('\n').normalize('NFC'), `copy preserves CJK, graphemes, and logical soft-wrap joins: ${JSON.stringify(f.copies()[0])}`)
+  } finally { await f.dispose() }
+}
+
+async function nestedPaneBoundary(): Promise<void> {
+  const f = await fixture(60, { nestedPane: true })
+  try {
+    await f.seek(20)
+    const { top, bottom } = f.bounds()
+    f.press(2, top + 2)
+    f.motion(9, bottom)
+    expect(await settled(() => f.scroll().getScrollTop() >= 23), 'nested pane gesture started edge scrolling')
+    expect(f.ink.selection.fence?.colEnd === 11, 'nested ownership is narrower than its outer ScrollBox')
+    f.motion(25, bottom) // Still inside the ScrollBox, outside the anchor pane.
+    await new Promise<void>(resolve => setImmediate(resolve))
+    await f.pauseIsStable('crossing the nested pane fence pauses edge scrolling')
+    const last = f.scroll().getScrollTop() + VIEWPORT - 1
+    f.release(25, bottom)
+    expect(await settled(() => f.copies().length === 1), 'paused nested selection releases one copy')
+    expect(f.copies()[0] === `${rowText(22).slice(2)}\n${selectedRows(23, last)}`,
+      `fenced nested selection copies exactly its source rows: ${JSON.stringify(f.copies()[0])}`)
+  } finally { await f.dispose() }
+}
+
+async function siblingIsolation(side: 'chat' | 'panel'): Promise<void> {
+  const f = await fixture(60, { scrollSide: side })
+  try {
+    await f.seek(20)
+    f.sibling().scrollTo(10)
+    expect(await settled(() => f.sibling().getScrollTop() === 10), 'sibling starts with independent scroll content')
+    const { top, bottom } = f.bounds()
+    f.press(f.paneLeft + 2, top + 2)
+    f.motion(f.paneLeft + 9, top + 3)
+    expect(await settled(() => f.ink.hasTextSelection()), 'pane-local drag is active')
+    const anchor = { ...f.ink.selection.anchor! }
+    const text = `${rowText(22).slice(2)}\n${rowText(23)}`
+    expect(getSelectedText(f.ink.selection, f.ink.frontFrame.screen) === text, 'the initial source span is exact')
+    f.sibling().scrollBy(3)
+    expect(await settled(() => f.sibling().getScrollTop() === 13 && f.sibling().getPendingDelta() === 0), 'same-height sibling really scrolled')
+    await f.setSiblingHeight(VIEWPORT - 2)
+    expect(await settled(() => f.sibling().getViewportHeight() === VIEWPORT - 2), 'sibling viewport really resized')
+    expect(f.ink.selection.anchor?.col === anchor.col && f.ink.selection.anchor.row === anchor.row,
+      'sibling follow and resize never translate the held anchor')
+    expect(!f.ink.selection.stale && getSelectedText(f.ink.selection, f.ink.frontFrame.screen) === text,
+      'sibling changes cannot alter or stale the copied source span')
+    f.scroll().scrollBy(-1)
+    expect(await settled(() => f.scroll().getScrollTop() === 19 && f.scroll().getPendingDelta() === 0), 'the owning pane still follows its own scroll')
+    expect(f.ink.selection.anchor?.row === anchor.row + 1, 'own follow translates the anchor exactly once')
+    f.release(f.paneLeft + 9, top + 3)
+    expect(await settled(() => f.copies().length === 1), 'the isolated drag releases one copy')
+    expect(f.copies()[0] === text, `sibling operations preserve exact clipboard bytes: ${JSON.stringify(f.copies()[0])}`)
+
+    f.ink.shiftSelectionForScroll(-4, top, bottom)
+    expect(f.ink.selection.anchor?.col === f.paneLeft, 'keyboard scroll clamps the raw anchor to the pane start')
   } finally { await f.dispose() }
 }
 
@@ -529,13 +618,24 @@ for (const columns of [60, 20]) {
   }
 }
 await verify('edge reversal copies exactly without duplicate accumulated rows', reverseDirection)
-await verify('word-select edge drag preserves its initial word boundary', () => multiClick('word'))
-await verify('line-select edge drag preserves its initial line boundary', () => multiClick('line'))
+for (const side of ['chat', 'panel'] as const) {
+  for (const direction of ['up', 'down'] as const) {
+    for (const kind of ['word', 'line'] as const) {
+      await verify(`${side} ${kind}-select ${direction} edge drag stays pane-local`, () => multiClick(kind, side, direction))
+    }
+  }
+}
 await verify('continuous edge motion cannot debounce away scrolling', continuousMotion)
 await verify('word-select reversal preserves the original far boundary', () => multiClickReverse('word'))
 await verify('line-select reversal preserves the original far boundary', () => multiClickReverse('line'))
 await verify('mid-drag chrome shrink preserves the complete source span', viewportShrink)
-await verify('narrow Unicode soft-wrapped rows copy as logical lines', wrappedUnicode)
+for (const sidebar of [false, true]) {
+  await verify(`narrow Unicode soft wraps ${sidebar ? 'with a sibling pane' : 'without a sidebar'} copy as logical lines`, () => wrappedUnicode(sidebar))
+}
+await verify('leaving a nested pane fence pauses the outer ScrollBox edge timer', nestedPaneBoundary)
+for (const side of ['chat', 'panel'] as const) {
+  await verify(`${side} held selection ignores sibling follow and resize`, () => siblingIsolation(side))
+}
 await verify('never-edge wheel selection stays text-anchored through viewport growth', ordinaryWheelResize)
 await verify('a former edge becomes ordinary wheel selection after viewport growth', formerEdgeWheel)
 for (const kind of ['interior', 'release', 'escape', 'blur', 'owner-unmount', 'unmount', 'overlay'] as const) {

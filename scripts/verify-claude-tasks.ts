@@ -25,11 +25,12 @@
  */
 import assert from 'node:assert/strict'
 import { execFileSync, spawn } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-const home = mkdtempSync(join(tmpdir(), 'dsh-tui-claude-tasks-'))
+// Task-output allowlists contain resolved roots, including macOS /var aliases.
+const home = realpathSync(mkdtempSync(join(tmpdir(), 'dsh-tui-claude-tasks-')))
 process.env.HOME = home
 process.env.USERPROFILE = home
 process.env.FORCE_COLOR = '3'
@@ -209,9 +210,9 @@ async function feed(name: string, session: Awaited<ReturnType<typeof openClaudeS
 }
 
 // ── output path validation and the 64 KiB tail ──────────────────────────
-const roots = mkdtempSync(join(tmpdir(), 'dsh-tui-task-roots-'))
+const roots = realpathSync(mkdtempSync(join(tmpdir(), 'dsh-tui-task-roots-')))
 const inside = join(roots, 'claude-1000', 'proj', 'sess', 'tasks')
-const outside = mkdtempSync(join(tmpdir(), 'dsh-tui-task-outside-'))
+const outside = realpathSync(mkdtempSync(join(tmpdir(), 'dsh-tui-task-outside-')))
 mkdirSync(inside, { recursive: true })
 {
   const allowed = [roots]

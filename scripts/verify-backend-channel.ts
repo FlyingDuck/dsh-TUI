@@ -39,6 +39,7 @@ import { createChannel } from '../src/dsh-adapter/channel.js'
 import { annotateCommandCapabilities } from '../src/dsh-adapter/channel/capabilities.js'
 import { Config, normalizeBackendChoice } from '../src/dsh-adapter/index.js'
 import { MAX_ROWS } from '../src/channel/transcript.js'
+import { GIT_STATUS_COMMAND } from '../src/utils/gitStatus.js'
 import { PermissionStore } from '../src/channel/permissions.js'
 import { QuestionStore } from '../src/channel/questions.js'
 import type { PermissionDecision } from '../src/agent/capabilities.js'
@@ -97,10 +98,12 @@ const fakeSession = (sessionId: string, capabilities: Omit<SessionCapabilities, 
   return session
 }
 
-// A bare context: no host services mounted (degraded composition).
+// A bare context: no host services mounted (degraded composition). The team
+// service is the one exception below: `/team` is now gated on it, and the DSH
+// command-list check expects the full built-in list.
 const ctx = {
   on: () => () => undefined,
-  get: () => undefined,
+  get: (name: string) => name === 'agentTeams' ? {} : undefined,
   logger: { warn: () => undefined, info: () => undefined, debug: () => undefined },
 } as never
 
@@ -531,7 +534,9 @@ try {
     resolve: (request: unknown) => request,
     run: (spec: { command: string }) => {
       commands.push(spec.command)
-      return Promise.resolve({ stdout: { text: spec.command.startsWith('git branch') ? 'feature-x\n' : 'ran' }, stderr: { text: '' }, timedOut: false })
+      return Promise.resolve({ stdout: { text: spec.command === GIT_STATUS_COMMAND
+        ? '# branch.oid 0123456789abcdef0123456789abcdef01234567\n# branch.head feature-x\n'
+        : 'ran' }, stderr: { text: '' }, timedOut: false })
     },
   }
   const shellCtx = { on: () => () => undefined, get: (name: string) => name === 'shell' ? shell : undefined, logger: { warn: () => undefined, info: () => undefined, debug: () => undefined } } as never
@@ -552,7 +557,7 @@ try {
       { type: 'turn.end', turn: 1, reason: { kind: 'completed' }, time: 3 },
     ])
     check('… the user row shows the selection indicator', channel.rows.some(row => row.kind === 'user' && row.selectionAttached !== undefined))
-    check('the git branch breadcrumb works on a non-DSH session', await settled(() => channel.gitBranch === 'feature-x') && commands[0] === 'git branch --show-current')
+    check('the git branch breadcrumb works on a non-DSH session', await settled(() => channel.gitBranch === 'feature-x') && commands[0] === GIT_STATUS_COMMAND)
     check('/export is offered', channel.commandList.some(command => command.name === 'export') && channel.backendCapabilities.commands.includes('export'))
     const exported = channel.exportSession()
     const text = exported === null ? '' : readFileSync(exported, 'utf8')

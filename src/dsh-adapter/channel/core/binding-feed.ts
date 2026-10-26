@@ -129,6 +129,7 @@ export function createSessionBatchRouter(deps: {
   /** Monotonic count of live turns that started on a bound session (`/new`
    *  compares it across its open: a whole turn may come and go meanwhile). */
   let turnStarts = 0
+  let turnEnds = 0
 
   const route = (batch: readonly AgentEvent[], meta: AgentEventMeta, current: () => boolean): void => {
     // The generation fence covers the whole batch, whatever it carries. A
@@ -143,6 +144,9 @@ export function createSessionBatchRouter(deps: {
       switch (event.type) {
         case 'turn.start':
           if (!meta.replay) turnStarts += 1
+          break
+        case 'turn.end':
+          if (!meta.replay) turnEnds += 1
           break
         case 'session.status':
           applyStatus(event.status)
@@ -193,7 +197,7 @@ export function createSessionBatchRouter(deps: {
     if (wasWorking && !deps.state.working) deps.onTurnSettled?.()
   }
 
-  return { route, reconcileRetiredProjection, turnStarts: (): number => turnStarts }
+  return { route, reconcileRetiredProjection, turnStarts: (): number => turnStarts, turnEnds: (): number => turnEnds }
 }
 
 /**
@@ -383,10 +387,16 @@ export function createBindingFeed(ctx: { readonly logger: ChannelHostLogger }, d
     },
   })
 
+  let endsBeforeBind = 0
   return {
     projector,
     router,
-    bind: binder.bind,
+    liveTurnEnds: (): number => router.turnEnds() - endsBeforeBind,
+    bind(seed?: readonly AgentEvent[]): void {
+      // Capture before subscribe can synchronously deliver an entire live turn.
+      endsBeforeBind = router.turnEnds()
+      binder.bind(seed)
+    },
     resetProjection,
     /** Install the backend's job-registry feed and pricing policy (before start). */
     configureProjection(update: Partial<Pick<ChannelProjectionDeps, 'jobs' | 'pricingWindow'>>): void {

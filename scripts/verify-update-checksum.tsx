@@ -39,7 +39,7 @@ function check(name: string, condition: boolean, detail = ''): void {
   if (!condition) failures += 1
 }
 
-const updateModule = (await import('../src/update.js')) as Record<string, unknown>
+const updateModule = await import('../src/update.js')
 const verifyAssetChecksum = updateModule.verifyAssetChecksum as
   | ((buffer: Buffer, manifestText: string, assetName: string) => boolean)
   | undefined
@@ -101,7 +101,11 @@ const MANIFEST_STREAM_CHUNKS = 128 // 总量 2MB，注入上限 64KB → 中断�
 const realAssetBytes = makeAssetArchive('legit-new-binary\n')
 const evilAssetBytes = makeAssetArchive('evil-tampered-binary\n')
 const realDigest = createHash('sha256').update(realAssetBytes).digest('hex')
-const ASSET_NAME = 'dsh-tui-standalone-linux-x64.tar.gz'
+// Release lookup, manifests and mirror URLs must name production's host asset.
+const ASSET_NAME = updateModule.getStandaloneAssetName()
+const FOREIGN_ASSET_NAME = ASSET_NAME.endsWith('.zip')
+  ? updateModule.getStandaloneAssetName('linux', 'x64')
+  : updateModule.getStandaloneAssetName('win32', 'x64')
 
 const server = http.createServer(async (req, res) => {
   const url = req.url ?? ''
@@ -117,10 +121,9 @@ const server = http.createServer(async (req, res) => {
       assets.push({ name: `${ASSET_NAME}.sha256`, browser_download_url: `http://127.0.0.1:${serverPort()}/${ASSET_NAME}.sha256` })
     }
     if (sidecarMode === 'foreign') {
-      // 外来旁注：另一平台资产（win zip）的 .sha256——它的 digest 登记
-      // 的是 win 资产，拿来校验 linux 资产必然 mismatch（fail-closed 误拒
-      // 无辜用户的更新）。
-      assets.push({ name: 'dsh-tui-standalone-win-x64.zip.sha256', browser_download_url: `http://127.0.0.1:${serverPort()}/dsh-tui-standalone-win-x64.zip.sha256` })
+      // 外来旁注：另一平台资产的 .sha256——不得拿来校验当前平台资产，
+      // 否则会 fail-closed 误拒无辜用户的更新。
+      assets.push({ name: `${FOREIGN_ASSET_NAME}.sha256`, browser_download_url: `http://127.0.0.1:${serverPort()}/${FOREIGN_ASSET_NAME}.sha256` })
     }
     res.writeHead(200, { 'content-type': 'application/json' })
     res.end(JSON.stringify({ tag_name: 'v9.9.9', assets }))
@@ -193,6 +196,7 @@ const base = `http://127.0.0.1:${serverPort()}`
     (release as { version?: string } | undefined)?.version === '9.9.9',
     JSON.stringify(release),
   )
+  check('fetchGithubLatestRelease 选择当前平台的精确资产', release?.downloadUrl === `${base}/asset`, JSON.stringify(release))
   check(
     'fetchGithubLatestRelease 从 SHA256SUMS 资产解析 checksumUrl',
     typeof (release as { checksumUrl?: string } | undefined)?.checksumUrl === 'string',

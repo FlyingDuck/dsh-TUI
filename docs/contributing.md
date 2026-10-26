@@ -253,6 +253,29 @@ Cordis config
 `scripts/build.sh` 是面向本地 DeepSeek Harness 源码检出的备用构建器（定位 DSH
 检出并重连依赖），不是本独立仓库的默认构建命令。
 
+### Windows 安装包（离线 setup.exe）
+
+`scripts/windows/` 产出 Release 里的 `dsh-tui-setup-win-x64.exe`：离线载荷加 NSIS 界面，
+只能在 Windows x64 上构建（需要 Node 24 与 NSIS 3）。
+
+```powershell
+npm ci --prefix scripts/windows --ignore-scripts
+node scripts/windows/build-installer-payload.mjs --out dist-windows
+node scripts/verify-windows-installer.mjs --build dist-windows --makensis 'C:\Program Files (x86)\NSIS\makensis.exe'
+& 'C:\Program Files (x86)\NSIS\makensis.exe' "/DBUILD_DIR=$pwd\dist-windows" scripts/windows/installer.nsi
+node scripts/verify-windows-installer.mjs --exe dist-windows/dsh-tui-setup-win-x64.exe
+```
+
+- 载荷按 TUI 的版本契约解析已发布的最新 DSH RC；`--kernel-version <rc>` 固定内核，
+  `--locks <目录>` 配 `--node-version <版本>` 复用上次的解析结果，两者不能同时用。
+- `verify-windows-installer.mjs` 编译一份隔离目录的测试 EXE，跑安装、profile 组合、旧 RC
+  升级、重复安装、静默降级拒绝与卸载，不写真实用户目录，耗时写入 `smoke-result.json`。
+- 界面资源（ICO、页头、欢迎页动画帧）由 `node scripts/windows/make-brand-assets.mjs` 从
+  `docs/assets/readme/logo*.svg` 与 `scripts/windows/assets/icon.svg` 重新生成；产物已提交，
+  只有改图时才需要跑（需要 `sharp`）。
+- `release-bundle.yml` 的 `windows-installer` job 在 Release 时跑同一套命令，产物与便携包
+  一起以一份 `SHA256SUMS` 上传。
+
 ## 验证（Verification）
 
 仓库没有根级 `test` 或 `lint` 脚本；不要声称跑过它们。TypeScript 构建是通用
@@ -321,22 +344,25 @@ CI 回归都要跑。窄改动还要跑最近的聚焦脚本：
 | 改动区域 | 聚焦验证 |
 | --- | --- |
 | 通用无头屏幕组装 | `pnpm smoke` |
+| 底栏字段 / 状态接缝（`tuiStatus.setField`、StatusLine 三槽与 hover/click） | `node --import tsx/esm scripts/verify-status-fields.tsx` |
+| 底栏字段名单（`statusBar.pluginFieldsOrder` 语法/归一化/渲染、设置页三槽勾选与预填） | `node --import tsx/esm scripts/verify-plugin-field-order.ts`、`node --import tsx/esm scripts/verify-plugin-field-picker.tsx` |
 | 跨代理会话迁移（src/migrate、adapter 解析或事件合成） | `node --import tsx/esm scripts/verify-migrate.mjs` |
 | 共享投影器、DSH 翻译器 | `pnpm verify:projection-golden`、`node --import tsx/esm scripts/verify-dsh-translate.ts`、`pnpm verify:agent-domain` |
 | Claude 后端 | 对应的 `scripts/verify-claude-*`（假 SDK，不花钱）与 `node --import tsx/esm scripts/verify-backend-channel.ts`；`verify:claude-live`/`verify:claude-headless` 调用真实 CLI，只在有意花费时手动跑（钉在 haiku） |
 | 归档语义与后端 OAuth 登出 | `node --import tsx/esm scripts/verify-session-archive.tsx`（真实无头浏览器、假目录），`node --import tsx/esm scripts/verify-backend-logout.ts`（真实 channel/UI facade、假 OAuth host）；不触碰原生登录/真实凭据，DSH/Claude 默认删除语义保持 |
 | Codex 原生后端 | `pnpm verify:codex-contract`、对应 `scripts/verify-codex-*` 的假 app-server/fixture 回归、`node --import tsx/esm scripts/verify-backend-channel.ts`；中立层改动再跑 DSH 黄金投影、Claude 对照与 `verify-agent-event-invariants.ts`。真实 `verify-codex-live.ts` / 探针只经 `codex-cheap-only.mjs` 守卫，真实 ChatGPT 登录/TTY 未跑须单列 |
-| DSH Agent Teams（team-roster、team-tools、团队消息气泡、团队仪表盘、`/team` 开关与按 assembly 取舍的委派工具） | `node --import tsx/esm scripts/verify-agent-teams.ts`、`node --import tsx/esm scripts/verify-agent-teams-compat-0.2.0.ts`（0.2.0 日志兼容）、`node --import tsx/esm scripts/verify-team-message-bubble.tsx`、`node --import tsx/esm scripts/verify-team-dashboard.tsx`、`node --import tsx/esm scripts/verify-team-mode.ts`、`node scripts/verify-bundled-presets.mjs`（先构建） |
+| DSH Agent Teams（team-roster、team-tools、团队消息气泡、团队仪表盘、`/team status` 与可见性、按 assembly 取舍的委派工具） | `node --import tsx/esm scripts/verify-agent-teams.ts`、`node --import tsx/esm scripts/verify-agent-teams-compat-0.2.0.ts`（0.2.0 日志兼容）、`node --import tsx/esm scripts/verify-team-message-bubble.tsx`、`node --import tsx/esm scripts/verify-team-dashboard.tsx`、`node --import tsx/esm scripts/verify-team-mode.ts`、`node --import tsx/esm scripts/verify-team-command-visibility.ts`、`node scripts/verify-bundled-presets.mjs`（先构建） |
 | Channel submit/steer/pending 行为 | `node scripts/verify-submit.mjs` |
 | 回退后编辑重发与历史 Inbox 清理 | `pnpm verify:rewind-edit` |
 | 提示队列行为 | `node scripts/verify-queue.mjs` |
-| Goal/todo 投影与渲染 | `node scripts/verify-channel-goal-todo.mjs` + `node scripts/verify-goal-todo.mjs` + `node --import tsx/esm scripts/verify-goal-display.mjs`（目标文本展示：悬停全文、裸 `/goal` 转录块） |
+| Goal/todo 投影与渲染 | `node scripts/verify-channel-goal-todo.mjs` + `node scripts/verify-goal-todo.mjs` + `node --import tsx/esm scripts/verify-goal-display.mjs`（悬停全文、裸 `/goal` 转录块）+ `node --import tsx/esm scripts/verify-todo-side-panel.tsx`（侧栏目标换行、阶段独立行与滚动） |
 | Compaction 与折叠 transcript 行 | `node scripts/verify-compact.mjs` |
 | 命令能力事实（compaction / plan / 问卷 / 剪枝的路由与 Help + `/` 的不可用标注） | `pnpm verify:agent-capabilities` |
 | `/rollover` 命令（结转命名与当日序号、回合中拒绝先于改名、屏幕的结转→新开会话顺序） | `pnpm verify:rollover` |
 | `/version` 命令（有/无构建 stamp 的两种文案、内核版本行、版本说明块、安装来源探测矩阵、命令声明与 Chat 分发接线） | `pnpm verify:version` |
 | 底栏 git 段（porcelain v2 六态解析、超长脏树截断、后缀零值不画、真实仓库烟测） | `pnpm verify:git-status` |
 | 双栏与公共底栏（全宽、输入/问卷/审批等底、动态高度、悬停与草稿保持） | `node --import tsx/esm scripts/verify-shared-footer-layout.tsx` |
+| 文字侧栏标签（固定顺序、溢出窗口、箭头 start-1/end、键盘逐项、未读/告警与悬停全文） | `node --import tsx/esm scripts/verify-side-panel-mouse.tsx`、`node --import tsx/esm scripts/verify-side-panel-keys.tsx`、`node --import tsx/esm scripts/verify-side-panel-registry.tsx` |
 | 插件中继消息的转录显示（`agent/inbox/spliced` 不落行、payload opt-in 正负例、投影落行与模型面占用、`/export` 分节） | `pnpm verify:plugin-relay` |
 | 压缩 × 会话切换生命周期（取消先于 fork 快照、persistence 分类提示） | `node --import tsx/esm scripts/verify-compact-switch.tsx` |
 | 主题加载、持久化与运行时插件接缝 | `node --import tsx/esm scripts/verify-themes.mjs`、`node --import tsx/esm scripts/verify-runtime-themes.ts` |
@@ -349,7 +375,7 @@ CI 回归都要跑。窄改动还要跑最近的聚焦脚本：
 | 鼠标指针事件管线（滚轮坐标/修饰位、点击/hover 派发、越界 clamp、指针态重置） | `node --import tsx/esm scripts/verify-pointer-events.ts` |
 | Hover 事件性能（兴趣边界完整、无兴趣矩形快路径、帧边界/多 root 失效） | `node --import tsx/esm scripts/verify-hover-coalesce.tsx` |
 | 输入框鼠标选区编辑（拖选松手即复制/Shift+click/双击选词/删除替换/Esc 分层/Ctrl+C 复制、CJK 宽字符与 fold 侧钳制） | `node --import tsx/esm scripts/verify-input-selection.tsx` |
-| Sixel 编码、worker 缓存、缩略图/预览生命周期 | `node --import tsx/esm scripts/verify-terminal-images-sixel.tsx`、`node --import tsx/esm scripts/verify-sixel-transcript.tsx`；耗时对比 `node --import tsx/esm scripts/bench-sixel-encode.tsx` |
+| Sixel 编码、worker 缓存、缩略图/预览生命周期 | `node --import tsx/esm scripts/verify-terminal-images-sixel.tsx`、`node --import tsx/esm scripts/verify-sixel-transcript.tsx`、`node --import tsx/esm scripts/verify-sixel-cursor-heal.tsx`；耗时对比 `node --import tsx/esm scripts/bench-sixel-encode.tsx` |
 | Markdown 独立节点（表格、mermaid 图、公式块）、LaTeX 公式与流式分块间距 | `pnpm verify:table-layout`、`pnpm verify:mermaid-diagram`、`pnpm verify:latex-math`、`node --import tsx/esm scripts/verify-streaming-markdown-spacing.tsx` |
 | 跨进程会话占用账本（失败行为、严格读、锁回收、预约） | `pnpm verify:session-mounts` |
 | 未发送草稿的跨屏交接（快照、光标、图片绑定、归属） | `pnpm verify:composer-draft-handoff`；端到端换屏另见 `node scripts/verify-session-browser.mjs` |
@@ -520,6 +546,7 @@ TypeScript 源的脚本在头部声明 `node --import tsx/esm <script>` 形式�
 | 会话/channel 行为 | 后端中立的放 `src/dsh-adapter/channel/core/`，DSH 专属的放 `channel/extensions.ts` 及其 specialist、受影响的 UI 投影、编译产物、聚焦 channel/回放回归（含 `verify-backend-channel`、`verify-channel-rollback`） |
 | 渲染器/布局行为 | `src/ink/` 或 Yoga 源、编译产物、CI 回归、聚焦滚动/resize/PTY 探针 |
 | 技能发现或呈现 | DSH adapter、slash 命令合并、`/skills` 与相关回归；项目维护技能放 `.agents/skills/` 且不得加入 npm 包 |
+| CLI 自动化 | 根级 `cli/`、中英文 CLI 手册与 README、package/CI/standalone 验证；不从引擎依赖 `src/` |
 | 用户可见的文档化行为 | 中英文 README，适用的配置注释/帮助文本与 `docs/` 双语页；新增用户手册同时改 `scripts/guide-sources.mjs` 清单、`guide/dsh-tui-guide/SKILL.md` 路由，再 `node scripts/build-guide.mjs` / `node scripts/verify-guide.mjs`（不手改副本） |
 | 贡献入口或 PR 门禁 | `.mergify.yml`、`docs/contributing.md`、`docs/contributing.en.md`、`.github/workflows/pr-gate.yml`、`.github/scripts/pr-intake/`、`.github/APPROVED_CONTRIBUTORS` |
 | 包版本或依赖 | `package.json`、`pnpm-lock.yaml`、适用时的生成/发布产物；不要顺手搅动旧 npm 锁文件 |

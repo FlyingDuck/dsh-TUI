@@ -6,8 +6,11 @@
  * changes, and the git-branch breadcrumb. Each lookup degrades when its row
  * is not mounted, whatever backend serves the session.
  */
+import { readlink, realpath, stat } from 'node:fs/promises'
+import { dirname, join, resolve } from 'node:path'
 import type { AdapterRuntimeOptions } from '../../../adapter/kernel/runtime.js'
 import { readGrantStore } from '../../../adapter/standard/grants.js'
+import { readBoundedRegularFile } from '../../../utils/pastedImagePath.js'
 import { getHostCommandTrees, type TuiCommandTreeRuntime } from '../../command-trees.js'
 import { runForegroundShell, type ForegroundShell } from '../../compat/shell.js'
 import { getHostGrantStore } from '../../host-grants.js'
@@ -19,6 +22,7 @@ import { getHostThemes, type TuiThemeRuntime } from '../../themes.js'
 import { createLocalWorkspaceRuntime, getHostWorkspaceRuntime, type TuiWorkspaceRuntime } from '../../workspaces.js'
 import type { ChannelHost, ServiceLookup } from '../channel-host.js'
 import type { ChannelOwner } from '../owner.js'
+import { sessionWorkingDirectory } from '../../../channel/working-directory.js'
 import type { ChannelState } from '../types.js'
 
 /**
@@ -142,55 +146,223 @@ export function startHostSubscriptions(
   if (unwatch !== undefined) owner.own(unwatch)
 }
 
+/** How often the workspace HEAD is read for a signature change. */
+const BRANCH_HEAD_POLL_MS = 1000
+/** Ample room for long UTF-8 refs/gitdir paths without unbounded control-file reads. */
+const GIT_METADATA_MAX_BYTES = 128 * 1024
+
+/**
+ * The `HEAD` file of the repository containing `cwd` (a linked worktree or a
+ * submodule points at its git dir through a `gitdir:` line in `.git`), or
+ * undefined when this process cannot see one. Reached from the timer path, so
+ * it answers rather than throws: a missing or malformed `.git` lands on
+ * undefined and leaves the poll silent.
+ */
+async function gitHeadPath(cwd: string): Promise<string | undefined> {
+  try {
+    let dir = await realpath(cwd)
+    for (;;) {
+      const dotGit = join(dir, '.git')
+      const entry = await stat(dotGit).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return undefined
+        throw error
+      })
+      if (entry?.isDirectory()) return join(dotGit, 'HEAD')
+      if (entry?.isFile()) {
+        const target = /^gitdir:\s*(.+)$/m.exec(await readGitMetadata(dotGit) ?? '')?.[1]
+        // Git records the target relative to the directory holding `.git`.
+        if (target === undefined) return undefined
+        return join(resolve(dirname(dotGit), target.trim()), 'HEAD')
+      }
+      if (entry !== undefined) return undefined
+      const parent = dirname(dir)
+      if (parent === dir) return undefined
+      dir = parent
+    }
+  } catch {
+    return undefined
+  }
+}
+
+/** Small, regular Git control files only; unreadable metadata stays best-effort. */
+async function readGitMetadata(path: string | undefined): Promise<string | undefined> {
+  if (path === undefined) return undefined
+  try {
+    return Buffer.from(await readBoundedRegularFile(path, GIT_METADATA_MAX_BYTES)).toString('utf8')
+  } catch {
+    return undefined
+  }
+}
+
 /**
  * Statusline breadcrumb: the current git branch of the session cwd
  * (best-effort, through the host `shell` service). Re-run when an adoption
  * lands on a different cwd (/resume, /workspace, issue #96) so the
  * breadcrumb never shows the previous workspace's branch.
+ *
+ * Adoption is not the only way the branch changes: a checkout in another
+ * terminal has to be seen through the workspace's own `.git/HEAD`, whose text
+ * is re-probed when it changes. Polling rather than `fs.watch` follows the
+ * grant store (a watcher can outlive a replaced inode, and `gitdir:`
+ * indirection, network mounts and watch limits each need their own fallback);
+ * the text is the signature, not the mtime, because timestamp granularity
+ * differs per filesystem while HEAD is well under 100 bytes.
+ *
+ * Where the host shell runs elsewhere (remote or sandboxed workspace), this
+ * process's `.git` is not the workspace's: with no HEAD to anchor on the poll
+ * stays quiet instead of clearing a value it cannot verify.
  */
 export function createGitBranchRefresher(ctx: ServiceLookup, deps: {
-  owner: Pick<ChannelOwner, 'current'>
-  state: Pick<ChannelState, 'cwd' | 'gitBranch' | 'gitStatus' | 'emit'>
+  owner: Pick<ChannelOwner, 'current' | 'own'>
+  state: Pick<ChannelState, 'cwd' | 'workingDirectory' | 'gitBranch' | 'gitStatus' | 'emit'>
   /** Record the resolved branch against the bound session (the session
    *  browser's branch column); absent = nothing records it. */
   noteBranch?(branch: string): void
 }): () => void {
-  // Every refresh takes a ticket: a turn-end query landing after a cwd change
-  // must not write the old workspace's answer over the new one (issue #96's
-  // cwd comparison, generalised to same-cwd refreshes).
-  let sequence = 0
+  const { state } = deps
   let currentCwd: string | undefined
-  return () => {
-    const { state } = deps
-    const requestedCwd = state.cwd
-    const ticket = ++sequence
-    const shell = ctx.get('shell') as ForegroundShell | undefined
-    // A different directory invalidates what is on screen immediately; a
-    // same-cwd refresh keeps it until the answer lands (no blank flash).
-    if (requestedCwd !== currentCwd) {
-      state.gitBranch = undefined
-      state.gitStatus = undefined
+  /** The HEAD text the last probe was issued against. */
+  let signature: string | undefined
+  /** Retry the same HEAD after transient failure, backing off to 30 seconds. */
+  let retryAfter: number | undefined
+  let retryDelayMs = 0
+  const retry = (): void => {
+    retryDelayMs = Math.min(retryDelayMs * 2 || BRANCH_HEAD_POLL_MS, 30_000)
+    retryAfter = performance.now() + retryDelayMs
+  }
+  /** Tickets handed out to probes; only the newest holder may publish. */
+  let issued = 0
+  /** Slow filesystem reads never accumulate more than one periodic sample. */
+  let polling = false
+
+  const probe = async (force: boolean): Promise<void> => {
+    if (!deps.owner.current()) return
+    const requestedCwd = sessionWorkingDirectory(state)
+    const changedCwd = requestedCwd !== currentCwd
+    // Explicit refreshes include settled turns: HEAD may be unchanged while
+    // files or ahead/behind counts moved. Keep same-cwd facts during the query
+    // to avoid a blank flash; adoption invalidates a different cwd immediately.
+    if (force || changedCwd) {
+      if (changedCwd) {
+        state.gitBranch = undefined
+        state.gitStatus = undefined
+        signature = undefined
+        currentCwd = requestedCwd
+      }
+      retryAfter = undefined
+      retryDelayMs = 0
+      issued += 1
     }
-    currentCwd = requestedCwd
-    if (!shell) return
+    const readTicket = issued
+    // Resolve on every sample: git init and a retargeted .git file can change
+    // the repository without changing cwd. Async reads leave the UI runnable.
+    const headPath = await gitHeadPath(requestedCwd)
+    // core.preferSymlinkRefs stores the symbolic ref in the HEAD link itself.
+    const link = headPath === undefined ? undefined : await readlink(headPath).catch(() => undefined)
+    const observed = link?.startsWith('refs/')
+      ? `ref: ${link}`
+      : (await readGitMetadata(headPath))?.trim()
+    if (readTicket !== issued || !deps.owner.current() || sessionWorkingDirectory(state) !== requestedCwd) return
+    if (!force && !changedCwd) {
+      if (observed === undefined) {
+        // A previously visible HEAD disappeared. Invalidate pending replies;
+        // a workspace whose HEAD was never readable keeps its shell-only value.
+        if (signature === undefined) return
+        signature = undefined
+        retryAfter = undefined
+        retryDelayMs = 0
+        issued += 1
+        if (state.gitBranch === undefined && state.gitStatus === undefined) return
+        state.gitBranch = undefined
+        state.gitStatus = undefined
+        state.emit()
+        return
+      }
+      if (observed === signature && (retryAfter === undefined || performance.now() < retryAfter)) return
+    }
+    // Baseline at issue time: a checkout landing while the shell runs still
+    // differs from it and triggers the next tick.
+    if (observed !== signature) retryDelayMs = 0
+    signature = observed
+    retryAfter = undefined
+    const shell = ctx.get('shell') as ForegroundShell | undefined
+    if (!shell) {
+      // A missing service must not leave an older HEAD's ticket current.
+      issued += 1
+      retry()
+      return
+    }
+    // Capture the requested cwd: a /resume landing while this query is in
+    // flight refreshes the branch for the new cwd, so a late reply from the
+    // old workspace must be dropped (stale statusline, issue #96).
+    // Two probes can be in flight (the shell does not serialize them); only
+    // the newest one speaks for the workspace.
+    const ticket = force || changedCwd ? readTicket : ++issued
     void runForegroundShell(shell, {
       command: GIT_STATUS_COMMAND,
       workdir: requestedCwd,
       timeoutMs: 3000,
     })
       .then((result) => {
-        if (!deps.owner.current() || state.cwd !== requestedCwd || ticket !== sequence) return
+        // A newer probe already speaks for the workspace and its baseline
+        // matches HEAD, so nothing would re-probe after this slower reply.
+        if (ticket !== issued) return
+        if (!deps.owner.current() || sessionWorkingDirectory(state) !== requestedCwd) return
+        // A timed-out probe reports whatever it captured, often nothing: that
+        // is not "no branch". Retain the value and retry this HEAD.
+        if (result.timedOut) {
+          retry()
+          return
+        }
         const status = parseGitStatus(result.stdout.text)
+        // A B -> C -> B checkout can return C while both polls saw B. Compare
+        // the parsed branch (not the porcelain stream) to the observed HEAD.
+        // Detached HEADs keep the fork's short-oid display, with the same fence.
+        const expectedBranch = observed?.startsWith('ref:')
+          ? /^ref:\s+refs\/heads\/(.+)$/.exec(observed)?.[1]
+          : undefined
+        const detachedOid = observed !== undefined && /^[0-9a-f]{40,64}$/iu.test(observed) ? observed : undefined
+        if ((expectedBranch !== undefined && (status?.detached === true || status?.branch !== expectedBranch))
+          || (detachedOid !== undefined && (status?.detached !== true || status.branch !== detachedOid.slice(0, 8)))) {
+          retry()
+          return
+        }
+        retryDelayMs = 0
+        const next = status === undefined || status.branch === '' ? undefined : status.branch
+        const previous = state.gitStatus
+        const changed = next !== state.gitBranch
+          || previous?.branch !== status?.branch
+          || previous?.ahead !== status?.ahead
+          || previous?.behind !== status?.behind
+          || previous?.changed !== status?.changed
+          || previous?.untracked !== status?.untracked
+          || previous?.upstream !== status?.upstream
+          || previous?.detached !== status?.detached
+          || previous?.truncated !== status?.truncated
         state.gitStatus = status
-        state.gitBranch = status === undefined || status.branch === '' ? undefined : status.branch
-        if (state.gitBranch !== undefined) deps.noteBranch?.(state.gitBranch)
-        state.emit()
+        state.gitBranch = next
+        // Adoption in the same cwd still records this session's breadcrumb,
+        // even if the footer already showed identical facts for its predecessor.
+        if (next !== undefined) deps.noteBranch?.(next)
+        if (changed) state.emit()
       })
       .catch(() => {
-        // Git detection is best-effort: on Windows the sandbox backend may be
-        // unavailable (no confinement yet), or the cwd may not be a git repo.
-        // Either way the statusline simply stays blank.
+        // Only the current probe may request a retry; an older rejection must
+        // not invalidate a successful newer result.
+        if (ticket === issued && deps.owner.current() && sessionWorkingDirectory(state) === requestedCwd) retry()
       })
   }
+
+  const timer = setInterval(() => {
+    if (!deps.owner.current() || polling) return
+    polling = true
+    // Only the filesystem sample is single-flight: a slow shell reply must
+    // not prevent a later tick from noticing another checkout or removal.
+    void probe(false).finally(() => { polling = false })
+  }, BRANCH_HEAD_POLL_MS)
+  timer.unref?.()
+  deps.owner.own(() => clearInterval(timer))
+
+  return () => { void probe(true) }
 }
 

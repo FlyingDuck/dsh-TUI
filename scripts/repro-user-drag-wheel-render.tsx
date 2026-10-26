@@ -19,6 +19,10 @@ process.env.DSH_TUI_LANG = 'zh'
 process.env.WT_SESSION = 'headless-windows-terminal-probe'
 delete process.env.TERM_PROGRAM
 delete process.env.TMUX
+// This fixture emulates native Windows Terminal, not the surrounding IDE or
+// multiplexer. Even ZELLIJ='0' is a nonempty multiplexer marker to the renderer.
+delete process.env.ZELLIJ
+delete process.env.TERMINAL_EMULATOR
 
 const [
   { PassThrough, Writable },
@@ -41,6 +45,7 @@ const [
 ])
 const { default: instances } = await import('../src/ink/instances.js')
 const { stringWidth } = await import('../src/ink/stringWidth.js')
+const { SYNC_OUTPUT_SUPPORTED, isDecstbmSafe } = await import('../src/ink/terminal.js')
 const { sleep, settled, viewportLines } = termTest
 
 const COLS = 96
@@ -54,6 +59,8 @@ function check(name: string, ok: boolean, extra = ''): void {
   console.log(`${ok ? 'PASS' : 'FAIL'}: ${name}${extra ? `  (${extra})` : ''}`)
   if (!ok) failures++
 }
+
+check('Windows Terminal 夹具启用 DEC 2026 与 DECSTBM', SYNC_OUTPUT_SUPPORTED && isDecstbmSafe())
 
 function makeRows(): any[] {
   const rows: any[] = []

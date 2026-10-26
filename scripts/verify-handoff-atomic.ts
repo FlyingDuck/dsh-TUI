@@ -305,7 +305,26 @@ const stateTmp = mkdtempSync(join(tmpdir(), 'verify-handoff-atomic-'))
     // (the trailing argument is the standalone entry's exit seam / supervision hooks)
     /runRestart\(ctx, profile, handoffSessionId\(\), handoffHint, \{ kernel: backendChoice \}(, exitSeam)?\)/.test(plugin)
     && /runUpdate\(ctx, profile, handoffSessionId\(\), updateTargetVersion, backendChoice, handoffHint(, exitSeam)?\)/.test(plugin)
-    && /updateTuiAndRestart\(sessionId, profile, targetVersion, kernel(, superviseReplacement\(exitSeam, \{\}\))?\)/.test(plugin))
+    && /updateTuiAndRestart\(sessionId, profile, targetVersion, kernel, supervision, cancellation\.signal\)/.test(plugin))
+  // The toast the composer raises for `/restart` dies with the unmount; the
+  // handoff notice written by finishExit is the line the user actually reads.
+  // It must own the mid-turn warning (turn interrupted, queue dropped), or the
+  // recovery hatch promises a clean resume it cannot deliver on a wedged agent.
+  check('plugin.ts: the /restart handoff notice warns when the turn is interrupted',
+    /t\(channel\.working \? 'restart-during-turn' : 'restart-starting'\)/.test(plugin))
+  // A turn whose abort never converges keeps the agent teardown in
+  // `whenIdle()` forever; the 5 s dispose bound must then print the resume
+  // hint instead of a bare exit, or the advertised recovery hatch "restarts"
+  // without resuming.
+  {
+    const start = plugin.indexOf('function runRestart(')
+    const end = plugin.indexOf('\nfunction runUpdate(', start)
+    const restart = start >= 0 && end > start ? plugin.slice(start, end) : ''
+    check('plugin.ts: a stalled /restart dispose hands back the resume hint (no bare exit)',
+      restart.includes('restart timed out while stopping the current turn')
+      && /preservedSessionTail\(sessionId, hint\)/.test(restart)
+      && /\}, stalled\)/.test(restart))
+  }
 }
 
 if (!isReplacement && !process.argv.includes('--e2e-parent')) {

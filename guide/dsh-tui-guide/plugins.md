@@ -31,12 +31,20 @@
 
 | 分级 | 接缝 |
 | --- | --- |
-| 稳定候选（形态冻结；如有破坏性变更，先在次版本弃用告警再移除） | 六 设置区块 · 八 全屏场景 · 十 托管对话框 · 十一 状态行 · 十二 键盘快捷键 · 十三 条目渲染器 |
+| 稳定候选（形态冻结；如有破坏性变更，先在次版本弃用告警再移除） | 六 设置区块 · 八 全屏场景 · 十 托管对话框 · 十一 状态行（+ 底栏字段 `setField`） · 十二 键盘快捷键 · 十三 条目渲染器 |
 | 实验性（仍可能随 dsh-std / TUI Profile 演进调整） | 九 决策事件 · toast 通知（`ctx.tuiToast`，新增） · **侧栏 Panel（`ctx.tuiPanels`，full 面板与 compact 行，实验性）** |
 | 跟随上游（稳定性由 cordis / dsh 官方机制决定） | 一 会话事件 · 二 官方 prompt 槽位 · 三 技能打包 · 四 主题 · 五 system prompt 段 · 七 profile 组合 |
 
 另：
 
+- **底栏插件字段（接缝十一的加法）**：`ctx.tuiStatus.setField(key, text,
+  options?)` 把一段键控文本并进底栏既有的左右组（`left-tail` /
+  `right-head` / `right-tail` 三槽，可选 hover 详情与全屏点击），不新增行；
+  `/settings → statusBar.pluginFields` 可一键关掉全部插件字段，另有
+  `statusBar.pluginFieldsOrder` 让用户逐字段启停、按「槽组」排序：
+  `build,ci;git;pet` 三组即三槽，**列进名单的字段跟随所在组**（覆盖插件声明的槽）。
+  用户把名单固定后，之后新注册的字段默认不出现，直到用户勾选。契约、规则表与
+  示例见[准入与开发指南](../tui-profile/docs/plugin-admission-and-development.md)接缝十一「底栏字段」。
 - `@deepseek-harness-tui/dsh-tui/api`（纯类型入口）为实验性公开面。
 - **preset 内的行（实验性，接缝七）**：bundle 用 `@deepseek-harness-tui/dsh-tui/preset-patch`
   行改 dsh-TUI 注册的 preset 里某一行的 `config`（例如关掉 `standard` 的
@@ -49,6 +57,17 @@
   descriptor、尚不挂载渲染**；`sendToChat` 需要 `panels.chat.attach`
   授权（后续版本），当前恒返回 `false` 并提示一次。类型见
   `@deepseek-harness-tui/dsh-tui/panels` 与 `./api`。
+  面板正文可用 `ui.Markdown` / `ui.CodeBlock`（实验性，收窄包装）：前者收一段
+  markdown 字符串，后者收原始代码与可选语言标签（围栏长度、语言标签清洗与
+  语法高亮由宿主负责）。`ui.Markdown` 与聊天正文同一口径：宿主会先剥离
+  `<commit_analysis>` / `<context>` / `<function_analysis>` / `<pr_analysis>`
+  标签块（代码围栏内也会）；`ui.CodeBlock` 不做这层剥离，原始代码逐行保留。
+  四条限制：① **首帧无语法高亮**（`cli-highlight` 异步
+  加载完成后补上，与宿主正文同理）；② 面板**不可选择/复制**（侧栏整列
+  `noSelect`，复制能力位另议）；③ 块级 `$$` 公式**跟随用户的 `mathRendering`
+  偏好**（终端支持图形时走图片），行内公式不走图片、仍排成 Unicode；④ 正文
+  内容**保持不变**才能命中 `React.memo`（字符串按值比较，内容相同的新字符串
+  一样命中；只有内容变化才重跑格式化与排版，分词按内容缓存）。
 - `@deepseek-harness-tui/dsh-tui/test-utils` 子路径与
   `ctx.tuiPluginHost.grants.corrupt` 已随 adapter 分层重构（#705）移除。
 - **后端贡献族（`tui.dsh/v1alpha1` `Backend`，接缝十四）的公开面已随第一版 apiVersion 冻结**：类型面
@@ -69,7 +88,9 @@
   已进入应用阶段而来不及时则等待安装完成。构建脚本被拦时在面板里批准，
   版本不兼容可登记 **精确版本豁免**；登记期间取消会等待当前写入、停止后续登记和重试，
   已写入的豁免保留。**已知缺口**：provenance 只留了「一票否决」的缝、
-  没有任何在线校验（宿主服务不暴露这类 API）；服务缺席时由转录给出 CLI 命令与原因
+  没有任何在线校验（宿主服务不暴露这类 API；条款与六档 evidence 的写法见
+  [准入与开发指南](https://github.com/ccch1mneyyy/dsh-TUI/blob/main/tui-profile/docs/plugin-admission-and-development.md)的「供应链证据与
+  provenance」）；服务缺席时由转录给出 CLI 命令与原因
   （不弹面板：没有可驱动的流程），**不在 TUI 内代跑 `dsh plugin`**。
 - **生命周期动作已在终端里可用（C-5）**：`/plugin remove <bundle>`、`/plugin enable
   <名称|id>`、`/plugin disable <名称|id>` 走同一套宿主服务。**bundle 与行是两级语义**：

@@ -98,6 +98,7 @@ const channelStub: unknown = {
   subscribe() { return () => {} },
   notify() {},
   listWorkspaceRegistry: () => Promise.resolve([]),
+  listSessions: () => Promise.resolve([]),
 }
 
 function Harness(): React.ReactNode {

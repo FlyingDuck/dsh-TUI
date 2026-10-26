@@ -12,9 +12,12 @@
  */
 process.env.DSH_TUI_LANG = 'en'
 process.env.FORCE_COLOR = '3'
-// OSC 8-capable terminal for the hyperlink path; the plain-degradation
-// path toggles this off below (supports-hyperlinks reads env live, only
-// its stdout probe is cached - false in this non-TTY process).
+// Fix the library's import-time stdout probe to false even in a real TTY.
+// The app's additional-terminal checks read env live: only TERM_PROGRAM
+// toggles below, with LC_TERMINAL and TERM isolated from the invoking host.
+process.env.FORCE_HYPERLINK = '0'
+delete process.env.LC_TERMINAL
+process.env.TERM = 'dumb'
 process.env.TERM_PROGRAM = 'kitty'
 
 // Env first, then dynamic imports: static imports hoist above the env
@@ -30,6 +33,7 @@ const [
   { cellAtIndex },
   { Markdown },
   { StreamingMarkdown },
+  { supportsHyperlinks },
   markdown,
 ] = await Promise.all([
   import('node:assert/strict'),
@@ -42,6 +46,7 @@ const [
   import('../src/ink/screen.js'),
   import('../src/components/Markdown.js'),
   import('../src/components/StreamingMarkdown.js'),
+  import('../src/ink/supports-hyperlinks.js'),
   import('../src/terminal-utils/markdown.js'),
 ])
 const assert = assertModule.default
@@ -221,6 +226,7 @@ assert.ok(secondLineAnsi.includes(ESC + '[2m'), 'the nested rail is dim, not col
 // dropped entirely.
 const OSC8_START = ESC + ']8;;'
 const OSC8_END = String.fromCharCode(7)
+assert.equal(supportsHyperlinks(), true, 'image fixture enables the real OSC 8 capability path')
 const imgLine = applyMarkdown('![alt text](https://example.invalid/i.png) tail' + '\n')
 assert.equal(visible(imgLine), '[img] alt text tail',
   'image renders the [img] marker + alt, not the bare URL: ' + JSON.stringify(visible(imgLine)))
@@ -239,10 +245,15 @@ assert.equal(visible(imgMultiAlt), '[img] line one line two')
 // still carries both the alt and the URL.
 const savedTermProgram = process.env.TERM_PROGRAM
 delete process.env.TERM_PROGRAM
-const imgPlain = applyMarkdown('![alt text](https://example.invalid/i.png) tail' + '\n')
-process.env.TERM_PROGRAM = savedTermProgram
-assert.equal(visible(imgPlain), '[img] alt text (https://example.invalid/i.png) tail',
-  'no-OSC8 terminals show alt + url as text: ' + JSON.stringify(visible(imgPlain)))
+try {
+  assert.equal(supportsHyperlinks(), false, 'image fixture disables the real OSC 8 capability path')
+  const imgPlain = applyMarkdown('![alt text](https://example.invalid/i.png) tail' + '\n')
+  assert.ok(!imgPlain.includes(OSC8_START), 'no-OSC8 image fallback emits no hyperlink escapes')
+  assert.equal(visible(imgPlain), '[img] alt text (https://example.invalid/i.png) tail',
+    'no-OSC8 terminals show alt + url as text: ' + JSON.stringify(visible(imgPlain)))
+} finally {
+  process.env.TERM_PROGRAM = savedTermProgram
+}
 
 // An image nested in a link must not smuggle a second OSC 8 sequence
 // (it would override the outer href).

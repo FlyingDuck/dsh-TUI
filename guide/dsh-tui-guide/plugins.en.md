@@ -36,9 +36,21 @@ reference**, not a promise:
 
 | Tier | Seams |
 | --- | --- |
-| Stable candidate (shape frozen; breaking changes go through a minor-version deprecation warning before removal) | VI settings sections · VIII full-screen scenes · X managed dialogs · XI status line · XII keyboard shortcuts · XIII entry renderers |
+| Stable candidate (shape frozen; breaking changes go through a minor-version deprecation warning before removal) | VI settings sections · VIII full-screen scenes · X managed dialogs · XI status line (+ footer fields via `setField`) · XII keyboard shortcuts · XIII entry renderers |
 | Experimental (may still shift with dsh-std / the TUI Profile) | IX decision events · toast notifications (`ctx.tuiToast`, new) · **Side panels (`ctx.tuiPanels`, full panel + compact row, experimental)** |
 | Upstream-tracked (stability owned by the cordis / dsh mechanisms underneath) | I session events · II official prompt slots · III bundled skills · IV themes · V system-prompt sections · VII profile composition |
+
+**Footer fields (an addition to seam XI)**: `ctx.tuiStatus.setField(key, text,
+options?)` joins one keyed text cell into the footer's existing left/right
+groups (three slots — `left-tail` / `right-head` / `right-tail` — with an
+optional hover detail and a fullscreen-only click) without adding a row;
+`/settings → statusBar.pluginFields` turns every plugin field off at once, and
+`statusBar.pluginFieldsOrder` lets the user tick fields individually and order
+them by slot group: `build,ci;git;pet` — three groups, three slots, and a
+**listed field follows its group** (overriding the declared slot). Once the user
+pins a list, fields registered later stay hidden until ticked.
+Contract, rule table, and example: seam XI "footer fields" in the
+[admission & development guide](../tui-profile/docs/plugin-admission-and-development.md).
 
 Also an experimental public surface:
 
@@ -57,6 +69,22 @@ Also an experimental public surface:
   requires the `panels.chat.attach` grant (a later version) and currently
   always returns `false` with a one-time hint. Types live at
   `@deepseek-harness-tui/dsh-tui/panels` and `./api`.
+  Panel bodies can use `ui.Markdown` / `ui.CodeBlock` (experimental, narrowed
+  wrappers): the first takes a markdown string, the second raw code plus an
+  optional language tag (fence length, language-tag sanitising and syntax
+  highlighting are the host's job). `ui.Markdown` keeps chat parity: the host
+  first strips `<commit_analysis>` / `<context>` / `<function_analysis>` /
+  `<pr_analysis>` tag blocks (inside code fences too), while `ui.CodeBlock`
+  skips that pass and keeps the raw code line for line. Four limits: ① **no
+  highlighting on the first frame** (`cli-highlight` loads asynchronously,
+  same as host prose);
+  ② panels are **not selectable/copyable** (the whole sidebar column is
+  `noSelect`; a copy capability is a separate proposal); ③ block `$$` math
+  **follows the user's `mathRendering` setting** (an image when the terminal
+  supports graphics); inline math never becomes an image and stays Unicode;
+  ④ keep the body content **unchanged** to hit `React.memo` (strings compare
+  by value, so a fresh string with the same content still hits; only changed
+  content re-runs formatting and layout, while lexing is cached by content).
 - The `@deepseek-harness-tui/dsh-tui/test-utils` subpath and
   `ctx.tuiPluginHost.grants.corrupt` were removed in the adapter layering
   refactor (#705).
@@ -94,9 +122,12 @@ Also an experimental public surface:
   for the current write and stops subsequent grants and the retry; exemptions
   already written remain. **Known gaps**:
   provenance is only a one-vote-to-veto seam with no online check at all (the
-  host service exposes no such API), and with no service the transcript reports
-  the CLI command and the reason instead of **running `dsh plugin` on the user's
-  behalf** (no pane opens: there is no flow to drive).
+  host service exposes no such API; the clause and its six evidence levels are
+  written up in the [admission and development
+  guide](https://github.com/ccch1mneyyy/dsh-TUI/blob/main/tui-profile/docs/plugin-admission-and-development.md)), and with no
+  service the transcript reports the CLI command and the reason instead of
+  **running `dsh plugin` on the user's behalf** (no pane opens: there is no flow
+  to drive).
 - **Lifecycle actions are available in the terminal itself (C-5)**: `/plugin remove
   <bundle>`, `/plugin enable <name|id>` and `/plugin disable <name|id>` go through the
   same host service. **A bundle and a row are two levels**: a bundle is a composition
