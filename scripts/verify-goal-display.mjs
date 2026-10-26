@@ -210,15 +210,20 @@ for (const fullscreen of [false, true]) {
     await settled(() => io.screen().includes('COMPLETED_FOOTER') && io.screen().includes('RESIDUAL_TODO')))
   io.stdin.write('\x11')
   await settle(() => !io.screen().includes('COMPLETED_FOOTER') && !io.screen().includes('RESIDUAL_TODO'))
-  channel.todos = [...originalTodos]
+  // Footer snapshots compare by content (the production read view re-copies
+  // every version), so the later update must carry new data, not a new array.
+  const laterTodos = [{ content: 'RESIDUAL_TODO', status: 'pending' }]
+  channel.todos = laterTodos
   channel.emit()
   check(`${fullscreen}: a later todo update is visible beside a completed goal`, await settled(() => io.screen().includes('RESIDUAL_TODO')))
   channel.goal = undefined
   channel.emit()
-  await settle(() => io.screen().includes('RESIDUAL_TODO'))
+  // Wait for the goal-less render: the todo row is already on screen, and a
+  // press before this frame would act on the previous (goal) content.
+  await settle(() => io.screen().includes('RESIDUAL_TODO') && !io.screen().includes('COMPLETED_FOOTER'))
   io.stdin.write('\x11')
   check(`${fullscreen}: Ctrl+Q hides idle residual todos`, await settled(() => !io.screen().includes('RESIDUAL_TODO')))
-  check(`${fullscreen}: hide preserves canonical todo snapshot`, channel.todos[0] === originalTodos[0] && channel.todos[0].status === 'in_progress')
+  check(`${fullscreen}: hide preserves canonical todo snapshot`, channel.todos === laterTodos && channel.todos[0].status === 'pending')
   io.stdin.write('\x11')
   await settle(() => io.screen().includes('RESIDUAL_TODO'))
   io.stdin.write('\x11')
@@ -233,58 +238,145 @@ for (const fullscreen of [false, true]) {
   io.term.dispose()
 }
 
-// A settled footer must not come back on the next query: it shows through the
-// turn that settles it, hides when that turn goes idle, and stays hidden while
-// the next turn runs on the same snapshot. Only new goal/todo data reveals it.
+// A settled footer must not come back on a later turn. Mount through the real
+// ChannelUi read view: it re-copies goal/todo objects on every channel
+// version, so the footer can only recognise "the same snapshot" by content.
+const { createChannelUi, createChannelUiLease } = await import('../src/adapter/channel/ui.js')
+const { CHANNEL_UI_EFFECTS } = await import('../src/adapter/channel/ui-policy.js')
+// The view wraps every effect key; give the stub a no-op for the ones it lacks
+// so the production wrappers have something to call. Observations and notify
+// hand their result to the lease as a disposer.
+const project = raw => {
+  for (const key of Object.keys(CHANNEL_UI_EFFECTS)) {
+    if (typeof raw[key] !== 'function') raw[key] = key.startsWith('subscribe') ? () => () => {} : () => undefined
+  }
+  const notify = raw.notify
+  raw.notify = (...args) => { notify.apply(raw, args); return () => {} }
+  raw.subagentControl ??= { interrupt() {} }
+  return createChannelUi(raw, 'new', createChannelUiLease(() => true))
+}
+const footerShows = (io, text) => io.screen().includes(text)
+// Advance the channel version without new goal/todo data (activity, status…).
+const bump = async (raw, times = 3) => {
+  for (let index = 0; index < times; index++) raw.emit()
+  await sleep(150) // 固定窗:探针 仅 version 变化后已完成的底栏不得重新画出
+}
+const completedGoal = (objective, id = 'turn-goal') => ({
+  id, revision: 2, objective, phase: 'complete', roundsStarted: 1, maxGoalRounds: 3,
+})
 for (const fullscreen of [false, true]) {
-  const io = makeTerm(70, 24)
-  const channel = makeChannel({ goal: {
-    id: 'turn-goal', revision: 1, objective: 'SETTLING_GOAL', phase: 'active',
-    roundsStarted: 1, maxGoalRounds: 3,
-  } })
-  channel.todos = [{ content: 'GOAL_TODO', status: 'in_progress' }]
-  channel.working = true
-  const app = await mount(io, channel, fullscreen)
-  await settle(() => io.screen().includes('SETTLING_GOAL'))
-  channel.goal = { ...channel.goal, revision: 2, phase: 'complete' }
-  channel.todos = [{ content: 'GOAL_TODO', status: 'completed' }]
-  channel.emit()
-  check(`${fullscreen}: the goal stays visible through the turn that completes it`,
-    await settled(() => io.screen().includes('SETTLING_GOAL')))
-  channel.working = false
-  channel.emit()
-  check(`${fullscreen}: the completed goal hides when that turn goes idle`,
-    await settled(() => !io.screen().includes('SETTLING_GOAL') && !io.screen().includes('GOAL_TODO')))
-  channel.working = true
-  channel.emit()
-  await sleep(150) // 固定窗:探针 下一轮开始后已完成的目标不得重新画出
-  check(`${fullscreen}: the next query does not bring the completed goal back`,
-    !io.screen().includes('SETTLING_GOAL') && !io.screen().includes('GOAL_TODO'), io.screen())
-  channel.todos = [{ content: 'NEXT_TURN_TODO', status: 'in_progress' }]
-  channel.emit()
-  check(`${fullscreen}: new todo work in the next turn is visible`,
-    await settled(() => io.screen().includes('NEXT_TURN_TODO')))
-
-  // Without a goal, an all-completed todo list settles the footer the same way.
-  channel.goal = undefined
-  channel.todos = [{ content: 'LIST_DONE_A', status: 'completed' }, { content: 'LIST_DONE_B', status: 'completed' }]
-  channel.emit()
-  check(`${fullscreen}: an all-completed list stays visible through its turn`,
-    await settled(() => io.screen().includes('LIST_DONE_A')))
-  channel.working = false
-  channel.emit()
-  check(`${fullscreen}: the all-completed list hides when the turn goes idle`,
-    await settled(() => !io.screen().includes('LIST_DONE_A') && !io.screen().includes('✓ 2/2')))
-  channel.working = true
-  channel.emit()
-  await sleep(150) // 固定窗:探针 下一轮开始后全部完成的清单不得重新画出
-  check(`${fullscreen}: the next query does not bring the completed list back`,
-    !io.screen().includes('LIST_DONE_A') && !io.screen().includes('✓ 2/2'), io.screen())
-  channel.todos = [{ content: 'FRESH_LIST', status: 'pending' }]
-  channel.emit()
-  check(`${fullscreen}: a fresh todo list is visible`, await settled(() => io.screen().includes('FRESH_LIST')))
-  await app.unmount()
-  io.term.dispose()
+  // a. The settling turn shows progress, idle hides it, the next query keeps
+  //    it hidden through several version-only updates, new work shows.
+  {
+    const io = makeTerm(70, 24)
+    const raw = makeChannel({ goal: { ...completedGoal('SETTLING_GOAL'), revision: 1, phase: 'active' } })
+    raw.todos = [{ content: 'GOAL_TODO', status: 'in_progress' }]
+    raw.working = true
+    raw.turnStart = 1
+    const app = await mount(io, project(raw), fullscreen)
+    await settle(() => footerShows(io, 'SETTLING_GOAL'))
+    raw.goal = completedGoal('SETTLING_GOAL')
+    raw.todos = [{ content: 'GOAL_TODO', status: 'completed' }]
+    raw.emit()
+    await bump(raw)
+    check(`${fullscreen}: the goal stays visible through the turn that completes it`, footerShows(io, 'SETTLING_GOAL'), io.screen())
+    raw.working = false
+    raw.emit()
+    check(`${fullscreen}: the completed goal hides when that turn goes idle`,
+      await settled(() => !footerShows(io, 'SETTLING_GOAL') && !footerShows(io, 'GOAL_TODO')))
+    raw.working = true
+    raw.turnStart = 2
+    raw.emit()
+    await bump(raw)
+    check(`${fullscreen}: the next query does not bring the completed goal back`,
+      !footerShows(io, 'SETTLING_GOAL') && !footerShows(io, 'GOAL_TODO'), io.screen())
+    raw.todos = [{ content: 'NEXT_TURN_TODO', status: 'in_progress' }]
+    raw.emit()
+    check(`${fullscreen}: new todo work in the next turn is visible`, await settled(() => footerShows(io, 'NEXT_TURN_TODO')))
+    await app.unmount(); io.term.dispose()
+  }
+  // b. Without a goal, an all-completed list settles the footer the same way.
+  {
+    const io = makeTerm(70, 24)
+    const raw = makeChannel()
+    raw.todos = [{ content: 'LIST_DONE_A', status: 'in_progress' }, { content: 'LIST_DONE_B', status: 'completed' }]
+    raw.working = true
+    raw.turnStart = 1
+    const app = await mount(io, project(raw), fullscreen)
+    await settle(() => footerShows(io, 'LIST_DONE_A'))
+    raw.todos = [{ content: 'LIST_DONE_A', status: 'completed' }, { content: 'LIST_DONE_B', status: 'completed' }]
+    raw.emit()
+    await bump(raw)
+    check(`${fullscreen}: an all-completed list stays visible through its turn`, footerShows(io, 'LIST_DONE_A'), io.screen())
+    raw.working = false
+    raw.emit()
+    check(`${fullscreen}: the all-completed list hides when the turn goes idle`,
+      await settled(() => !footerShows(io, 'LIST_DONE_A') && !footerShows(io, '✓ 2/2')))
+    raw.working = true
+    raw.turnStart = 2
+    raw.emit()
+    await bump(raw)
+    check(`${fullscreen}: the next query does not bring the completed list back`,
+      !footerShows(io, 'LIST_DONE_A') && !footerShows(io, '✓ 2/2'), io.screen())
+    raw.todos = [{ content: 'FRESH_LIST', status: 'pending' }]
+    raw.emit()
+    check(`${fullscreen}: a fresh todo list is visible`, await settled(() => footerShows(io, 'FRESH_LIST')))
+    await app.unmount(); io.term.dispose()
+  }
+  // c. Restart + resume: the first render is already a running turn over a
+  //    completed goal and list (the reported bug). Nothing settled reappears.
+  {
+    const io = makeTerm(70, 24)
+    const raw = makeChannel({ goal: completedGoal('RESUMED_GOAL') })
+    raw.todos = [{ content: 'RESUMED_TODO', status: 'completed' }]
+    raw.working = true
+    raw.turnStart = 5
+    const app = await mount(io, project(raw), fullscreen)
+    await settle(() => io.screen().includes('Ready.'))
+    await bump(raw)
+    check(`${fullscreen}: a resumed session's first running turn hides its completed goal and todos`,
+      !footerShows(io, 'RESUMED_GOAL') && !footerShows(io, 'RESUMED_TODO'), io.screen())
+    raw.goal = { ...completedGoal('RESUMED_NEW_GOAL', 'next-goal'), revision: 1, phase: 'active' }
+    raw.emit()
+    check(`${fullscreen}: a new goal after resume is visible`, await settled(() => footerShows(io, 'RESUMED_NEW_GOAL')))
+    await app.unmount(); io.term.dispose()
+  }
+  // d. Back-to-back turns: the UI never observes idle between them. What the
+  //    first turn completed must still hide once the second turn starts.
+  {
+    const io = makeTerm(70, 24)
+    const raw = makeChannel({ goal: { ...completedGoal('QUEUED_GOAL'), revision: 1, phase: 'active' } })
+    raw.working = true
+    raw.turnStart = 1
+    const app = await mount(io, project(raw), fullscreen)
+    await settle(() => footerShows(io, 'QUEUED_GOAL'))
+    raw.goal = completedGoal('QUEUED_GOAL')
+    raw.emit()
+    await bump(raw)
+    check(`${fullscreen}: back-to-back: visible through the turn that completes it`, footerShows(io, 'QUEUED_GOAL'), io.screen())
+    raw.turnStart = 2
+    raw.emit()
+    check(`${fullscreen}: back-to-back: hidden once the next turn starts without an idle`,
+      await settled(() => !footerShows(io, 'QUEUED_GOAL')))
+    await app.unmount(); io.term.dispose()
+  }
+  // e. Ctrl+Q reveal survives version-only updates (content, not references)
+  //    and stays scoped to its session.
+  {
+    const io = makeTerm(70, 24)
+    const raw = makeChannel({ goal: completedGoal('REVEALED_GOAL') })
+    const app = await mount(io, project(raw), fullscreen)
+    await settle(() => io.screen().includes('Ready.') && !footerShows(io, 'REVEALED_GOAL'))
+    io.stdin.write('\x11')
+    check(`${fullscreen}: Ctrl+Q reveals the settled footer`, await settled(() => footerShows(io, 'REVEALED_GOAL')))
+    await bump(raw)
+    check(`${fullscreen}: the reveal survives version-only updates`, footerShows(io, 'REVEALED_GOAL'), io.screen())
+    raw.agentId = 'other-session'
+    raw.emit()
+    check(`${fullscreen}: the reveal does not carry into another session`,
+      await settled(() => !footerShows(io, 'REVEALED_GOAL')))
+    await app.unmount(); io.term.dispose()
+  }
 }
 
 process.exitCode = failed ? 1 : 0

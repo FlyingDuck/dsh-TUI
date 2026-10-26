@@ -1470,55 +1470,45 @@ export function Chat({
   const [todoCollapsed, setTodoCollapsed] = React.useState(false)
   // Dismiss only this idle projection; new goal/todo data or a session switch
   // reveals the footer again without changing the backend's canonical state.
+  // Footer snapshots compare by content, never by reference: the ChannelUi
+  // read view re-copies plain goal/todo objects on every channel version, so
+  // references change without any new data.
+  const footerKey = (channel.goal === undefined ? '' : `${channel.goal.id}|${channel.goal.revision}|${channel.goal.phase}`)
+    + '\n' + JSON.stringify((channel.todos ?? []).map(todo => [todo.content, todo.status]))
   const [todoFooterOverride, setTodoFooterOverride] = React.useState<{
     hidden: boolean
     agentId: string
-    goal: Channel['goal']
-    todos: Channel['todos']
+    key: string
   } | undefined>(undefined)
   const todoFooterOverrideMatches = !channel.working && todoFooterOverride !== undefined
     && todoFooterOverride.agentId === channel.agentId
-    && todoFooterOverride.goal === channel.goal
-    && todoFooterOverride.todos === channel.todos
+    && todoFooterOverride.key === footerKey
   // A settled footer has nothing left to do: a completed goal (which makes its
   // todos stale), or, without a goal, a todo list whose every row is done.
-  // The settling object — the goal, else the todo list — keys the snapshot.
-  // It stays visible through the turn that settles it, hides once that turn
-  // goes idle (confirmed), and stays hidden through later turns while the
-  // goal/todo snapshot is unchanged. A todo/write after a completed goal is
-  // new work and shows; a new goal or todo list replaces the snapshot.
-  const settledKey: object | undefined = channel.goal?.phase === 'complete'
-    ? channel.goal
-    : channel.goal === undefined && channel.todos !== undefined && channel.todos.length > 0
-      && channel.todos.every(todo => todo.status === 'completed')
-      ? channel.todos
-      : undefined
-  const settledTodoSnapshot = React.useRef<{
-    agentId: string
-    key: object
-    todos: Channel['todos']
-    confirmed: boolean
-  } | undefined>(undefined)
+  // Whatever is settled at a turn boundary — a turn starting (including one
+  // already running on the first render after a resume, or back-to-back turns
+  // with no idle in between) or a turn going idle — is dismissed. It stays
+  // hidden while the goal/todo content is unchanged; new content shows, so a
+  // goal that completes mid-turn stays visible until that turn ends.
+  const footerSettled = channel.goal?.phase === 'complete'
+    || (channel.goal === undefined && channel.todos !== undefined && channel.todos.length > 0
+      && channel.todos.every(todo => todo.status === 'completed'))
+  const footerBoundary = React.useRef<{ agentId: string; working: boolean; turnStart: number } | undefined>(undefined)
+  const dismissedFooter = React.useRef<{ agentId: string; key: string } | undefined>(undefined)
   {
-    const snapshot = settledTodoSnapshot.current
-    if (settledKey === undefined) settledTodoSnapshot.current = undefined
-    else if (snapshot === undefined || snapshot.agentId !== channel.agentId || snapshot.key !== settledKey
-      || (!snapshot.confirmed && snapshot.todos !== channel.todos)) {
-      settledTodoSnapshot.current = {
-        agentId: channel.agentId, key: settledKey, todos: channel.todos, confirmed: !channel.working,
-      }
-    } else if (!channel.working) snapshot.confirmed = true
+    const previous = footerBoundary.current
+    const fresh = previous === undefined || previous.agentId !== channel.agentId
+    const turnBegan = channel.working && (fresh || !previous.working || previous.turnStart !== channel.turnStart)
+    const wentIdle = !channel.working && (fresh || previous.working)
+    if ((turnBegan || wentIdle) && footerSettled) dismissedFooter.current = { agentId: channel.agentId, key: footerKey }
+    footerBoundary.current = { agentId: channel.agentId, working: channel.working, turnStart: channel.turnStart }
   }
-  const completedTodoFooter = settledTodoSnapshot.current !== undefined
-    && settledTodoSnapshot.current.todos === channel.todos
-    && (settledTodoSnapshot.current.confirmed || !channel.working)
+  const completedTodoFooter = footerSettled && dismissedFooter.current !== undefined
+    && dismissedFooter.current.agentId === channel.agentId && dismissedFooter.current.key === footerKey
   const todoFooterHidden = todoFooterOverrideMatches ? todoFooterOverride!.hidden : completedTodoFooter
   const toggleTodoFooter = (): void => {
     if (channel.working) setTodoCollapsed(previous => !previous)
-    else setTodoFooterOverride({
-      hidden: !todoFooterHidden,
-      agentId: channel.agentId, goal: channel.goal, todos: channel.todos,
-    })
+    else setTodoFooterOverride({ hidden: !todoFooterHidden, agentId: channel.agentId, key: footerKey })
   }
   const [thinkingVisible, setThinkingVisible] = React.useState(true)
   /** ctrl+r history-search entries (loaded on open, persists). */
