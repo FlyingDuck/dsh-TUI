@@ -6,7 +6,8 @@
  *   B. 后缀字形：0 一律不画（不出现 ↑0 ↓0）、截断带 `+`；
  *   C. 真实仓库烟测：在**本仓库**跑一次真命令，确认线上输出真能被这个解析器吃下
  *      —— 夹具是自己写的，只有真跑一次才知道 git 的实际形状没变；tracking 动态读取。
- *   D. 真刷新器 + 假 host shell：同 HEAD 强制刷新、同 cwd 不闪空、票据淘汰、
+ *   D. 真实临时仓库：自定义上游、无上游与 detached，不依赖开发机的分支配置。
+ *   E. 真刷新器 + 假 host shell：同 HEAD 强制刷新、同 cwd 不闪空、票据淘汰、
  *      workingDirectory 路由与 owner 释放；HEAD 轮询/backoff 的完整矩阵另见
  *      verify-git-branch-refresh.mjs。
  *
@@ -14,9 +15,9 @@
  */
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createGitBranchRefresher } from '../src/dsh-adapter/channel/core/host.js'
 import { createChannelOwner } from '../src/dsh-adapter/channel/owner.js'
@@ -104,30 +105,72 @@ const OID = '008311789ec9d2a30af1dc9d6e17a465bd355ef5'
 }
 
 // ── C. 真实仓库烟测 ────────────────────────────────────────────────────────
-{
+// hook 或调用者的 GIT_DIR/INDEX/CONFIG 不能把临时仓库操作重定向到外面。
+const gitEnvironment = {
+  ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^GIT_/iu.test(key))),
+  GIT_CONFIG_NOSYSTEM: '1',
+  GIT_CONFIG_GLOBAL: '/dev/null',
+}
+const git = (cwd: string, ...args: string[]): string => execFileSync('git', args, { cwd, env: gitEnvironment, encoding: 'utf8' }).trim()
+const liveStatus = (cwd: string, label: string): ReturnType<typeof parseGitStatus> => {
   const [command, ...args] = GIT_STATUS_COMMAND.split(' ')
-  const stdout = execFileSync(command!, args, { cwd: root, encoding: 'utf8' })
-  const live = parseGitStatus(stdout)
-  const symbolic = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()
-  const branch = symbolic === 'HEAD'
-    ? execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim().slice(0, 8)
-    : symbolic
-  let upstream: string | undefined
+  const live = parseGitStatus(execFileSync(command!, args, { cwd, env: gitEnvironment, encoding: 'utf8' }))
+  // 用独立 Git 命令求预期，不假设 checkout 的分支或 tracking 配置。
+  const branch = git(cwd, 'branch', '--show-current')
+  const expectedBranch = branch || git(cwd, 'rev-parse', '--verify', 'HEAD').slice(0, 8)
+  const upstream = branch === '' ? undefined : git(cwd, 'for-each-ref', '--format=%(upstream:short)', `refs/heads/${branch}`) || undefined
+  check(`${label}：解析器吃得下真实输出`, live !== undefined)
+  check(`${label}：分支或 detached 短 SHA 一致`, live?.branch === expectedBranch, `${live?.branch} vs ${expectedBranch}`)
+  check(`${label}：detached 标记一致`, live?.detached === (branch === ''))
+  check(`${label}：上游与实际 tracking 配置一致`, live?.upstream === upstream, `${live?.upstream} vs ${upstream}`)
+  check(`${label}：ahead/behind 是非负整数`, Number.isInteger(live?.ahead) && (live?.ahead ?? -1) >= 0 && Number.isInteger(live?.behind) && (live?.behind ?? -1) >= 0)
+  check(`${label}：脏计数是非负整数`, Number.isInteger(live?.changed) && (live?.changed ?? -1) >= 0 && Number.isInteger(live?.untracked) && (live?.untracked ?? -1) >= 0)
+  return live
+}
+liveStatus(root, 'C 本仓库')
+
+// ── D. 真实临时仓库：tracking / 无上游 / detached 都不能靠开发机配置过关 ────────
+{
+  const temporaryRoot = realpathSync(tmpdir())
+  const fixture = realpathSync(mkdtempSync(join(temporaryRoot, 'dsh-tui-git-status-')))
   try {
-    upstream = execFileSync('git', ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'], {
-      cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim() || undefined
-  } catch {
-    // No tracking branch (including detached HEAD) is a valid checkout.
+    git(fixture, '-c', 'init.defaultBranch=smoke/topic', '-c', 'init.templateDir=', 'init', '--quiet')
+    git(fixture, 'config', 'user.name', 'Git status smoke')
+    git(fixture, 'config', 'user.email', 'git-status@example.invalid')
+    git(fixture, 'config', 'core.hooksPath', '/dev/null')
+    git(fixture, 'config', 'core.excludesFile', '/dev/null')
+    git(fixture, 'config', 'commit.gpgSign', 'false')
+    writeFileSync(join(fixture, 'tracked.txt'), 'base\n')
+    git(fixture, 'add', 'tracked.txt')
+    git(fixture, 'commit', '--quiet', '-m', 'Fixture base')
+    git(fixture, 'branch', 'baseline')
+    git(fixture, 'branch', '--set-upstream-to=baseline')
+    git(fixture, 'commit', '--quiet', '--allow-empty', '-m', 'Fixture ahead')
+    writeFileSync(join(fixture, 'tracked.txt'), 'changed\n')
+    writeFileSync(join(fixture, 'untracked.txt'), 'new\n')
+
+    const tracking = liveStatus(fixture, 'D 自定义上游')
+    check('D 自定义上游：不是 origin/bean 也能通过', tracking?.branch === 'smoke/topic' && tracking.upstream === 'baseline')
+    check('D 自定义上游：真实 ahead/behind', tracking?.ahead === 1 && tracking.behind === 0)
+    check('D 自定义上游：真实改动与未跟踪计数', tracking?.changed === 1 && tracking.untracked === 1)
+
+    git(fixture, 'branch', '--unset-upstream')
+    const noUpstream = liveStatus(fixture, 'D 无上游')
+    check('D 无上游：不编造 tracking 或 ahead/behind', noUpstream !== undefined && noUpstream.upstream === undefined && noUpstream.ahead === 0 && noUpstream.behind === 0)
+
+    const oid = git(fixture, 'rev-parse', '--verify', 'HEAD')
+    git(fixture, 'checkout', '--quiet', '--detach', 'HEAD')
+    const detached = liveStatus(fixture, 'D detached')
+    check('D detached：完整 OID 前 8 位而不是 HEAD', detached?.branch === oid.slice(0, 8) && detached.detached)
+    check('D detached：无上游但仍保留脏计数', detached !== undefined && detached.upstream === undefined && detached.changed === 1 && detached.untracked === 1)
+  } finally {
+    assert.equal(dirname(realpathSync(fixture)), temporaryRoot)
+    assert.ok(basename(fixture).startsWith('dsh-tui-git-status-'))
+    rmSync(fixture, { recursive: true, force: true })
   }
-  check('C 真实仓库：解析器吃得下线上输出', live !== undefined)
-  check('C 真实仓库：分支与本仓当前分支一致', live?.branch === branch, `${live?.branch} vs ${branch}`)
-  check('C 真实仓库：上游名与当前tracking配置一致', live?.upstream === upstream, `${String(live?.upstream)} vs ${String(upstream)}`)
-  check('C 真实仓库：ahead/behind 是非负整数', typeof live?.ahead === 'number' && live.ahead >= 0 && typeof live?.behind === 'number' && live.behind >= 0)
-  check('C 真实仓库：脏计数与 done/untracked 是数字', typeof live?.changed === 'number' && typeof live?.untracked === 'number', `${live?.changed}/${live?.untracked}`)
 }
 
-// ── D. 真刷新器：同 HEAD 的回合刷新、票据与有效 cwd ───────────────────────
+// ── E. 真刷新器：同 HEAD 的回合刷新、票据与有效 cwd ───────────────────────
 // Real metadata reads and owner lifetime; the host shell's deferred answers
 // isolate which request is allowed to publish without invoking any real agent.
 {
@@ -175,17 +218,17 @@ const OID = '008311789ec9d2a30af1dc9d6e17a465bd355ef5'
     refresh()
     await requestAt(0)
     answer(0, 2)
-    check('D 首次查询发布分支与计数', await settled(() => state.gitBranch === 'bean' && state.gitStatus?.ahead === 2 && state.gitStatus.untracked === 1))
+    check('E 首次查询发布分支与计数', await settled(() => state.gitBranch === 'bean' && state.gitStatus?.ahead === 2 && state.gitStatus.untracked === 1))
     const bootEmits = emits
 
     // Same callback the binding feed calls at turn settlement: unchanged HEAD
     // must not suppress updated ahead/behind/dirty facts or flash them blank.
     refresh()
-    check('D 同 cwd 刷新期间不清空已有事实', state.gitBranch === 'bean' && state.gitStatus?.ahead === 2)
+    check('E 同 cwd 刷新期间不清空已有事实', state.gitBranch === 'bean' && state.gitStatus?.ahead === 2)
     await requestAt(1)
     answer(1, 3)
-    check('D 同 HEAD 显式刷新仍更新计数并通知', await settled(() => state.gitStatus?.ahead === 3 && emits === bootEmits + 1))
-    check('D 同分支刷新仍记录当前会话breadcrumb', recorded.length === 2 && recorded.every(branch => branch === 'bean'))
+    check('E 同 HEAD 显式刷新仍更新计数并通知', await settled(() => state.gitStatus?.ahead === 3 && emits === bootEmits + 1))
+    check('E 同分支刷新仍记录当前会话breadcrumb', recorded.length === 2 && recorded.every(branch => branch === 'bean'))
 
     refresh()
     await requestAt(2)
@@ -195,13 +238,13 @@ const OID = '008311789ec9d2a30af1dc9d6e17a465bd355ef5'
     assert.ok(await settled(() => state.gitStatus?.ahead === 9))
     answer(2, 1)
     await new Promise<void>(resolve => setImmediate(resolve))
-    check('D 同 cwd 较旧票据不能覆盖新计数', state.gitStatus?.ahead === 9)
+    check('E 同 cwd 较旧票据不能覆盖新计数', state.gitStatus?.ahead === 9)
 
     state.workingDirectory = moved
     refresh()
-    check('D 有效 cwd 改变立即清空分支与计数', state.gitBranch === undefined && state.gitStatus === undefined)
+    check('E 有效 cwd 改变立即清空分支与计数', state.gitBranch === undefined && state.gitStatus === undefined)
     const movedRequest = await requestAt(4)
-    check('D 查询跟随workingDirectory而不改项目cwd', movedRequest.request.workdir === moved && state.cwd === cwd)
+    check('E 查询跟随workingDirectory而不改项目cwd', movedRequest.request.workdir === moved && state.cwd === cwd)
     answer(4, 4)
     assert.ok(await settled(() => state.gitStatus?.ahead === 4))
 
@@ -210,7 +253,7 @@ const OID = '008311789ec9d2a30af1dc9d6e17a465bd355ef5'
     owner.dispose()
     answer(5, 99)
     await new Promise<void>(resolve => setImmediate(resolve))
-    check('D owner释放后在途计数不能落地', state.gitStatus?.ahead === 4)
+    check('E owner释放后在途计数不能落地', state.gitStatus?.ahead === 4)
   } finally {
     owner.dispose()
     rmSync(fixture, { recursive: true, force: true })
@@ -222,5 +265,5 @@ if (failures.length > 0) {
   for (const failure of failures) console.error(`  - ${failure}`)
   process.exit(1)
 }
-console.log(`git-status OK (${checks} checks: 六态夹具 + 超长截断、后缀字形零值不画、真实仓库tracking烟测、刷新器票据/cwd/owner)`)
+console.log(`git-status OK (${checks} checks: 六态夹具 + 超长截断、后缀字形零值不画、本仓库与真实 tracking/无上游/detached 烟测、刷新器票据/cwd/owner)`)
 process.exit(0)
