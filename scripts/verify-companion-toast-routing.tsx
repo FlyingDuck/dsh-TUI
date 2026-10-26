@@ -5,12 +5,12 @@
  * notice toasts even on the pet panel (it may need action).
  *
  * Locked behavior:
- *  a. pet panel active + plain notice → the text never appears in the CHAT
- *     column (the bubble owns it on the right);
- *  b. another panel active + plain notice → the toast shows in the chat
- *     column, above the prompt;
- *  c. pet panel active + error notice → the toast still shows in the chat
- *     column.
+ *  a. pet panel active + plain notice → the text never appears below the
+ *     sidebar, in the full-width input area (the bubble owns it on the right);
+ *  b. another panel active + plain notice → the toast shows in the input
+ *     area, above the prompt;
+ *  c. pet panel active + error notice → the toast still shows in the input
+ *     area.
  *
  * Run: node --import tsx/esm scripts/verify-companion-toast-routing.tsx
  */
@@ -111,16 +111,14 @@ const panelBar = (): string => termTest.viewportLines(term, ROWS)[0] ?? ''
 const activePanelRendered = (title: string, body: string): boolean =>
   panelBar().includes(title)
   && termTest.viewportLines(term, ROWS).slice(1).some(line => line.slice(CHAT_COLUMN_END).includes(body))
-const occurrencesInChatColumn = (s: string): number => {
+// The toast row belongs to the full-width input below the sidebar's └─
+// closing rule; the pet bubble stays above it. Without a visible closing rule
+// the region is unknown, so NaN fails both the positive and negative checks.
+const occurrencesInInputArea = (s: string): number => {
   const view = termTest.viewportLines(term, ROWS)
-  let count = 0
-  for (const line of view) {
-    const cells = termTest.lineCells ? termTest.lineCells(line) : null
-    if (cells !== null) { if (cells.slice(0, CHAT_COLUMN_END).includes(s)) count += 1; continue }
-    let at = line.indexOf(s)
-    while (at >= 0) { if (at < CHAT_COLUMN_END) count += 1; at = line.indexOf(s, at + 1) }
-  }
-  return count
+  const closing = view.findLastIndex(line => line.includes('└─'))
+  if (closing < 0) return Number.NaN
+  return view.slice(closing + 1).filter(line => line.includes(s)).length
 }
 
 applySidePanelRatio(0.68)
@@ -153,24 +151,24 @@ try {
   check('active: companion text is selected and its interaction body renders', await settled(() =>
     activePanelRendered('Companion', 'click to poke') && panelBar().includes('Todo'), { timeoutMs: 5000 }), panelBar().trim())
 
-  // a. plain notice on the pet panel → bubble owns it; the chat column stays clean
+  // a. plain notice on the pet panel → bubble owns it; the input area stays clean
   push({ id: 1, text: 'NOTICE-A-PET-SAYS' })
   await settled(() => termTest.viewportLines(term, ROWS).some(l => l.includes('NOTICE-A-PET-SAYS')), { timeoutMs: 5000 })
-  check('a: pet panel active → plain notice NOT in the chat column', occurrencesInChatColumn('NOTICE-A-PET-SAYS') === 0, 'chat occurrences=' + occurrencesInChatColumn('NOTICE-A-PET-SAYS'))
+  check('a: pet panel active → plain notice NOT in the input area', occurrencesInInputArea('NOTICE-A-PET-SAYS') === 0, 'input-area occurrences=' + occurrencesInInputArea('NOTICE-A-PET-SAYS'))
 
-  // b. switch to another panel → toast shows in the chat column
+  // b. switch to another panel → toast shows in the input area
   stdin.write('[') // previous panel
   check('switch: todo text is selected and its checklist body renders', await settled(() =>
     activePanelRendered('Todo', 'ROUTING_TODO_BODY') && panelBar().includes('Companion'), { timeoutMs: 5000 }), panelBar().trim())
   push({ id: 2, text: 'NOTICE-B-TOAST' })
-  check('b: other panel active → toast shows in the chat column', await settled(() => occurrencesInChatColumn('NOTICE-B-TOAST') > 0, { timeoutMs: 5000 }))
+  check('b: other panel active → toast shows in the input area', await settled(() => occurrencesInInputArea('NOTICE-B-TOAST') > 0, { timeoutMs: 5000 }))
 
   // c. error notice toasts even on the pet panel
   stdin.write('2')
   check('back: companion text is selected and its interaction body returns', await settled(() =>
     activePanelRendered('Companion', 'click to poke') && panelBar().includes('Todo'), { timeoutMs: 5000 }), panelBar().trim())
   push({ id: 3, text: 'NOTICE-C-ERROR', color: 'error' })
-  check('c: error notice still toasts on the pet panel', await settled(() => occurrencesInChatColumn('NOTICE-C-ERROR') > 0, { timeoutMs: 5000 }))
+  check('c: error notice still toasts on the pet panel', await settled(() => occurrencesInInputArea('NOTICE-C-ERROR') > 0, { timeoutMs: 5000 }))
 } finally {
   await app.unmount()
 }
