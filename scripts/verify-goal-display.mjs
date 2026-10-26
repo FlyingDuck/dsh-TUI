@@ -233,4 +233,58 @@ for (const fullscreen of [false, true]) {
   io.term.dispose()
 }
 
+// A settled footer must not come back on the next query: it shows through the
+// turn that settles it, hides when that turn goes idle, and stays hidden while
+// the next turn runs on the same snapshot. Only new goal/todo data reveals it.
+for (const fullscreen of [false, true]) {
+  const io = makeTerm(70, 24)
+  const channel = makeChannel({ goal: {
+    id: 'turn-goal', revision: 1, objective: 'SETTLING_GOAL', phase: 'active',
+    roundsStarted: 1, maxGoalRounds: 3,
+  } })
+  channel.todos = [{ content: 'GOAL_TODO', status: 'in_progress' }]
+  channel.working = true
+  const app = await mount(io, channel, fullscreen)
+  await settle(() => io.screen().includes('SETTLING_GOAL'))
+  channel.goal = { ...channel.goal, revision: 2, phase: 'complete' }
+  channel.todos = [{ content: 'GOAL_TODO', status: 'completed' }]
+  channel.emit()
+  check(`${fullscreen}: the goal stays visible through the turn that completes it`,
+    await settled(() => io.screen().includes('SETTLING_GOAL')))
+  channel.working = false
+  channel.emit()
+  check(`${fullscreen}: the completed goal hides when that turn goes idle`,
+    await settled(() => !io.screen().includes('SETTLING_GOAL') && !io.screen().includes('GOAL_TODO')))
+  channel.working = true
+  channel.emit()
+  await sleep(150) // 固定窗:探针 下一轮开始后已完成的目标不得重新画出
+  check(`${fullscreen}: the next query does not bring the completed goal back`,
+    !io.screen().includes('SETTLING_GOAL') && !io.screen().includes('GOAL_TODO'), io.screen())
+  channel.todos = [{ content: 'NEXT_TURN_TODO', status: 'in_progress' }]
+  channel.emit()
+  check(`${fullscreen}: new todo work in the next turn is visible`,
+    await settled(() => io.screen().includes('NEXT_TURN_TODO')))
+
+  // Without a goal, an all-completed todo list settles the footer the same way.
+  channel.goal = undefined
+  channel.todos = [{ content: 'LIST_DONE_A', status: 'completed' }, { content: 'LIST_DONE_B', status: 'completed' }]
+  channel.emit()
+  check(`${fullscreen}: an all-completed list stays visible through its turn`,
+    await settled(() => io.screen().includes('LIST_DONE_A')))
+  channel.working = false
+  channel.emit()
+  check(`${fullscreen}: the all-completed list hides when the turn goes idle`,
+    await settled(() => !io.screen().includes('LIST_DONE_A') && !io.screen().includes('✓ 2/2')))
+  channel.working = true
+  channel.emit()
+  await sleep(150) // 固定窗:探针 下一轮开始后全部完成的清单不得重新画出
+  check(`${fullscreen}: the next query does not bring the completed list back`,
+    !io.screen().includes('LIST_DONE_A') && !io.screen().includes('✓ 2/2'), io.screen())
+  channel.todos = [{ content: 'FRESH_LIST', status: 'pending' }]
+  channel.emit()
+  check(`${fullscreen}: a fresh todo list is visible`, await settled(() => io.screen().includes('FRESH_LIST')))
+  await app.unmount()
+  io.term.dispose()
+}
+
 process.exitCode = failed ? 1 : 0

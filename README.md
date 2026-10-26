@@ -23,7 +23,7 @@
 > DSH's public exports, and is moving from a mounted plugin to an app with its
 > own entry and composition root, where DSH loads in process as the first-party
 > backend. Install to enable; uninstall leaves no patches behind.
-The prompt footer hides completed goals once the turn is idle; the Todo side panel retains their history. `Ctrl+Q` folds todos while working and hides/restores the idle goal/todo footer. Clicking its todo header also hides it while idle. Hiding changes only this display: a new goal/todo snapshot or session reveals it again, and `/goal clear` does not clear todos.
+The prompt footer hides a completed goal, or a todo list with every item done, once the turn that finished it goes idle, and keeps it hidden on later queries until a new goal or todo list arrives; the Todo side panel retains their history. `Ctrl+Q` folds todos while working and hides/restores the idle goal/todo footer. Clicking its todo header also hides it while idle. Hiding changes only this display: a new goal/todo snapshot or session reveals it again, and `/goal clear` does not clear todos.
 
 Split diff cards give one-sided additions and deletions the full body width, without an empty opposite pane. Ordinary edits remain side by side, and mixed files choose their layout separately before folding or streaming reveal.
 
