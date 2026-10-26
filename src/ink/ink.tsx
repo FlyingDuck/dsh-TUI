@@ -53,6 +53,7 @@ import { TerminalWriteProvider } from './useTerminalNotification.js';
 import { TerminalImagesContext } from './hooks/use-terminal-images.js';
 import { DEFAULT_TERMINAL_CELL_SIZE, resolveTerminalCellSize, type TerminalImagePlacement } from './terminal-image.js';
 import { detachHandoffStdin } from './stdin-handoff.js';
+import { notifyLayoutObservers } from './layout-observers.js';
 import { claimShutdownInput, type ShutdownInput } from './shutdown-input.js'
 
 // Alt-screen: renderer.ts sets cursor.visible = !isTTY || screen.height===0,
@@ -388,6 +389,7 @@ export default class Ink {
           ms,
           ...c
         };
+        notifyLayoutObservers();
       }
     };
 
