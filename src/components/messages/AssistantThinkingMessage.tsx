@@ -14,13 +14,11 @@ import { interpolateColor } from '../Spinner/spinnerUtils.js'
 import { isMinimalUiMode } from '../../minimalUiMode.js'
 import type { ClickEvent } from '../../ink/events/click-event.js'
 import { primaryComboString } from '../../utils/keymap.js'
+import { expandTabs } from '../../ink/tabstops.js'
 
-/** Preview body rows — a FIXED row count (kimicode-style constant-height
- *  ticker). Ink's truncate slices the whole string across newlines as one
- *  logical line, so a single joined Text collapses to 1-2 rows whenever
- *  the combined width passes the terminal width, then bounces back as
- *  lines shift. One Text per row, each truncated to the width and padded
- *  to exactly this many rows, keeps the block height stream-independent. */
+/** Fixed-height live ticker. Wrap at the actual Yoga width, then clip the
+ *  oldest display rows; a long paragraph must not leave two unused slots.
+ *  The minimum-height inner box keeps genuinely short text top-aligned. */
 const PREVIEW_ROWS = 3
 
 type Props = {
@@ -135,22 +133,11 @@ export function AssistantThinkingMessage({
     )
 
   if (preview) {
-    // Live ticker: the model's last few reasoning lines, dimmed, one Text
-    // per row so each truncates to the width independently, padded to a
-    // constant PREVIEW_ROWS-tall block that follows the stream. The folded
-    // summary takes over when the step settles. The LAST row truncates
-    // from the start (leading ellipsis) so the newest tokens — which grow
-    // at the line's end — stay visible while the line is longer than the
-    // width.
-    const lines = tickerText.split('\n')
-    const visible = lines.slice(-PREVIEW_ROWS)
-    const clipped = lines.length > visible.length
-    // Pad with single spaces — an empty-string Text renders with zero
-    // height in ink, so '' padding would not hold the row open.
-    const rows = Array.from(
-      { length: PREVIEW_ROWS },
-      (_, i) => visible[i] ?? ' ',
-    )
+    // Trailing paragraph separators are not new reasoning. At most three
+    // source lines can contribute to the final three display rows, so avoid
+    // wrapping the entire history. Tabs must paint at their measured width.
+    const lines = tickerText.replace(/\r\n?/g, '\n').trimEnd().split('\n')
+    const body = expandTabs(lines.slice(-PREVIEW_ROWS).join('\n'))
     return (
       <Box
         flexDirection="column"
@@ -161,29 +148,31 @@ export function AssistantThinkingMessage({
       >
         {header}
         <Box
-          flexDirection="column"
+          flexDirection="row"
           paddingLeft={2}
           height={PREVIEW_ROWS}
           flexShrink={0}
           overflow="hidden"
         >
-          {rows.map((line, i) => (
-            <Box key={i} flexDirection="row" height={1}>
-              {/* The bar is a fixed-width column OUTSIDE the truncating text:
-                * ink's truncate-start rewrites the text's leading columns, so
-                * a bar inside the text would be eaten by the ellipsis. */}
-              <Text dimColor italic>{'│ '}</Text>
-              <Box flexDirection="row" flexGrow={1}>
-                <Text
-                  dimColor
-                  italic
-                  wrap={i === rows.length - 1 ? 'truncate-start' : 'truncate'}
-                >
-                  {i === 0 && clipped ? `…${line}` : line}
-                </Text>
-              </Box>
+          <Box flexDirection="column" width={2} flexShrink={0}>
+            {Array.from({ length: PREVIEW_ROWS }, (_, i) => (
+              <Text key={i} dimColor italic>{'│ '}</Text>
+            ))}
+          </Box>
+          <Box
+            flexDirection="column"
+            flexGrow={1}
+            minWidth={0}
+            height={PREVIEW_ROWS}
+            justifyContent="flex-end"
+            overflow="hidden"
+          >
+            {/* Keep natural wrapped height: excess rows clip off the TOP,
+                not out of the middle or off the newest end of the stream. */}
+            <Box flexDirection="column" flexShrink={0} minHeight={PREVIEW_ROWS}>
+              <Text dimColor italic>{body}</Text>
             </Box>
-          ))}
+          </Box>
         </Box>
       </Box>
     )

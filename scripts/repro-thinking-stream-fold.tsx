@@ -14,6 +14,8 @@
  *
  * 运行：node --import tsx/esm scripts/repro-thinking-stream-fold.tsx
  */
+import './lib/fake-home.mjs'
+
 process.env.FORCE_COLOR = '3'
 process.env.DSH_TUI_THEME = 'dark'
 process.env.DSH_TUI_LANG = 'zh'
@@ -35,7 +37,7 @@ const COLS = 100, ROWS = 40
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 let failed = 0
 function check(name: string, ok: boolean, extra = '') {
-  console.log(`${ok ? 'PASS' : 'FAIL'}: ${name}${extra ? `  (${extra})` : ''}`)
+  console.log(`${ok ? 'PASS' : 'FAIL'}: ${name}${!ok && extra ? `  (${extra})` : ''}`)
   if (!ok) failed += 1
 }
 
@@ -128,9 +130,53 @@ check('流式思考头行可见', headerIdx >= 0, headerIdx >= 0 ? `行${headerI
 check('默认三行预览', bodyLines(ls) === 3, `body=${bodyLines(ls)}`)
 check('预览跟随最新三行', ls.some(line => line.includes('推理第11行')), '应包含推理第11行')
 
+// Trailing paragraph separators must not displace arrived reasoning.
+const liveReasoning = channel.rows[0]
+liveReasoning.text = BODY + ' APPENDED-LATEST\n\n'
+channel.version += 1
+for (const listener of listeners) listener()
+check('追加段落尾空行仍显示三行正文', await waitFor(() => bodyLines(lines()) === 3 && lines().some(line => line.includes('APPENDED-LATEST'))), lines().join('\n'))
+
+// A long paragraph is several display rows even without an LF. The ticker
+// follows its tail at the actual chat width, including after a resize.
+liveReasoning.text = BODY + '\n\n' + 'older synthetic words '.repeat(40) + 'ARRIVED-TAIL\n\n'
+channel.version += 1
+for (const listener of listeners) listener()
+check('长段落预览跟随最新尾部', await waitFor(() => lines().some(line => line.includes('ARRIVED-TAIL'))), lines().join('\n'))
+const previewRows = () => {
+  const screen = lines()
+  const row = headerRow(screen)
+  return row < 0 ? [] : screen.slice(row + 1, row + 4)
+}
+check('长段落填满三条显示行', previewRows().length === 3 && previewRows().every(line => /│\s*\S/u.test(line)), previewRows().join('\n'))
+stdout.columns = 60
+term.resize(60, ROWS)
+stdout.emit('resize')
+liveReasoning.text = liveReasoning.text.trimEnd() + ' RESIZED-TAIL\n\n'
+channel.version += 1
+for (const listener of listeners) listener()
+check('变窄后仍显示末尾三行', await waitFor(() => previewRows().length === 3 && previewRows().every(line => /│\s*\S/u.test(line)) && previewRows().some(line => line.includes('RESIZED-TAIL'))), lines().join('\n'))
+channel.smoothStreaming = true
+liveReasoning.text = liveReasoning.text.trimEnd() + ' SMOOTH-TAIL\n\n'
+channel.version += 1
+for (const listener of listeners) listener()
+check('平滑揭示不拖慢预览的新到文本', await waitFor(() => previewRows().some(line => line.includes('SMOOTH-TAIL'))), lines().join('\n'))
+
+// Restore the original body/width before exercising the existing click and
+// settle semantics. Its new suffix makes the completed frame observable.
+stdout.columns = COLS
+term.resize(COLS, ROWS)
+stdout.emit('resize')
+channel.smoothStreaming = false
+liveReasoning.text = BODY + ' RESTORED-TAIL'
+channel.version += 1
+for (const listener of listeners) listener()
+check('恢复宽度后仍为三行预览', await waitFor(() => bodyLines(lines()) === 3 && lines().some(line => line.includes('RESTORED-TAIL'))), lines().join('\n'))
+const clickHeader = headerRow(lines())
+
 // 点击头行 → 展开全文。
-stdin.write(`\x1b[<0;6;${headerIdx + 1}M`)
-stdin.write(`\x1b[<0;6;${headerIdx + 1}m`)
+stdin.write(`\x1b[<0;6;${clickHeader + 1}M`)
+stdin.write(`\x1b[<0;6;${clickHeader + 1}m`)
 await waitFor(() => bodyLines(lines()) >= 10)
 ls = lines()
 check('点击后展开完整正文', bodyLines(ls) >= 10, `body=${bodyLines(ls)}`)
