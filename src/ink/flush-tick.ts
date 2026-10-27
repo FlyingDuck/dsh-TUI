@@ -19,12 +19,20 @@
 
 /** Flush counter — see the module comment. */
 let flushTick = 0
+const listeners = new Set<() => void>()
 
 /** Record one completed terminal frame write. Called from ink's onRender
  *  after writeDiffToTerminal; test harnesses that bypass ink and write
  *  frames directly may call it manually to keep consumers in step. */
 export function noteTerminalFlush(): void {
   flushTick++
+  for (const listener of listeners) listener()
+}
+
+/** Wake pending history batches only after their frame reaches the terminal. */
+export function subscribeTerminalFlush(listener: () => void): () => void {
+  listeners.add(listener)
+  return () => { listeners.delete(listener) }
 }
 
 /** Current flush tick. Consumers capture it when they widen state and only

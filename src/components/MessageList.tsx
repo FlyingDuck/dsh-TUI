@@ -19,7 +19,7 @@ import { JobCard } from './Chat/JobCard.js'
 import { JobGroupHeader } from './Chat/JobGroupHeader.js'
 import { isMinimalUiMode } from '../minimalUiMode.js'
 import { noteFrameCause, noteListGeometry } from '../ink/geometry-trace.js'
-import { getTerminalFlushTick } from '../ink/flush-tick.js'
+import { getTerminalFlushTick, subscribeTerminalFlush } from '../ink/flush-tick.js'
 import { TurnInterruptedRow } from './TurnInterruptedRow.js'
 import { TurnUsageRow } from './TurnUsageRow.js'
 import { LogoV2 } from './LogoV2.js'
@@ -821,20 +821,18 @@ export function MessageList({
    *  scrollback and the diff skips them. */
   const lastStartRef = React.useRef<number>(-1)
   const holdFlushTickRef = React.useRef<number>(-1)
-  /** True when frame-budgeted history painting still has batches left
-   *  (main-screen open): the layout effect schedules the next slice. */
+  /** Main-screen prefix currently waiting for a terminal flush. */
   const paintPendingRef = React.useRef(false)
-  const paintTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
-  /** Persistent history-paint edge: how far batched painting has advanced
-   *  (index into visibleRows). -1 = not painting / reset (list head change:
-   *  rewind, new session, loadOlder — must repaint from scratch). */
-  const paintEdgeRef = React.useRef(-1)
+  const historyBatchRef = React.useRef<{ end: number; flushTick: number } | null>(null)
   const listHeadId = visibleRows[0]?.id
-  if (listHeadId !== undefined && paintedBaseRef.current !== undefined && listHeadId !== paintedBaseRef.current) {
-    paintedOnceRef.current = new Set()
-    // History repaints from scratch after a head change too (rewind /
-    // loadOlder prepends rows that must paint again).
-    paintEdgeRef.current = -1
+  if (
+    listHeadId !== undefined && paintedBaseRef.current !== undefined &&
+    listHeadId !== paintedBaseRef.current
+  ) {
+    // A new prefix needs history painting; dropping an already-painted head
+    // as the 120-row window advances must not replay the whole window.
+    if (!paintedOnceRef.current.has(listHeadId)) paintedOnceRef.current = new Set()
+    historyBatchRef.current = null
   }
   if (listHeadId !== undefined) paintedBaseRef.current = listHeadId
   /** Content-space offset of visibleRows[0] (header + dividers), measured. */
@@ -847,10 +845,18 @@ export function MessageList({
       clearTimeout(measureTimerRef.current)
       measureTimerRef.current = null
     }
-    if (paintTimerRef.current !== null) {
-      clearTimeout(paintTimerRef.current)
-      paintTimerRef.current = null
+  }, [])
+  React.useLayoutEffect(() => {
+    const continueHistory = (): void => {
+      if (!paintPendingRef.current) return
+      noteFrameCause('measure')
+      setMeasureTick(t => t + 1)
     }
+    const unsubscribe = subscribeTerminalFlush(continueHistory)
+    // Cover a first flush that preceded subscription without polling.
+    const batch = historyBatchRef.current
+    if (batch !== null && batch.flushTick !== getTerminalFlushTick()) continueHistory()
+    return unsubscribe
   }, [])
 
   // A width change reflows every row — all measurements are stale.
@@ -1020,6 +1026,9 @@ export function MessageList({
   // header → follow yanks scrollTop to 0 → next pass remounts all → follow
   // back to the real bottom: a self-sustaining ping-pong that blanks the
   // transcript mid-stream.
+  let paintingHistoryPrefix = false
+  paintPendingRef.current = false
+  if (!historyPaintEnabled) historyBatchRef.current = null
   if (sticky && visibleRows.length > 0) {
     // Sticky (follow-bottom): the viewport shows the TAIL of the content —
     // mount exactly the tail window the floor walk covers, not everything
@@ -1049,64 +1058,52 @@ export function MessageList({
     // floor+1 here would drop row 0 (its content then has no terminal copy
     // anywhere; preset history lost its head — CI repro-inline-scrollback).
     start = floor === 0 && covered > 0 ? 0 : floor + 1
-    // Paint-at-least-once: extend the window over any row that has never
-    // been mounted. A row the window skips keeps only its terminal/scrollback
-    // copy — a row that was never painted has NO copy anywhere, so preset
-    // history (session resume, repro-inline-scrollback's #39 family) would
-    // vanish from the user's scrollback. Extending mounts everything above
-    // on the first frame (topPad 0, full paint), then the set fills and the
-    // window tightens to the tail.
-    // MAIN-SCREEN ONLY (historyPaintEnabled): the alt-screen has no
-    // scrollback — a row outside the window has no "copy" to preserve, and
-    // mounting the whole fold window on open lexed/highlighted/laid out
-    // hundreds of markdown rows the user never sees (measured: 4.3s of
-    // saturated main thread before first paint on a 960-row session; the
-    // virtualization window re-mounts rows on demand as they scroll in).
-    // FRAME-BUDGETED: mounting the whole window in ONE commit saturated the
-    // main thread for seconds (measured 6s wall with ZERO frames in the
-    // first second on an 800-row inline open — every input queued behind
-    // the React render). Extend in batches of ~2 viewports of measured
-    // height per commit instead; the pending-batch effect schedules the
-    // next slice, so the app paints, drains input, and stays interactive
-    // while history streams in above the fold (opencode-style progressive
-    // transcript hydration; the terminal accepts rows whenever they land).
+    // Main-screen history must reach the terminal in source order. Printing
+    // a tall top spacer first strands later backfills in native scrollback:
+    // the diff cannot rewrite those rows, even though React mounted them.
+    // Hydrate a growing PREFIX instead, with neither an unpainted top spacer
+    // nor a bottom spacer for future rows. Keep each new batch bounded so
+    // input and terminal flushes can run between expensive first layouts.
     const paintedOnce = paintedOnceRef.current
     let paintPending = false
     if (historyPaintEnabled) {
-      // Persistent batch edge: the sticky floor-walk RESETS start to the
-      // tail every frame, so a per-frame budget walk from `start` re-spends
-      // its whole budget on already-painted rows and never reaches deeper
-      // unpainted ones (measured: an infinite 0.3ms/frame batch loop).
-      // Remember how far painting has advanced; each batch extends THAT
-      // edge upward by the budget.
-      if (paintEdgeRef.current < 0) paintEdgeRef.current = start
       let firstUnpainted = -1
-      for (let i = 0; i < paintEdgeRef.current; i++) {
+      for (let i = 0; i < start; i++) {
         if (!paintedOnce.has(visibleRows[i]!.id)) {
           firstUnpainted = i
           break
         }
       }
-      if (firstUnpainted !== -1) {
-        // Budget: extend the paint edge upward by ~half a viewport of
-        // measured content per commit (height estimates; unknown rows fall
-        // back to DEFAULT_ROW_HEIGHT and over-mount slightly — harmless).
-        // Measured: larger batches (2 viewports) put 50ms+ of first-wrap
-        // yoga into one frame; half a viewport keeps batches near the
-        // 16ms frame budget while still finishing an 800-row open in
-        // well under two seconds of background batches.
+      const flushTick = getTerminalFlushTick()
+      let batch = historyBatchRef.current
+      if (batch !== null && batch.end >= visibleRows.length && batch.flushTick !== flushTick) {
+        batch = null
+      } else if (batch !== null ? batch.flushTick !== flushTick : firstUnpainted !== -1) {
         let budget = Math.min(viewport, termRows) / 2 + OVERSCAN_LINES
-        let j = paintEdgeRef.current
-        while (j > firstUnpainted && budget > 0) {
-          j--
-          budget -= heightOf(visibleRows[j]!)
+        let nextEnd = batch?.end ?? firstUnpainted
+        while (nextEnd < visibleRows.length && budget > 0) {
+          budget -= heightOf(visibleRows[nextEnd]!)
+          nextEnd++
         }
-        paintEdgeRef.current = j
-        start = Math.min(start, j)
-        paintPending = j > 0
+        // A remainder no taller than one sticky window paints in this frame.
+        // Splitting a live append (a multi-row report) drew a partial block
+        // that the next frame shifted up, leaving written blanks behind.
+        if (nextEnd < visibleRows.length &&
+            total - offsets[nextEnd]! <= Math.min(viewport, termRows) + OVERSCAN_LINES) {
+          nextEnd = visibleRows.length
+        }
+        batch = { end: nextEnd, flushTick }
       }
-    } else {
-      paintEdgeRef.current = -1
+      historyBatchRef.current = batch
+      if (batch !== null) {
+        start = 0
+        end = Math.min(batch.end, visibleRows.length)
+        paintingHistoryPrefix = true
+        paintPending = true
+        // Every prefix, including the final batch, must survive a real
+        // terminal flush before the tail may replace it with spacers.
+        holdFlushTickRef.current = batch.flushTick
+      }
     }
     paintPendingRef.current = paintPending
     // Unknown-height extension (layout signature, see sigRef): a row whose
@@ -1176,13 +1173,18 @@ export function MessageList({
       end = Math.max(end, idx + 1)
     }
   }
+  const historyBatch = historyBatchRef.current
+  if (paintingHistoryPrefix && historyBatch !== null && end > historyBatch.end) {
+    historyBatch.end = end
+    historyBatch.flushTick = getTerminalFlushTick()
+  }
   // The failure footnote is row content, not a seek request. Pinning its
   // row also mounted EVERY later tool card until the trajectory was opened,
   // defeating virtualization for the rest of a tool-heavy conversation.
   // It reappears when scrolled into view; only forceMountRowId widens for a seek.
   const topPad = offsets[start] ?? 0
   const mountedBottom = end < visibleRows.length ? offsets[end] : total
-  const bottomPad = total - mountedBottom
+  const bottomPad = paintingHistoryPrefix ? 0 : total - mountedBottom
   noteListGeometry({
     start,
     end,
@@ -1487,21 +1489,6 @@ export function MessageList({
       // updates when a streaming/reveal commit is already in flight.
       measureTimerRef.current = setTimeout(() => {
         measureTimerRef.current = null
-        noteFrameCause('measure')
-        setMeasureTick(t => t + 1)
-      }, 0)
-    }
-    // History-paint continuation (main-screen open): more never-painted
-    // batches remain — schedule the next slice on the macrotask queue so
-    // pending input events (wheel, keys) drain between batches and the app
-    // stays interactive while preset history streams in. A timeout of 0 is
-    // enough: each batch's mount+measure work is bounded (~2 viewports),
-    // unlike the previous single-commit full mount that saturated the main
-    // thread for seconds.
-    if (paintPendingRef.current && paintTimerRef.current === null) {
-      paintTimerRef.current = setTimeout(() => {
-        paintTimerRef.current = null
-        if (!paintPendingRef.current) return
         noteFrameCause('measure')
         setMeasureTick(t => t + 1)
       }, 0)

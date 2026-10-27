@@ -445,6 +445,8 @@ A completed text-only assistant reply containing only a leading `⏵` status lin
 
 The compact streaming-thinking preview keeps three display rows and follows the newest text after wrapping at the chat width. Trailing blank lines do not displace content; short text leaves unused rows blank and internal paragraph spacing is preserved. Clicking still toggles the full text.
 
+Opening a long session in inline mode paints older messages in order before windowing them. Each history batch reaches the terminal before the next advances, so earlier thinking headers and messages enter native scrollback rather than remaining blank placeholders.
+
 
 Plugin slash-command results, including errors, remain as local transcript blocks for scrolling and copying during the current session. Indentation and line breaks are preserved. Each report retains at most 200 lines, 65,536 UTF-16 code units and 4,000 terminal cells per line, plus a visible truncation marker. The local display rows are not sent as model input or replayed as conversation history. The backend may separately persist command audit events and their results. Older local report blocks are evicted within the shared 600-row budget. Explicit built-in report layouts (such as `/goal`) keep their existing formatting.
 
