@@ -36,11 +36,19 @@ export function createInputActions(
   owner: { assertActive(): void },
   input: InputConvergence,
   composer: { includeLegacyImageRefs(text: string, images: readonly ComposerImageRef[]): readonly ComposerImageRef[] },
-  dispatchUserText: (text: string, placement: 'steer' | 'followup', images?: readonly ComposerImageRef[]) => void,
+  dispatchUserText: (text: string, placement: 'steer' | 'followup', images?: readonly ComposerImageRef[], previousId?: string) => void,
   runLocalCommand: (command: string, includeInContext: boolean) => Promise<void>,
   /** Move the used session to the front of the `/resume` MRU (DSH session
    *  history); a backend whose sessions that list cannot open passes a no-op. */
   touch: (sessionId: string) => void = touchSession,
+  outgoing?: {
+    assertCapacity(count?: number, replacing?: readonly string[]): void
+    retractOutgoing(id: string): void
+    reserveCapacity(count: number, replacing: readonly string[]): () => void
+    beginTransfer(ids: readonly string[]): () => void
+    hasOutgoing(id: string): boolean
+    parkDraft(id: string, previousId: string): void
+  },
 ): Pick<ChannelState, 'submit' | 'steer' | 'removePending' | 'cancel' | 'interruptAndDeliver' | 'interruptAndDock' | 'deliverDocked' | 'swapDockedForDraft'> {
   return {
     submit(text, images = []) {
@@ -70,7 +78,7 @@ export function createInputActions(
       // The current session is being used — move it to the MRU front
       // (/resume sorts by last-used).
       touch(state.agentId)
-      dispatchUserText(trimmed, 'followup', submittedImages)
+      dispatchUserText(text, 'followup', submittedImages)
     },
 
     /** Steer a message into the RUNNING turn (Codex/pi semantics): it is
@@ -88,7 +96,7 @@ export function createInputActions(
       // rejected step leaves it parked for the next wake, and the inbox
       // events retire the preview (claimed → turn boundary, discarded →
       // cancel).
-      dispatchUserText(trimmed, 'steer', images)
+      dispatchUserText(text, 'steer', images)
     },
 
     /** Pull a pending message back out of the inbox (Alt+Up): it returns to
@@ -110,14 +118,17 @@ export function createInputActions(
         // keeps the row queued and says it cannot be retracted.
         if (input.provisionalDockIds?.includes(id) === true) return false
         state.pending = state.pending.filter(item => item.id !== id)
+        outgoing?.retractOutgoing(id)
         state.emit()
         return true
       }
       const retraction = session.capabilities.pendingRetraction
       if (retraction === undefined) return false
+      const owned = outgoing?.hasOutgoing(id) === true
       const removed = retraction.remove(id)
-      if (!removed) return false
+      if (!removed || (owned && outgoing?.hasOutgoing(id) !== true)) return false
       state.pending = state.pending.filter(item => item.id !== id)
+      outgoing?.retractOutgoing(id)
       state.emit()
       return true
     },
@@ -273,12 +284,14 @@ export function createInputActions(
         state.notify(t('input-dock-confirming', { n: docked.length - ready.length }), { color: 'warning', timeoutMs: 4000 })
       }
       if (ready.length === 0) return 0
-      state.pending = state.pending.filter(item => item.docked !== true || held(item.id))
-      state.emit()
+      outgoing?.assertCapacity(ready.length, ready.map(item => item.id))
       for (const entry of ready) {
         touch(state.agentId)
-        dispatchUserText(entry.text, 'followup', entry.images)
+        // Transfer this dock's origin/context; do not consume newer chips.
+        state.pending = state.pending.filter(item => item.id !== entry.id)
+        dispatchUserText(entry.text, 'followup', entry.images, entry.id)
       }
+      state.emit()
       return ready.length
     },
 
@@ -303,10 +316,12 @@ export function createInputActions(
       // the user a second copy the late revocation cannot reach.
       if (input.provisionalDockIds?.includes(id) === true) return false
       // A docked retract is purely local on every backend (see removePending).
+      const draftId = `dock-swap-${randomUUID()}`
+      outgoing?.parkDraft(draftId, id)
       state.pending = [
         ...state.pending.filter(item => item.id !== id),
         {
-          id: `dock-swap-${randomUUID()}`,
+          id: draftId,
           text: draft.text,
           images: [...(draft.images ?? [])],
           placement: 'followup',
@@ -323,10 +338,14 @@ export function createInputActions(
       const session = getSession()
       const queued = inputs
         .map(input => typeof input === 'string'
-          ? { text: input.trim(), images: [] as readonly ComposerImageRef[] }
-          : { text: input.text.trim(), images: [...(input.images ?? [])] })
-        .filter(input => input.text !== '')
+          ? { text: input, images: [] as readonly ComposerImageRef[], previousId: undefined }
+          : { text: input.text, images: [...(input.images ?? [])], previousId: input.pendingId })
+        .filter(input => input.text.trim() !== '')
       if (queued.length === 0) return 0
+      const readyDock = state.pending.filter(item => item.docked === true && input.provisionalDockIds?.includes(item.id) !== true)
+      const replacementIds = queued.flatMap(entry => entry.previousId === undefined ? [] : [entry.previousId])
+      const releaseCapacity = outgoing?.reserveCapacity(queued.length + readyDock.length, [...readyDock.map(item => item.id), ...replacementIds])
+      const endTransfer = outgoing?.beginTransfer(replacementIds)
       // An `interrupt` cancel drops the parked copies (their discard events
       // retire the preview), then each message is re-queued as a fresh
       // followup. dsh-agent's cancel-convergence wake latch accepts this
@@ -340,31 +359,38 @@ export function createInputActions(
       if (!input.cancelInFlight || input.cancelCause === 'user') {
         input.cancelInFlight = true
         input.cancelCause = 'interrupt'
-        void session.cancel('interrupt')
+        try {
+          void session.cancel('interrupt')
+        } catch (error) {
+          releaseCapacity?.()
+          endTransfer?.()
+          throw error
+        }
       }
       state.cancelPending = true
       const token = ++input.interruptSeq
       const deliver = (): void => {
-        // A second interrupt while the abort is still settling must not
-        // double-deliver: only the latest request's re-queue runs.
-        if (input.interruptSeq !== token) return
-        // The dock's rows ride this batch too: take them off the pending
-        // list first (their re-deliveries enqueue fresh previews), ahead
-        // of the given inputs, since docked rows are the oldest texts (FIFO).
-        // Rows still awaiting their receipt stay parked for the verdict:
-        // their backend copies may still run.
-        const heldHere = (id: string): boolean => input.provisionalDockIds?.includes(id) === true
-        const docked = state.pending.filter(item => item.docked === true && !heldHere(item.id))
-        if (docked.length > 0) {
-          state.pending = state.pending.filter(item => item.docked !== true || heldHere(item.id))
-          state.emit()
-        }
-        for (const entry of [...docked, ...queued]) {
-          touch(state.agentId)
-          // Same tui/input decision pass as a typed submit: Ctrl+Enter must
-          // not bypass a plugin's cancel/transform policy, and re-queued
-          // texts keep submission order through the one FIFO chain.
-          dispatchUserText(entry.text, 'followup', entry.images)
+        releaseCapacity?.()
+        try {
+          // Only the latest interrupt re-queues; an adoption also advances
+          // the token, so delayed work never adopts the replacement session.
+          if (input.interruptSeq !== token || getSession() !== session) return
+          const heldHere = (id: string): boolean => input.provisionalDockIds?.includes(id) === true
+          const docked = state.pending.filter(item => item.docked === true && !heldHere(item.id))
+          const deliveries = [
+            ...docked.map(entry => ({ ...entry, previousId: entry.id, local: outgoing?.hasOutgoing(entry.id) !== true })),
+            ...queued.map(entry => ({ ...entry, local: false })),
+          ]
+          for (const entry of deliveries) {
+            // A real user event can beat cancellation. Local dock-swap rows
+            // never had a backend copy; every other transfer needs its id.
+            if (!entry.local && entry.previousId !== undefined && outgoing !== undefined && !outgoing.hasOutgoing(entry.previousId)) continue
+            touch(state.agentId)
+            state.pending = state.pending.filter(item => item.id !== entry.previousId)
+            dispatchUserText(entry.text, 'followup', entry.images, entry.previousId)
+          }
+        } finally {
+          endTransfer?.()
         }
       }
       // Let cancel finish its synchronous inbox bookkeeping before waking.

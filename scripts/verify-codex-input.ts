@@ -15,6 +15,7 @@ import type { AgentEvent } from '../src/agent/events.js'
 import type { AgentInput } from '../src/agent/session.js'
 import { setLang } from '../src/i18n.js'
 import { codexText } from '../src/backends/codex/text.js'
+import { CodexRpcError } from '../src/backends/codex/rpc/client.js'
 import { FakeRpcError, NO_REPLY } from './lib/codex-fake-app-server.js'
 import { CWD, openHarness, THREAD, threadAnswer, tick } from './lib/codex-session-harness.js'
 
@@ -37,7 +38,7 @@ const of = <T extends AgentEvent['type']>(events: readonly AgentEvent[], type: T
   check('create: thread/start in the cwd with the default mode (auto = on-request + workspace-write)', thread.cwd === CWD && thread.approvalPolicy === 'on-request' && thread.sandbox === 'workspace-write' && thread.model === undefined)
   const result = await h.session.submit(input('c1', 'hello', { blocks: [{ type: 'text', text: 'hello' }, { type: 'text', text: '<attached file>' }] }), 'followup')
   const start = h.sent('turn/start')[0]!
-  check('idle followup → turn/start with the client id', result.accepted && start.clientUserMessageId === 'c1' && start.threadId === THREAD)
+  check('idle followup → turn/start with the client id', result.accepted && result.handled !== true && start.clientUserMessageId === 'c1' && start.threadId === THREAD)
   check('every text block is its own text input, typed text first', JSON.stringify(start.input) === JSON.stringify([{ type: 'text', text: 'hello', text_elements: [] }, { type: 'text', text: '<attached file>', text_elements: [] }]))
   check('D8: no user row before the server echoes the client id', of(h.events(), 'user.message').length === 0)
   await h.startTurn('turn-1', 'c1', 'hello')
@@ -131,7 +132,8 @@ const of = <T extends AgentEvent['type']>(events: readonly AgentEvent[], type: T
 // ── review ids and force-close fences ──────────────────────────────────
 {
   const h = await openHarness({ configureFake: fake => fake.on('review/start', () => ({ turn: { id: 'review', status: 'inProgress', items: [] } })) })
-  await h.session.submit(input('review-command', '/review'), 'followup')
+  const result = await h.session.submit(input('review-command', '/review'), 'followup')
+  check('a native command handled without a user echo marks its receipt explicitly', result.accepted && result.handled === true && !of(h.events(), 'user.message').some(event => event.id === 'review-command'))
   await h.session.dispose()
   check('dispose does not wait for a review lifecycle notification after delivery stopped', h.session.status === 'disposed' && h.sent('thread/unsubscribe').length === 1)
 }
@@ -206,6 +208,91 @@ for (const forced of [false, true]) {
   const disposing = h.session.dispose()
   await disposing
   check('dispose during a turn interrupts it first', h.sent('turn/interrupt')[0]?.turnId === 'turn-1')
+}
+
+// ── unknown receipts never become safe-to-retry refusals ────────────────
+{
+  const h = await openHarness({ configureFake: fake => fake.on('turn/start', () => NO_REPLY) })
+  try {
+    const submitting = h.session.submit(input('unknown-start', 'possibly delivered'), 'followup').catch((error: unknown) => error)
+    await h.fake.waitForRequest('turn/start')
+    h.clock.advance(60_000)
+    const result = await submitting
+    check('turn/start timeout rejects with an unknown receipt, not accepted:false', result instanceof CodexRpcError && !result.responseReceived)
+    check('turn/start timeout keeps attribution without claiming non-delivery', !of(h.events(), 'pending.changed').some(event => event.discarded?.includes('unknown-start')))
+    await h.startTurn('late-start', 'unknown-start', 'possibly delivered')
+    check('a late user item still claims the timed-out turn/start', of(h.events(), 'pending.changed').some(event => event.claimed?.includes('unknown-start')) && of(h.events(), 'user.message').some(event => event.id === 'unknown-start'))
+  } finally { await h.session.dispose() }
+}
+
+{
+  const h = await openHarness({ configureFake: fake => fake.on('turn/start', () => NO_REPLY) })
+  try {
+    const submitting = h.session.submit(input('lost-start', 'connection lost'), 'followup').catch((error: unknown) => error)
+    await h.fake.waitForRequest('turn/start')
+    h.fake.crash({ code: 9 })
+    const result = await submitting
+    check('connection loss during turn/start rejects without a server refusal', result instanceof CodexRpcError && !result.responseReceived)
+  } finally { await h.session.dispose() }
+}
+
+{
+  const h = await openHarness()
+  try {
+    await h.session.submit(input('initial', 'go'), 'followup')
+    await h.startTurn('turn-1', 'initial', 'go')
+    h.fake.on('turn/steer', () => NO_REPLY)
+    const submitting = h.session.submit(input('pending-steer', 'receipt still pending'), 'steer').catch((error: unknown) => error)
+    await h.fake.waitForRequest('turn/steer')
+    await h.session.cancel('user')
+    await h.completeTurn('turn-1', 'interrupted')
+    await tick()
+    check('cancel(user) before a steer receipt does not race into a duplicate followup', h.sent('turn/start').length === 1)
+    h.clock.advance(60_000)
+    const result = await submitting
+    check('a steer receipt lost after cancellation remains unknown', result instanceof CodexRpcError && !result.responseReceived)
+  } finally { await h.session.dispose() }
+}
+
+for (const lateClaim of [false, true]) {
+  const h = await openHarness()
+  try {
+    await h.session.submit(input('initial', 'go'), 'followup')
+    await h.startTurn('turn-1', 'initial', 'go')
+    h.fake.on('turn/steer', () => NO_REPLY)
+    const submitting = h.session.submit(input('unknown-steer', 'possibly injected'), 'steer').catch((error: unknown) => error)
+    await h.fake.waitForRequest('turn/steer')
+    h.clock.advance(60_000)
+    const result = await submitting
+    check('turn/steer timeout rejects instead of queuing a fallback', result instanceof CodexRpcError && !result.responseReceived && !of(h.events(), 'notice').some(event => event.text === codexText('codex-steer-fallback')))
+    if (lateClaim) {
+      await h.notify('item/started', { turnId: 'turn-1', item: { type: 'userMessage', id: 'late-steer-item', clientId: 'unknown-steer', content: [{ type: 'text', text: 'possibly injected', text_elements: [] }] } })
+      check('a late user item still claims a timed-out steer', of(h.events(), 'pending.changed').some(event => event.claimed?.includes('unknown-steer')))
+    }
+    await h.session.cancel('user')
+    await h.completeTurn('turn-1', 'interrupted')
+    await tick()
+    check('cancel(user) never automatically resends a steer with an unknown receipt', h.sent('turn/start').length === 1)
+  } finally { await h.session.dispose() }
+}
+
+{
+  const h = await openHarness()
+  try {
+    await h.session.submit(input('initial', 'go'), 'followup')
+    await h.startTurn('turn-1', 'initial', 'go')
+    await h.session.submit(input('drain-unknown', 'queued earlier'), 'followup')
+    h.fake.on('turn/start', () => NO_REPLY)
+    const after = h.fake.requests.length
+    await h.completeTurn('turn-1')
+    await h.fake.waitForRequest('turn/start', { after })
+    h.clock.advance(60_000)
+    await tick()
+    check('a queued start timeout retires its pending preview without an unhandled rejection', of(h.events(), 'pending.changed').some(event => event.discarded?.includes('drain-unknown')))
+    await h.startTurn('late-queued-start', 'drain-unknown', 'queued earlier')
+    check('the queued timeout retains attribution for a late user item', of(h.events(), 'pending.changed').some(event => event.claimed?.includes('drain-unknown')))
+    check('a queued timeout never automatically retries the input', h.sent('turn/start').filter(entry => entry.clientUserMessageId === 'drain-unknown').length === 1)
+  } finally { await h.session.dispose() }
 }
 
 // ── connection loss and restore ─────────────────────────────────────────

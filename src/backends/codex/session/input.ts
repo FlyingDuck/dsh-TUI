@@ -26,7 +26,7 @@ import { errorText, rec, str, type Rec } from '../narrow.js'
 import { CLIENT } from '../protocol/index.js'
 import { codexImageInputs } from './images.js'
 import type { UserInput } from '../protocol/index.js'
-import type { RpcClock } from '../rpc/client.js'
+import { CodexRpcError, type RpcClock } from '../rpc/client.js'
 
 /** One submitted input this session still tracks. */
 interface Entry {
@@ -83,6 +83,8 @@ export function createInputQueue(deps: InputQueueDeps) {
   const started = new Map<string, Entry>()
   /** Sent with `turn/steer`, not yet claimed. */
   const steered = new Map<string, Entry>()
+  /** An absent steer receipt (still pending or lost) must not trigger a resend. */
+  const uncertainSteers = new Set<string>()
   /** Why the running turn is being cancelled (decides the fate of steers). */
   let cancelCause: CancelCause | undefined
   let forceTimer: unknown
@@ -130,9 +132,15 @@ export function createInputQueue(deps: InputQueueDeps) {
       resolveStart(turnId ?? activeTurnId)
       return { accepted: true }
     } catch (error) {
+      resolveStart(activeTurnId)
+      if (!(error instanceof CodexRpcError && error.responseReceived)) {
+        // A timeout or lost connection may hide a successful turn/start.
+        // Keep attribution for its late user item; the caller marks unknown.
+        deps.debug(`codex: turn/start receipt unknown (${errorText(error)})`)
+        throw error
+      }
       deps.startFailed?.(error, overrides)
       started.delete(entry.id)
-      resolveStart(undefined)
       const reason = codexText('codex-turn-start-failed', { err: errorText(error) })
       deps.debug(`codex: turn/start failed (${errorText(error)})`)
       deps.emit([pendingEvent({ discarded: [entry.id] })])
@@ -150,6 +158,11 @@ export function createInputQueue(deps: InputQueueDeps) {
     void startTurn(next).then(result => {
       if (!result.accepted) deps.emit([{ type: 'notice', level: 'error', text: result.reason ?? codexText('codex-turn-start-failed', { err: '' }) }])
       else drain()
+    }).catch((error: unknown) => {
+      // This input was accepted into the client queue earlier: there is no
+      // submit promise left to reject. Retire only its pending preview (the
+      // channel reads a discard as uncertain), not its late-item attribution.
+      deps.emit([pendingEvent({ discarded: [next.id] }), { type: 'notice', level: 'error', text: errorText(error) }])
     })
   }
 
@@ -162,11 +175,18 @@ export function createInputQueue(deps: InputQueueDeps) {
       return { accepted: true }
     }
     steered.set(entry.id, entry)
+    uncertainSteers.add(entry.id)
     try {
       await deps.call(CLIENT.turnSteer, { threadId: deps.threadId, expectedTurnId: turnId, clientUserMessageId: entry.id, input: entry.input })
+      uncertainSteers.delete(entry.id)
       return { accepted: true }
     } catch (error) {
+      if (!(error instanceof CodexRpcError && error.responseReceived)) {
+        deps.debug(`codex: turn/steer receipt unknown (${errorText(error)})`)
+        throw error
+      }
       steered.delete(entry.id)
+      uncertainSteers.delete(entry.id)
       deps.debug(`codex: turn/steer refused (${errorText(error)}); queued as a follow-up`)
       if (deps.closed()) throw error
       queue.push(entry)
@@ -231,9 +251,13 @@ export function createInputQueue(deps: InputQueueDeps) {
         // after an input sent with `now` (the reason for the interrupt).
         const urgent = queue.filter(entry => entry.urgent === true)
         const rest = queue.filter(entry => entry.urgent !== true)
-        queue = [...urgent, ...leftover.map(entry => ({ ...entry, placement: 'followup' as const })), ...rest]
+        const retry = leftover.filter(entry => !uncertainSteers.has(entry.id))
+        const unknown = leftover.filter(entry => uncertainSteers.has(entry.id))
+        queue = [...urgent, ...retry.map(entry => ({ ...entry, placement: 'followup' as const })), ...rest]
+        if (unknown.length > 0) events.push(pendingEvent({ discarded: unknown.map(entry => entry.id) }))
       }
     }
+    uncertainSteers.clear()
     if (events.length > 0) deps.emit(events)
     drain()
   }
@@ -301,6 +325,7 @@ export function createInputQueue(deps: InputQueueDeps) {
     /** A user message carried this client id back: the input ran. */
     claim(clientId: string): AgentEvent | undefined {
       if (!started.delete(clientId) && !steered.delete(clientId)) return undefined
+      uncertainSteers.delete(clientId)
       return pendingEvent({ claimed: [clientId] })
     },
 
@@ -345,6 +370,7 @@ export function createInputQueue(deps: InputQueueDeps) {
       const lost = [...started.keys(), ...steered.keys()]
       started.clear()
       steered.clear()
+      uncertainSteers.clear()
       return lost.length === 0 ? [] : [pendingEvent({ discarded: lost })]
     },
     connectionRestored(): void {
@@ -370,6 +396,7 @@ export function createInputQueue(deps: InputQueueDeps) {
       queue = []
       started.clear()
       steered.clear()
+      uncertainSteers.clear()
       reviewTurnId = undefined
     },
     /** Interrupt the running turn (best-effort, dispose path). */

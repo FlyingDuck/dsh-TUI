@@ -50,7 +50,7 @@ export interface LocalImageStore extends MentionAttachments {
 const IMAGE_TYPES: readonly MentionImageMediaType[] = ['image/png', 'image/jpeg', 'image/webp', 'image/gif']
 
 /** Create the store over the limits of the bound session (read per call). */
-export function createLocalImageStore(limits: () => ImageLimitsView): LocalImageStore {
+export function createLocalImageStore(limits: () => ImageLimitsView, isRetained: (attachmentId: string) => boolean = () => false): LocalImageStore {
   const images = new Map<string, Stored>()
   const facades = new Map<string, TranscriptImage>()
   let total = 0
@@ -67,9 +67,10 @@ export function createLocalImageStore(limits: () => ImageLimitsView): LocalImage
     }
   }
 
-  const evict = (): void => {
+  const evict = (newId: string): void => {
     for (const [id, entry] of images) {
       if (images.size <= LOCAL_IMAGE_LIMIT && total <= LOCAL_IMAGE_BYTES) break
+      if (id === newId || isRetained(id)) continue
       images.delete(id)
       facades.delete(id)
       total -= entry.data.byteLength
@@ -152,7 +153,12 @@ export function createLocalImageStore(limits: () => ImageLimitsView): LocalImage
       }
       images.set(attachmentId, { data, ref })
       total += data.byteLength
-      evict()
+      evict(attachmentId)
+      if (images.size > LOCAL_IMAGE_LIMIT || total > LOCAL_IMAGE_BYTES) {
+        images.delete(attachmentId)
+        total -= data.byteLength
+        throw new Error('image capacity is held by unconfirmed inputs')
+      }
       return ref
     },
     facade(attachment: ImageRef): TranscriptImage | undefined {

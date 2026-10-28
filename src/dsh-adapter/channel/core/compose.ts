@@ -294,16 +294,23 @@ export function createCoreChannel(
    * held in memory by the core (local-images.ts), under the bound session's
    * limits; a DSH session keeps the attachments service.
    */
+  const imageIsRetained = (stageId: string): boolean =>
+    state.outgoing.some(item => item.images?.some(image => image.stageId === stageId) === true)
+    || state.pending.some(item => item.images.some(image => image.stageId === stageId))
   let localImageStore: LocalImageStore | undefined
   const localImages = (): LocalImageStore | undefined => {
     if (binding.session.capabilities.images === undefined) return undefined
-    localImageStore ??= createLocalImageStore(() => binding.session.capabilities.images?.limits ?? NO_IMAGES)
+    localImageStore ??= createLocalImageStore(
+      () => binding.session.capabilities.images?.limits ?? NO_IMAGES,
+      id => [...composer.snapshot()].some(([stageId, attachment]) => String(attachment.attachmentId) === id && imageIsRetained(stageId)),
+    )
     return localImageStore
   }
   const composer = createComposerImages(ctx, owner, {
     generation: () => state.agentBindingGeneration,
     sessionId: () => state.agentId,
     localImages,
+    isRetained: imageIsRetained,
   })
   const files = createCoreFiles(ctx, {
     owner,
@@ -317,7 +324,7 @@ export function createCoreChannel(
   const inputDelivery = createInputDelivery(ctx, owner, binding, () => state,
     (...args) => notify(...args), trackPending, untrackPending, composer,
     () => currentSelection, (messageId, info) => selectionAttachments.remember(messageId, info),
-    files.fallbackFs, localImages, () => contextRegistry.consume())
+    files.fallbackFs, localImages, () => contextRegistry.consume(), () => state)
   const { dispatchUserText, withDecisionPending, clearStagedImages } = inputDelivery
   /** Monotonic token: only the latest `interruptAndDeliver` re-queues, so a
    *  second interrupt while the abort settles cannot double-deliver. */
@@ -435,9 +442,10 @@ export function createCoreChannel(
   const state: ChannelState = {
     ...createInputActions(() => state, () => binding.session, owner, inputConvergence,
       composer,
-      (text, placement, images) => dispatchUserText(text, placement, images),
+      (text, placement, images, previousId) => dispatchUserText(text, placement, images, undefined, previousId),
       (command, includeInContext) => getReadyActions().runLocalCommand(command, includeInContext),
-      sessionId => { extension.touchSession?.(sessionId) }),
+      sessionId => { extension.touchSession?.(sessionId) }, inputDelivery),
+    recoverFailedOutgoing: id => { owner.assertActive(); return inputDelivery.recoverFailedOutgoing(id) },
     subscribe: emitter.subscribe,
     // Filled by the git refresher: on a cwd change, then once per settled turn.
     gitStatus: undefined,
@@ -787,6 +795,8 @@ export function createCoreChannel(
     },
     resetTrajectory: () => { if (trajectoryOwned()) agentTrajectory.reset() },
     retireAttachment: inputDelivery.retireAttachment,
+    confirmOutgoing: inputDelivery.confirmOutgoing,
+    resetInput: inputDelivery.resetOutgoing,
     // The footer cannot poll: a turn that edits files is the moment its git
     // facts changed, and the cwd did not move. Deferred so the const below can
     // be declared after the feed (it is only called from a live turn).

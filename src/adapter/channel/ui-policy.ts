@@ -5,7 +5,7 @@ import type { ChannelUi } from '../ports/channel-ui.js'
 export type { ChannelUi } from '../ports/channel-ui.js'
 import type { HostEffectClass } from '../ports/owner.js'
 
-type MethodKeys<T> = { [K in keyof T]: T[K] extends (...args: never[]) => unknown ? K : never }[keyof T]
+type MethodKeys<T> = { [K in keyof T]-?: NonNullable<T[K]> extends (...args: never[]) => unknown ? K : never }[keyof T]
 export type ChannelPreferences = Pick<ChannelUi,
   | 'setDiffLayout' | 'setThinkingFold' | 'setJobGroupFold' | 'setToolBackground' | 'setScrollGutter'
   | 'setPageMargin' | 'setFoldTerminalCommand' | 'setPromptSessionLabel'
@@ -54,6 +54,7 @@ export const CHANNEL_UI_EFFECTS = Object.freeze({
   'discardStagedImage': 'mutate',
   'stagedImage': 'read-only',
   'stagedImageLimits': 'read-only',
+  'recoverFailedOutgoing': 'mutate',
   'submit': 'mutate',
   'steer': 'mutate',
   'removePending': 'mutate',
@@ -234,6 +235,7 @@ export const CHANNEL_UI_PROPERTIES = [
   'todos',
   'loadedContext',
   'pending',
+  'outgoing',
   'commandList',
   'pluginScene',
   'contextSegments',

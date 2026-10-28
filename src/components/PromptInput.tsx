@@ -82,6 +82,14 @@ interface PromptHistoryEntry {
   readonly images: readonly ComposerImageRef[]
 }
 
+interface OutgoingDraftSnapshot {
+  readonly ownerAgentId: string
+  readonly bindingGeneration: number
+  readonly text: string
+  readonly cursor: number
+  readonly block: { readonly start: number; readonly end: number } | null
+}
+
 /**
  * One prompt-draft undo step: the state BEFORE a discrete edit (or edit run),
  * plus the tracking the grouping rule needs. `Ctrl+Z` pops it back, and it is
@@ -422,6 +430,8 @@ export interface PromptController {
   text(): string
   /** Current capability-backed draft images in token order, without reads. */
   previewImages?(): readonly { image: TranscriptImage; title: string }[]
+  /** Recover a confirmed failure only when doing so cannot replace a draft. */
+  recoverFailedOutgoing?(id: string): void
   clear(): void
   /**
    * Append `text` at the end of the input (external injection channel; see
@@ -600,10 +610,10 @@ export interface PromptInputProps {
  * Enter submits immediately even while the model is streaming — as a STEER
  * (Codex/pi semantics): the message is injected at the next step boundary
  * of the running turn and the agent continues without aborting; Tab instead
- * queues the message for after the turn (followup). Both appear in a
- * pending preview above the input until delivered. Alt+Up pulls the last
- * pending message back for editing; Esc (with pending messages while
- * working) interrupts the turn and delivers them right away; Ctrl+Enter
+ * queues the message for after the turn (followup). Delivery previews live
+ * at the conversation tail; legacy hosts keep the overlay. Alt+Up recovers
+ * a failure or the last pending message; Esc with pending messages docks
+ * the queue while interrupting the turn; Ctrl+Enter
  * aborts the turn and sends the current input immediately.
  */
 export function PromptInput({
@@ -829,6 +839,7 @@ export function PromptInput({
    * the non-reusable capability for the current draft. History/rewind text
    * restored without this map can never bind to a later image by accident. */
   const draftImagesRef = React.useRef(new Map<string, string>())
+  const outgoingDraftsRef = React.useRef(new Map<string, OutgoingDraftSnapshot>())
   const draftImagesGenerationRef = React.useRef(channel.stagedImageGeneration?.() ?? 0)
   /** Session generation fences one agent transcript; revision fences one
    * logical composer draft inside that session. Ordinary typing deliberately
@@ -852,9 +863,13 @@ export function PromptInput({
    * drops keep input order even when storage settles out of order. A new
    * logical draft receives a fresh chain and never waits on old-session I/O. */
   const imageStageChainRef = React.useRef<Promise<void>>(Promise.resolve())
+  /** An empty visible draft may still own a paste/editor result in flight. */
+  const draftInputWorkRef = React.useRef(new Map<symbol, DraftImageLease>())
+  const [, refreshDraftInputWork] = React.useState(0)
   const advanceDraftRevision = (): void => {
     draftRevisionRef.current += 1
     imageStageChainRef.current = Promise.resolve()
+    draftInputWorkRef.current.clear()
   }
   const detachDraftImages = (): void => {
     advanceDraftRevision()
@@ -871,6 +886,7 @@ export function PromptInput({
       || history.current.some(entry => entry.images.some(image => image.stageId === stageId))
       || historyDraft.current.images.some(image => image.stageId === stageId)
       || channel.pending.some(item => item.images?.some(image => image.stageId === stageId) === true)
+      || channel.outgoing?.some(item => item.images?.some(image => image.stageId === stageId) === true) === true
   }
   const discardUnretainedImages = (stageIds: Iterable<string>): void => {
     for (const stageId of new Set(stageIds)) {
@@ -1038,6 +1054,17 @@ export function PromptInput({
   const draftImageLeaseIsCurrent = (lease: DraftImageLease): boolean =>
     syncImageGeneration() === lease.generation
     && draftRevisionRef.current === lease.revision
+  const draftInputWorkIsPending = (): boolean =>
+    [...draftInputWorkRef.current.values()].some(draftImageLeaseIsCurrent)
+  const beginDraftInputWork = (lease: DraftImageLease): (() => void) => {
+    const token = Symbol('draft-input-work')
+    draftInputWorkRef.current.set(token, lease)
+    return () => {
+      // Replacement/unmount clears the old tokens. A late completion must not
+      // unblock work owned by a newer draft, or update an unmounted composer.
+      if (draftInputWorkRef.current.delete(token)) refreshDraftInputWork(tick => tick + 1)
+    }
+  }
   // Channel emits on every session replacement. Clear the sidecar during
   // that render while leaving the user's visible draft untouched; any raw
   // tokens become explicit stale placeholders instead of aliases.
@@ -1085,6 +1112,7 @@ export function PromptInput({
     controllerRef.current = {
       hasText: () => valueRef.current.length > 0,
       text: () => valueRef.current,
+      recoverFailedOutgoing: id => { recoverFailedOutgoing(id) },
       previewImages: () => composerImageRefsForText(valueRef.current, draftImagesRef.current).flatMap(ref => {
         const image = channel.stagedImage(ref.stageId)
         return image === undefined ? [] : [{ image, title: ref.token.slice(1, -1) }]
@@ -1693,6 +1721,78 @@ export function PromptInput({
     clearVimUndo()
   }
 
+  /** Capture BEFORE dispatch; the synchronous outgoing ID then owns this edit
+   * state even when React batches admission and draft clearing together. */
+  const captureOutgoingDraft = (text: string): (() => void) => {
+    if (channel.outgoing === undefined) return () => {}
+    const before = new Set(channel.outgoing.map(item => item.id))
+    const isDraft = text === valueRef.current
+    const snapshot: OutgoingDraftSnapshot = {
+      ownerAgentId: String(channel.agentId),
+      bindingGeneration: resolveBindingGeneration(channel),
+      text,
+      cursor: isDraft ? cursorRef.current : text.length,
+      block: isDraft ? foldBlockRef.current : null,
+    }
+    return () => {
+      // Interrupt delivery may also re-admit earlier queue entries. The fresh
+      // draft is its last entry; never assign this snapshot to those copies.
+      const admitted = channel.outgoing?.filter(item => !before.has(item.id)).at(-1)
+      if (admitted !== undefined) outgoingDraftsRef.current.set(admitted.id, snapshot)
+    }
+  }
+
+  const recoverFailedOutgoing = (id: string): void => {
+    if (suspended || channel.recoverFailedOutgoing === undefined) return
+    if (!channel.outgoing?.some(item => item.id === id && item.phase === 'failed')) return
+    // Whitespace and an unfinished paste/editor result are drafts too.
+    // Recovery must not revoke their lease just because no text is visible.
+    if (valueRef.current !== '' || draftInputWorkIsPending()) {
+      channel.notify(t('input-failed-draft-not-empty'), { color: 'warning', timeoutMs: 3000 })
+      return
+    }
+    let submission: ComposerSubmission | undefined
+    try {
+      submission = channel.recoverFailedOutgoing(id)
+    } catch (error) {
+      reportSendFailure(error)
+      return
+    }
+    if (submission === undefined) return
+    const snapshot = outgoingDraftsRef.current.get(id)
+    outgoingDraftsRef.current.delete(id)
+    const usable = snapshot !== undefined
+      && snapshot.ownerAgentId === String(channel.agentId)
+      && snapshot.bindingGeneration === resolveBindingGeneration(channel)
+    const text = usable ? snapshot.text : submission.text
+    restoreDraftImages({ text, images: submission.images ?? [] })
+    updateFoldBlock(null)
+    setInput(text, usable ? snapshot.cursor : text.length, 'silent')
+    const block = usable ? snapshot.block : null
+    if (block !== null && block.start >= 0 && block.start < block.end && block.end <= text.length) {
+      updateFoldBlock(block)
+    }
+    historyIndex.current = -1
+    setSelectedCommand(0)
+    setFileSelected(0)
+  }
+
+  React.useEffect(() => {
+    const outgoing = channel.outgoing ?? []
+    for (const [id, snapshot] of outgoingDraftsRef.current) {
+      if (snapshot.ownerAgentId !== String(channel.agentId)
+        || snapshot.bindingGeneration !== resolveBindingGeneration(channel)
+        || !outgoing.some(item => item.id === id)) {
+        outgoingDraftsRef.current.delete(id)
+      }
+    }
+    // Mount-time draft adoption runs first, so a returning screen's draft is
+    // already in valueRef. When suspended, leave the failure in the channel.
+    if (suspended || valueRef.current !== '' || draftInputWorkIsPending()) return
+    const failed = outgoing.find(item => item.phase === 'failed')
+    if (failed !== undefined) recoverFailedOutgoing(failed.id)
+  })
+
   /**
    * `Ctrl+Z`: pop back to the state before the current undo step — text,
    * caret, images and fold block together. An empty stack is a no-op (never
@@ -1748,16 +1848,18 @@ export function PromptInput({
     const images = imageRefsFor(trimmed)
     if (shellImagesUnsupported(trimmed, images)) return
     rememberHistory(trimmed, images)
+    const retainOutgoingDraft = captureOutgoingDraft(text)
     try {
       channel.submit(trimmed, images)
     } catch (error) {
       reportSendFailure(error)
       return
     }
+    retainOutgoingDraft()
     clearDeliveredDraft()
     if (notice) {
       channel.notify(notice, { timeoutMs: 2500 })
-    } else if (channel.working) {
+    } else if (channel.working && channel.outgoing === undefined) {
       // While the model is streaming, the message joins the DSH inbox and is
       // processed after the current turn — say so, or it looks "lost".
       channel.notify(t('input-sent-after-turn'), { timeoutMs: 2500 })
@@ -1774,12 +1876,14 @@ export function PromptInput({
     if (!trimmed) return
     const images = imageRefsFor(trimmed)
     rememberHistory(trimmed, images)
+    const retainOutgoingDraft = captureOutgoingDraft(text)
     try {
       channel.steer(trimmed, images)
     } catch (error) {
       reportSendFailure(error)
       return
     }
+    retainOutgoingDraft()
     clearDeliveredDraft()
     // While an abort is still converging the step boundary this steer waits
     // for may be the very thing the wedged turn never reaches: do not promise
@@ -1788,7 +1892,7 @@ export function PromptInput({
       channel.notify(t('input-steer-pending'), { color: 'warning', timeoutMs: 4000 })
       return
     }
-    channel.notify(t('input-interrupted-next'), { timeoutMs: 2500 })
+    if (channel.outgoing === undefined) channel.notify(t('input-interrupted-next'), { timeoutMs: 2500 })
   }
 
   /**
@@ -1801,25 +1905,32 @@ export function PromptInput({
     const images = imageRefsFor(trimmed)
     if (shellImagesUnsupported(trimmed, images)) return
     rememberHistory(trimmed, images)
+    const retainOutgoingDraft = captureOutgoingDraft(text)
     try {
       channel.submit(trimmed, images)
     } catch (error) {
       reportSendFailure(error)
       return
     }
+    retainOutgoingDraft()
     clearDeliveredDraft()
-    channel.notify(t('input-queued-after-turn'), { timeoutMs: 2500 })
+    if (channel.outgoing === undefined) channel.notify(t('input-queued-after-turn'), { timeoutMs: 2500 })
   }
 
   /**
-   * Alt+Up: pull the last pending message back into the input for editing
-   * (never interrupts the running turn). Refused when the running dsh-agent
-   * cannot withdraw inbox messages (released package without the inbox API).
+   * Alt+Up: recover a confirmed failure first, or pull the last pending
+   * message back for editing (never interrupts the running turn). Pending
+   * withdrawal can be refused by a backend without the inbox API.
    */
   const pullBackLast = () => {
-    // Alt+↑ keeps its direct last-item meaning even while the dock selector
-    // is open — one press, one retracted row (the selector closes with it).
+    // A retained failure takes priority without replacing a newer draft.
+    // Otherwise Alt+↑ keeps its direct last-pending meaning with the dock open.
     setDockSelected(null)
+    const failed = channel.outgoing?.find(item => item.phase === 'failed')
+    if (failed !== undefined && channel.recoverFailedOutgoing !== undefined) {
+      recoverFailedOutgoing(failed.id)
+      return
+    }
     const item = channel.pending[channel.pending.length - 1]
     if (!item) return
     if (!channel.removePending(item.id)) {
@@ -1975,10 +2086,11 @@ export function PromptInput({
     const includePending = !interruptWasPending || !interruptRequeuedRef.current
     const queued: ComposerSubmission[] = [
       ...(includePending
-        ? channel.pending.filter(item => item.docked !== true).map(item => ({ text: item.text, images: item.images ?? [] }))
+        ? channel.pending.filter(item => item.docked !== true).map(item => ({ pendingId: item.id, text: item.text, images: item.images ?? [] }))
         : []),
       { text: value, images },
     ]
+    const retainOutgoingDraft = captureOutgoingDraft(valueRef.current)
     const count = (() => {
       try {
         return channel.interruptAndDeliver(queued)
@@ -1988,6 +2100,7 @@ export function PromptInput({
       }
     })()
     if (count === 0) return
+    retainOutgoingDraft()
     // This request owns the queue's re-delivery from here on — including the
     // fresh draft, whose preview enters `pending` as a followup. A later
     // Ctrl+Enter during the same convergence must not list that preview again
@@ -2518,6 +2631,7 @@ export function PromptInput({
       const droppedPath = parsePastedImagePath(text)
       if (droppedPath !== null) {
         const lease = captureDraftImageLease()
+        const finishInputWork = beginDraftInputWork(lease)
         if (helpOpen) onToggleHelp()
         setSelectedCommand(0)
         setFileSelected(0)
@@ -2535,6 +2649,7 @@ export function PromptInput({
             // A revoked lease is handled above and must not edit a newer draft.
             insertClipboardAtCaret(text)
           })
+          .finally(finishInputWork)
         return
       }
       // One paste is ONE undo step however many characters it carries.
@@ -2562,6 +2677,7 @@ export function PromptInput({
       setSelectedCommand(0)
       setFileSelected(0)
       clipboardBusyRef.current = true
+      const finishInputWork = beginDraftInputWork(lease)
       void readClipboard()
         .then(async content => {
           // Every `kind: image` path is a private temp export owned by this
@@ -2684,6 +2800,7 @@ export function PromptInput({
           // A rejected read must never wedge Ctrl+V for the rest of the
           // session.
           clipboardBusyRef.current = false
+          finishInputWork()
         })
       return
     }
@@ -2715,6 +2832,7 @@ export function PromptInput({
       advanceDraftRevision()
       const editorLease = captureDraftImageLease()
       editorBusyRef.current = true
+      const finishInputWork = beginDraftInputWork(editorLease)
       void (async () => {
         try {
           const outcome = await editInExternalEditor(value)
@@ -2745,6 +2863,7 @@ export function PromptInput({
           })
         } finally {
           editorBusyRef.current = false
+          finishInputWork()
         }
       })()
       return
@@ -4199,10 +4318,14 @@ export function PromptInput({
   // user SEES highlighted. The budget subtracts every other row the
   // pending block paints (steer/followup previews, labels, hints, padding)
   // so the window always fits the overlay's effective height.
-  const steerPreviewCount = channel.pending.filter(
+  // Identity, not text, decides whether the transcript-tail preview already
+  // covers a pending copy. Docked rows keep their existing editor/actions.
+  const outgoingIds = new Set(channel.outgoing?.map(item => item.id))
+  const previewPending = channel.pending.filter(item => item.docked === true || !outgoingIds.has(item.id))
+  const steerPreviewCount = previewPending.filter(
     item => item.placement === 'steer' && item.docked !== true,
   ).length
-  const followupPreviewCount = channel.pending.filter(
+  const followupPreviewCount = previewPending.filter(
     item => item.placement === 'followup' && item.docked !== true,
   ).length
   const dockWindowRows = useOverlayListRows(
@@ -4220,7 +4343,7 @@ export function PromptInput({
   const floatersOpen =
     !suspended &&
     !expanded &&
-    (helpOpen || channel.pending.length > 0 || fileOverlayOpen || overlayOpen || peekOpen)
+    (helpOpen || previewPending.length > 0 || fileOverlayOpen || overlayOpen || peekOpen)
   // 顶边框右侧的会话名标签 chip：色随强调色；超宽截断，宽度
   // 随终端列数伸缩但不超过 28 显示单元。默认关闭——`/settings` 的
   // 「会话名标签」开关（dsh-tui.promptSessionLabel）开启后显示。
@@ -4417,12 +4540,12 @@ export function PromptInput({
             />
           </Box>
         )}
-        {!helpOpen && channel.pending.length > 0 && (
+        {!helpOpen && previewPending.length > 0 && (
           <Box flexDirection="column" paddingLeft={2} paddingBottom={1}>
-            {channel.pending.some(item => item.placement === 'steer' && item.docked !== true) && (
+            {steerPreviewCount > 0 && (
               <Box flexDirection="column">
                 <Text dimColor>⚡ {t('input-pending-steer-label')}</Text>
-                {channel.pending
+                {previewPending
                   .filter(item => item.placement === 'steer' && item.docked !== true)
                   .map(item => (
                     <Text key={item.id} dimColor wrap="truncate">
@@ -4431,10 +4554,10 @@ export function PromptInput({
                   ))}
               </Box>
             )}
-            {channel.pending.some(item => item.placement === 'followup' && item.docked !== true) && (
+            {followupPreviewCount > 0 && (
               <Box flexDirection="column">
                 <Text dimColor>⏳ {t('input-pending-queue-label')}</Text>
-                {channel.pending
+                {previewPending
                   .filter(item => item.placement === 'followup' && item.docked !== true)
                   .map(item => (
                     <Text key={item.id} dimColor wrap="truncate">

@@ -69,6 +69,8 @@ export function createSessionBatchRouter(deps: {
   /** Drop channel-side context attached to a discarded input (DSH pre-step
    *  attachments); absent where nothing is ever attached. */
   retireAttachment?(messageId: string): void
+  /** Retire the receipt without waking before its durable row paints. */
+  confirmOutgoing?(messageId: string): boolean
   /** The backend reset the conversation in place (`session.reset`, live):
    *  the events before it in the batch are projected first, those after it
    *  land on the cleared view. Absent = the event is projected (ignored). */
@@ -96,13 +98,11 @@ export function createSessionBatchRouter(deps: {
     if (status === 'disposed') {
       deps.state.status = 'disposed'
       reconcileRetiredProjection('disposed')
-      deps.state.emit()
       return
     }
     // The channel's status is idle/running only; a parked prompt is mid-turn.
     deps.state.status = status === 'idle' ? 'idle' : 'running'
     if (status === 'idle') reconcileRetiredProjection('idle')
-    deps.state.emit()
   }
   /**
    * The backend queue lost inputs. A claim and a discard both retire the
@@ -119,10 +119,8 @@ export function createSessionBatchRouter(deps: {
     // retires the row: a fallback backend that kept its queue ran it.
     const dockedDiscards = new Set(event.discarded ?? [])
     for (const messageId of [...event.claimed ?? [], ...event.discarded ?? []]) {
-      const before = deps.state.pending.length
       deps.state.pending = deps.state.pending.filter(item =>
         item.id !== messageId || (item.docked === true && dockedDiscards.has(messageId)))
-      if (deps.state.pending.length !== before) deps.state.emit()
     }
   }
 
@@ -138,6 +136,18 @@ export function createSessionBatchRouter(deps: {
     // write the replacement session's transcript.
     if (!current()) return
     const wasWorking = deps.state.working
+    let receiptChanged = false
+    // Confirmation wins even over a discard/refusal in this same batch. Do
+    // not emit until the shared projector has painted the durable user row.
+    for (const event of batch) {
+      if (event.type !== 'user.message') continue
+      receiptChanged = (deps.confirmOutgoing?.(event.id) ?? false) || receiptChanged
+      const pending = deps.state.pending.filter(item => item.id !== event.id)
+      if (pending.length !== deps.state.pending.length) {
+        deps.state.pending = pending
+        receiptChanged = true
+      }
+    }
     let admitted: AgentEvent[] | undefined
     let progressOnly = batch.length > 0
     for (const [index, event] of batch.entries()) {
@@ -192,7 +202,7 @@ export function createSessionBatchRouter(deps: {
       deps.projector.apply(events, meta)
     }
     if (meta.wake === 'frame') deps.state.emitStream()
-    else if (meta.wake !== 'none') deps.state.emit()
+    else if (meta.wake !== 'none' || receiptChanged || batch.some(event => event.type === 'session.status' || event.type === 'pending.changed')) deps.state.emit()
     deps.taskCompletion?.(events, meta, current)
     if (wasWorking && !deps.state.working) deps.onTurnSettled?.()
   }
@@ -214,6 +224,8 @@ export function createSessionBinder(deps: {
   /** Forget the core's trajectory fold before the seed replay paints (a
    * session swap starts an empty raw-event log, exactly like the rows). */
   resetTrajectory?(): void
+  /** Clear input receipts and release the old FIFO on every binding generation. */
+  resetInput?(): void
   /** The stores a session's prompts park in (`ChannelLaunchOptions.interaction`). */
   interaction?: ChannelLaunchOptions['interaction']
   /** The session-level facts kept unless the extension owns them. */
@@ -239,6 +251,7 @@ export function createSessionBinder(deps: {
     const hooks = deps.hooks()
     try {
       state.agentBindingGeneration = binding.bind()
+      deps.resetInput?.()
       deps.resetTrajectory?.()
       hooks.onGeneration?.()
       inputConvergence.cancelInFlight = false
@@ -297,12 +310,15 @@ export function createBindingFeed(ctx: { readonly logger: ChannelHostLogger }, d
    *  stay writable until the channel starts (`configureProjection`). */
   projection: Omit<ChannelProjectionDeps, 'inputConvergence'>
   retireAttachment(messageId: string): void
+  confirmOutgoing?(messageId: string): boolean
   controls: SessionControls
   hooks(): BindingFeedHooks
   /** A live `session.reset` (see createSessionBatchRouter). */
   onReset?(event: AgentEventOf<'session.reset'>): void
   /** Passed to the binder: resets the core trajectory fold per bind. */
   resetTrajectory?(): void
+  /** Clear input receipts and release the old FIFO on every binding generation. */
+  resetInput?(): void
 }) {
   const { owner, binding, state, inputConvergence, controls } = deps
   // The projector reads its deps per use, so an extension can install its
@@ -317,6 +333,7 @@ export function createBindingFeed(ctx: { readonly logger: ChannelHostLogger }, d
     projector,
     inputConvergence,
     retireAttachment: deps.retireAttachment,
+    confirmOutgoing: deps.confirmOutgoing,
     ownsCompactionProgress: () => deps.hooks().ownsCompactionProgress?.() ?? false,
     ...(deps.onReset === undefined ? {} : { onReset: deps.onReset }),
     warn: message => ctx.logger.warn(message),
@@ -375,6 +392,7 @@ export function createBindingFeed(ctx: { readonly logger: ChannelHostLogger }, d
     route: router.route,
     hooks: deps.hooks,
     ...(deps.resetTrajectory === undefined ? {} : { resetTrajectory: deps.resetTrajectory }),
+    ...(deps.resetInput === undefined ? {} : { resetInput: deps.resetInput }),
     interaction: deps.options.interaction,
     facts: {
       observe: controls.observe,

@@ -2,7 +2,7 @@
  *  a local command ("local names win"), so this module never has to know the
  *  host's command table. */
 import type { AgentEvent, CommandInfo } from '../../../agent/events.js'
-import type { AgentInput, SubmitPlacement } from '../../../agent/session.js'
+import type { AgentInput, SubmitPlacement, SubmitResult } from '../../../agent/session.js'
 import { manifest } from '../manifest.js'
 import { codexText } from '../text.js'
 import { arr, errorText, num, rec, str, type Rec } from '../narrow.js'
@@ -34,7 +34,7 @@ interface CommandDeps {
   /** Leave Plan for the permission preset that was active before it (the
    *  catalog's `off` token). */
   exitPlan(): Promise<void>
-  submit(input: AgentInput, placement: SubmitPlacement, wireInput?: readonly UserInput[]): Promise<{ readonly accepted: boolean; readonly reason?: string }>
+  submit(input: AgentInput, placement: SubmitPlacement, wireInput?: readonly UserInput[]): Promise<SubmitResult>
   beginReview(): () => void
   noteReviewStarted(id: string): void
 }
@@ -105,7 +105,7 @@ export function createCodexCommands(deps: CommandDeps) {
   return {
     capability: { list },
     changed,
-    async submit(input: AgentInput, placement: SubmitPlacement): Promise<{ readonly accepted: boolean; readonly reason?: string } | undefined> {
+    async submit(input: AgentInput, placement: SubmitPlacement): Promise<SubmitResult | undefined> {
       const match = /^\/([a-z0-9_-]+)(?:\s+([\s\S]*))?$/iu.exec(input.text.trim())
       if (match === null) return undefined
       const name = match[1]!.toLowerCase()
@@ -123,7 +123,7 @@ export function createCodexCommands(deps: CommandDeps) {
             throw error
           }
           claim(input)
-          return { accepted: true }
+          return { accepted: true, handled: true }
         }
         case 'plan': {
           // The TUI catalog names the two states `on`/`off` (the `/plan`
@@ -137,13 +137,13 @@ export function createCodexCommands(deps: CommandDeps) {
           if (arg === 'off') {
             await deps.exitPlan()
             claim(input)
-            return { accepted: true }
+            return { accepted: true, handled: true }
           }
           await deps.setPlan()
           const prompt = arg === 'on' ? '' : args
           if (prompt.trim() === '') {
             claim(input)
-            return { accepted: true }
+            return { accepted: true, handled: true }
           }
           return deps.submit({ ...input, text: prompt, blocks: [{ type: 'text', text: prompt }, ...(input.blocks?.slice(1) ?? [])] }, placement)
         }
@@ -159,7 +159,7 @@ export function createCodexCommands(deps: CommandDeps) {
           }
           output(diff === undefined || diff === '' ? codexText('codex-diff-empty') : diff)
           claim(input)
-          return { accepted: true }
+          return { accepted: true, handled: true }
         }
         case 'usage': {
           const response = rec(await deps.hub.call(CLIENT.accountRateLimitsRead, {})) ?? {}
@@ -182,7 +182,7 @@ export function createCodexCommands(deps: CommandDeps) {
           output(lines.length === 0 ? codexText('codex-usage-unavailable') : lines.join('\n'))
           if (view !== undefined) deps.emit([{ type: 'rate-limit', info: view }])
           claim(input)
-          return { accepted: true }
+          return { accepted: true, handled: true }
         }
         default: {
           const skill = (await loadSkills()).find(row => str(row.name)?.toLowerCase() === name)

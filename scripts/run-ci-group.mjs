@@ -882,6 +882,9 @@ const GROUPS = {
 // installModelSelection、#34 的投递异步化都没被它们拦下），挂进来
 // 防再腐烂。
     ["verify-submit", ['node', '--import', 'tsx/esm', 'scripts/verify-submit.mjs']],
+// 灰色扫光发送预览与明确失败回填：真实channel/facade/Chat，回执不等于持久化、
+// ID确认去重、迟到失败/换会话围栏、拒绝后恢复且不覆盖新草稿。
+    ['verify-outgoing-send', ['node', '--import', 'tsx/esm', 'scripts/verify-outgoing-send.tsx']],
 // 打断后排队消息停靠（Esc 打断不自动发、↑ 选一条编辑、空输入 ⏎ 全部发送各一次）：
 // channel 层分别用 DSH 会话夹具和 Claude 形会话夹具覆盖撤回、取消回执（确认/失败/
 // 未知）与回执在途时的门控。UI 键位在 verify-queue.mjs。

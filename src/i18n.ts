@@ -194,6 +194,9 @@ const dict = {
   'input-images-staged-adapted': { zh: '已附加 {{count}} 张图片 · {{adapted}} 张已适配', en: { one: 'Attached {{count}} image · {{adapted}} adapted', other: 'Attached {{count}} images · {{adapted}} adapted' } },
   'send-failed': { zh: '发送失败 · {{err}}', en: 'Send failed · {{err}}' },
   'input-not-accepted': { zh: '后端没有接受这条消息，请重试或检查会话状态', en: 'The backend did not accept this message; retry or check the session state' },
+  'input-failed-draft-not-empty': { zh: '输入框已有草稿，请先保存或清空，再取回这条消息。', en: 'The composer has a draft. Save or clear it before recovering this message.' },
+  'input-outgoing-full': { zh: '未确认或失败的消息过多，请先取回失败消息后重试。', en: 'Too many unconfirmed or failed messages. Recover failed messages before trying again.' },
+  'input-delivery-uncertain': { zh: '无法确认消息是否已被接收，暂不回填以免重复发送 · {{err}}', en: 'Delivery could not be confirmed; the draft was not restored to avoid sending twice · {{err}}' },
   // ── agent team: 用户发给子代理的消息，由父代理转发（模型可见） ──────
   'agent-message-native-envelope': { zh: '请通过 {{tool}} 将下面的消息发送给子代理 {{name}}（id: {{id}}）。不要代替子代理回复。\n\n{{text}}', en: 'Use {{tool}} to send the following message to subagent {{name}} (id: {{id}}). Do not answer on behalf of the subagent.\n\n{{text}}' },
   'agent-message-envelope': {

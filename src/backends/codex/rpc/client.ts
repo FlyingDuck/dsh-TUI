@@ -30,9 +30,11 @@ export const RPC_ERROR = {
   internal: -32603,
 } as const
 
-/** A JSON-RPC error answer (or a local timeout / closed connection). */
+/** A JSON-RPC error answer (or a local timeout / closed connection).
+ * Only an actual error reply sets responseReceived; a local error cannot
+ * prove that a request with side effects was refused by the server. */
 export class CodexRpcError extends Error {
-  constructor(message: string, readonly code: number, readonly data?: unknown) {
+  constructor(message: string, readonly code: number, readonly data?: unknown, readonly responseReceived = false) {
     super(message)
     this.name = 'CodexRpcError'
   }
@@ -236,7 +238,7 @@ export function createRpcClient(options: {
       const error = rec(message.error)
       if (error !== undefined) {
         const code = typeof error.code === 'number' ? error.code : RPC_ERROR.internal
-        entry.reject(new CodexRpcError(str(error.message) ?? `${entry.method} failed`, code, error.data))
+        entry.reject(new CodexRpcError(str(error.message) ?? `${entry.method} failed`, code, error.data, true))
         return
       }
       entry.resolve(message.result)

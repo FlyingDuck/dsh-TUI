@@ -9,6 +9,7 @@
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { PromptController } from '../src/components/PromptInput.js'
 const home = mkdtempSync(join(tmpdir(), 'codex-chat-controls-'))
 process.env.HOME = home
 process.env.USERPROFILE = home
@@ -71,7 +72,8 @@ async function run(cols: number, fullscreen: boolean): Promise<void> {
     const buffer = term.buffer.active
     return Array.from({ length: buffer.length }, (_, y) => buffer.getLine(y)?.translateToString(true) ?? '').join('\n')
   }
-  const app = await render(React.createElement(Chat, { channel: channel as never, questionStore: questions, approvalStore: permissions, fullscreen, trajectorySeen: true, onExit: () => undefined }),
+  const promptControllerRef = { current: null as PromptController | null }
+  const app = await render(React.createElement(Chat, { channel: channel as never, questionStore: questions, approvalStore: permissions, fullscreen, trajectorySeen: true, onExit: () => undefined, promptControllerRef }),
     { stdout: stdout as never, stdin: stdin as never, stderr: stdout as never, exitOnCtrlC: false, patchConsole: false })
   for (const value of instances.values()) instances.set(process.stdout, value)
   const type = async (text: string): Promise<void> => {
@@ -178,7 +180,7 @@ async function run(cols: number, fullscreen: boolean): Promise<void> {
     await type('/review')
     stdin.write('\r')
     check(tag + ': /review reaches the native command and retires its preview',
-      await settled(() => h.sent('review/start').length === 1 && channel.pending.length === 0), view())
+      await settled(() => h.sent('review/start').length === 1 && channel.pending.length === 0 && channel.outgoing?.length === 0), view())
     await h.notify('item/started', { turnId: 'review', item: { type: 'enteredReviewMode', id: 'enter-review', review: 'current changes' } })
     await h.notify('turn/started', { turn: { id: 'review-lifecycle', status: 'inProgress', items: [] } })
     check(tag + ': native review is working without an optimistic user row', channel.working && !channel.rows.some(row => row.kind === 'user' && row.text === '/review'))
@@ -187,6 +189,11 @@ async function run(cols: number, fullscreen: boolean): Promise<void> {
     check(tag + ': a busy review refusal is visible and leaves no ghost preview',
       await settled(() => channel.notifications.some(notice => notice.text === codexText('codex-command-idle')) && channel.pending.length === 0)
       && h.sent('review/start').length === 1, view())
+    check(tag + ': a refused review command returns to the composer',
+      await settled(() => promptControllerRef.current?.text() === '/review'), view())
+    promptControllerRef.current?.clear()
+    check(tag + ': the queued-followup scenario starts with an empty draft',
+      await settled(() => promptControllerRef.current?.text() === ''), view())
     await type('review followup')
     stdin.write('\t')
     check(tag + ': Tab queues the review followup', await settled(() => channel.pending.length === 1 && channel.pending[0]?.text === 'review followup'), view())

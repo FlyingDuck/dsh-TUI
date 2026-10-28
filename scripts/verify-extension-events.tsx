@@ -55,6 +55,8 @@
  * Follows repro-picker-windowing.tsx: fake session event log, fake
  * sessions/agents services, plainText ANSI wash over stdout frames.
  */
+import type { PromptController } from '../src/components/PromptInput.js'
+
 process.env.FORCE_COLOR = '3'
 // 断言针对中文 i18n 文案（toast/标题），与运行环境的 locale 无关。
 process.env.DSH_TUI_LANG = 'zh'
@@ -93,7 +95,7 @@ const [
   { Chat },
   { QuestionStore },
   { createChannel },
-  { settle, settled, sleep },
+  { settle, settled, sleep, viewportLines },
 ] = await Promise.all([
   import('node:stream'),
   import('react'),
@@ -107,6 +109,10 @@ const [
 const { mountAdmitted, testManifest, DECISION_COORDINATE } = await import('../scripts/lib/plugin-test-utils.js')
 const pluginHostRow = await import('../src/dsh-adapter/plugin-host.js')
 
+const { t } = await import('../src/i18n.js')
+const xterm = await import('@xterm/headless')
+const terminal = new (xterm.Terminal ?? xterm.default.Terminal)({ cols: 100, rows: 28, scrollback: 0, allowProposedApi: true })
+
 class FakeStdout extends Writable {
   columns = 100
   rows = 28
@@ -114,7 +120,7 @@ class FakeStdout extends Writable {
   frames: string[] = []
   _write(chunk: unknown, _encoding: BufferEncoding, callback: () => void) {
     this.frames.push(String(chunk))
-    callback()
+    terminal.write(String(chunk), callback)
   }
 }
 
@@ -338,8 +344,9 @@ const decisionCtx = { on: subscribe }
 
 const stdout = new FakeStdout()
 const stdin = new FakeStdin()
+const promptControllerRef = { current: null as PromptController | null }
 const instance = await render(
-  <Chat channel={channel as never} questionStore={new QuestionStore()} onExit={() => {}} />,
+  <Chat channel={channel as never} questionStore={new QuestionStore()} onExit={() => {}} promptControllerRef={promptControllerRef} />,
   { stdout, stdin, stderr: new FakeStderr(), exitOnCtrlC: false, patchConsole: false },
 )
 // 固定窗:pacing 等 React 树完成首帧渲染与输入监听挂接，无单一可观测条件。
@@ -593,14 +600,29 @@ await sleep(800)
     seen.switchedKind = event.kind
   })
 
+  // This fake agent never records/claims followup inputs. End the earlier send
+  // cases through real withdrawal before testing the EMPTY-input rewind picker.
+  for (const item of [...channel.pending]) channel.removePending(item.id)
+  // Earlier veto cases now intentionally retain/recover their rejected input.
+  // End those tested drafts before exercising the EMPTY-input rewind shortcut.
+  for (const item of channel.outgoing ?? []) {
+    if (item.phase === 'failed') channel.recoverFailedOutgoing?.(item.id)
+  }
+  promptControllerRef.current?.clear()
+  check('rewind setup clears earlier pending and recovered inputs', await settled(() => promptControllerRef.current?.text() === '' && channel.pending.length === 0 && channel.outgoing?.length === 0))
   // Double-Esc on the empty input opens the picker (3s arming window).
   stdin.write('\x1b')
   // 固定窗:pacing 两次 Esc 之间的按键步间：连写会被终端输入解析吞成转义
   // 序列前缀，无可观测条件。
   await sleep(120)
   stdin.write('\x1b')
-  const listShown = await settled(() => plainText(stdout.frames.slice(-30)).includes('消息 09'))
-  check('rewind picker opens on double-Esc', listShown)
+  // Shimmer can produce many incremental frames; inspect the painted viewport
+  // instead of losing the picker title outside an arbitrary frame-tail window.
+  const listShown = await settled(() => {
+    const lines = viewportLines(terminal)
+    return lines.some(line => line.includes(t('rewind-title'))) && lines.some(line => line.includes('消息 09'))
+  })
+  check('rewind picker opens on double-Esc', listShown, JSON.stringify({ viewport: viewportLines(terminal), draft: promptControllerRef.current?.text(), pending: channel.pending.length, outgoing: channel.outgoing?.length }))
 
   // Enter on the newest message → the plugin decision resolves → mode list.
   stdin.write('\r')
@@ -1007,6 +1029,8 @@ await sleep(800)
 }
 
 await instance.unmount()
+await new Promise<void>(resolve => stdout.write('', () => resolve()))
+terminal.dispose()
 
 // ── 11. Agent-swap ownership: a delayed interrupt redelivery belongs to the
 // old agent. A real /new bind must clear that agent's cancel latch and retire

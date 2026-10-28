@@ -32,6 +32,14 @@ export interface AgentInput {
  */
 export type SubmitPlacement = 'turn' | 'steer' | 'followup' | 'now'
 
+export interface SubmitResult {
+  readonly accepted: boolean
+  readonly reason?: string
+  /** Accepted and handled locally, with no user.message echo to follow.
+   * Queue acceptance alone must never set this flag. */
+  readonly handled?: true
+}
+
 /** Lifecycle state of a session handle. */
 export type AgentSessionStatus = 'starting' | 'idle' | 'running' | 'requires-action' | 'disposed'
 
@@ -71,7 +79,7 @@ export interface AgentSession {
   history(): Promise<readonly AgentEvent[]>
   /** Follow live events; returns the unsubscriber. */
   subscribe(listener: (batch: readonly AgentEvent[], meta: AgentEventMeta) => void): () => void
-  submit(input: AgentInput, placement: SubmitPlacement): Promise<{ readonly accepted: boolean; readonly reason?: string }>
+  submit(input: AgentInput, placement: SubmitPlacement): Promise<SubmitResult>
   /** Cancel the running turn. An `interrupt` also asks the backend to drop
    *  its queued inputs; the receipt says which copies are still live. A
    *  receipt whose `outcome` is not `confirmed` must never be read as an

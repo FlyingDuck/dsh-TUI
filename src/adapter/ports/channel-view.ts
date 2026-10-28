@@ -952,10 +952,23 @@ export interface ComposerImageRef {
   readonly stageId: string
 }
 
+/** Volatile input receipt, never a durable transcript row. Only a matching
+ * user.message confirms delivery; acceptance merely means it was queued. */
+export interface OutgoingMessage {
+  readonly id: string
+  readonly text: string
+  readonly images?: readonly ComposerImageRef[]
+  readonly phase: 'sending' | 'queued' | 'failed' | 'uncertain'
+  readonly error?: string
+}
+
 /** Text plus the image capabilities that belong to that exact draft. */
 export interface ComposerSubmission {
   readonly text: string
   readonly images?: readonly ComposerImageRef[]
+  /** Only for interruptAndDeliver: explicitly transfer this queued copy.
+   * Plain drafts and recovered failures never infer identity from text. */
+  readonly pendingId?: string
 }
 
 /** UI-safe projection of one settled DSH registry command. Keeping the

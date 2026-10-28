@@ -82,6 +82,7 @@ import { normalizeScrollGutter } from '../tuiDisplayPrefs.js'
 import { OverlayAbove } from '../components/OverlayAbove.js'
 import { TooltipLayer } from '../components/Tooltip.js'
 import { PromptInput, composerImageRefsForText, type PromptController } from '../components/PromptInput.js'
+import { OutgoingMessages } from '../components/OutgoingMessages.js'
 import { turnUsageParts } from '../components/TurnUsageRow.js'
 import { AgentTranscriptScene } from './AgentTranscriptScene.js'
 import { agentViewStore } from '../components/sidePanel/agentViewStore.js'
@@ -2253,7 +2254,7 @@ export function Chat({
    * are idempotent.
    *
    * Scope, deliberately narrow (review round 7): a capability a QUEUED message
-   * still references (`channel.pending`) is never revoked here. The real
+   * still references (`channel.pending` / `channel.outgoing`) is never revoked here. The real
    * double-hold path is paste an image → queue the draft with Tab while the
    * model works → recall that line from input history with ↑ (same stageId
    * rebound to the draft) → park the composer. Delivery resolves its refs from
@@ -2273,10 +2274,9 @@ export function Chat({
       promptDraftRef.current.current = null
       if (snapshot === null) return
       const queued = new Set<string>()
-      for (const item of channelRef.current.pending) {
-        // `?? []`: a foreign/embedded host may hand us a pending entry without
-        // images, and a throw inside an unmount cleanup escapes into the exit
-        // path — every other reader of this field guards it the same way.
+      for (const item of [...channelRef.current.pending, ...(channelRef.current.outgoing ?? [])]) {
+        // Delivery previews and queued messages both retain the staged-image
+        // capability until confirmation or explicit recovery.
         for (const image of item.images ?? []) queued.add(image.stageId)
       }
       for (const [, stageId] of snapshot.images) {
@@ -7202,6 +7202,14 @@ export function Chat({
           olderHistory={channel.olderHistory}
           onWatchJobOutput={watchJobOutput}
         />
+        {channel.outgoing !== undefined && (
+          <OutgoingMessages
+            messages={channel.outgoing.filter(item => !channel.pending.some(pending => pending.id === item.id && pending.docked === true))}
+            onRecover={channel.recoverFailedOutgoing === undefined
+              ? undefined
+              : id => promptControllerRef.current?.recoverFailedOutgoing?.(id)}
+          />
+        )}
         </ScrollBox>
         {(() => {
           // Gutter mode (settings `dsh-tui.scrollGutter`): the timeline

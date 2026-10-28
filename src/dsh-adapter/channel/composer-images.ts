@@ -260,6 +260,8 @@ export function createComposerImages(
      *  backend with the `images` capability); undefined = the DSH
      *  attachments service. */
     localImages?(): LocalImageStore | undefined
+    /** Pending/failed inputs own these capabilities even after draft cleanup. */
+    isRetained?(stageId: string): boolean
   },
 ): ComposerImages {
   /** Session epoch for the staged-image maps: bumped by every clear so a
@@ -359,8 +361,11 @@ export function createComposerImages(
     const view = local !== undefined ? local.facade(attachment) : transcriptImageFromAttachment(attachment, () => ctx.get('attachments'))
     if (view !== undefined) stagedImageViews.set(stageId, view)
     while (stagedImages.size > STAGED_IMAGE_LIMIT) {
-      const oldest = stagedImages.keys().next().value as string | undefined
-      if (oldest === undefined) break
+      const oldest = [...stagedImages.keys()].find(id => id !== stageId && deps.isRetained?.(id) !== true)
+      if (oldest === undefined) {
+        deleteStagedImage(stageId)
+        throw new Error('staged image capacity is held by unconfirmed inputs')
+      }
       deleteStagedImage(oldest)
     }
     return adjustment === undefined ? { stageId } : { stageId, adjustment }
@@ -394,7 +399,7 @@ export function createComposerImages(
       // Revocation stays callable after disposal: the composer's own cleanup
       // paths release capabilities they already own.
       syncSession()
-      deleteStagedImage(stageId)
+      if (deps.isRetained?.(stageId) !== true) deleteStagedImage(stageId)
     },
     stagedImage(stageId: string): TranscriptImage | undefined {
       syncSession()

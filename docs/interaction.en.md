@@ -313,8 +313,12 @@ While the model is working, three paths have different placement:
 
 **While a turn is running, a command is always a command; only two kinds of input steer: plain text that is not a command, and a direct skill gesture (`/skill-name …`).** The completion overlay groups commands by their impact on the current conversation: the harmless ones stay on top in their normal style, while gated, interrupting, replacing or steering commands sink to the bottom in the theme's grey (`subtle`, no header row) — where they stay selectable.
 
-- Undelivered messages appear above the editor.
-- `Alt/Option+Up` retrieves the latest one.
+Unconfirmed input appears at the end of the conversation as a grey preview with a gentle shimmer, without “sending” or “queued” labels. The shimmer changes only color, never wrapping or height, and pauses when the terminal loses focus. Backend admission is not persistence: only the matching message ID's recorded user-message event replaces the preview with a normal message, without inserting a duplicate transcript entry.
+
+- A definite refusal or a failure before handoff restores the original text and image attachments. A newer draft (including whitespace) is never overwritten; the failed input stays available for recovery. Click it in fullscreen or use `Alt/Option+Up` in the composer.
+- An uncertain receipt leaves a static grey preview and never automatically restores or re-sends the input. A recorded user message is not withdrawn because the later model response fails.
+- Recovery belongs to its original conversation; a late failure after switching sessions cannot put old text or attachments in the new composer.
+- `Alt/Option+Up` retrieves a failed input first; otherwise it keeps its existing behavior of retracting the latest eligible queued message.
 - Pressing `Esc` while the model works interrupts the turn and holds the queued
   messages above the input instead of re-sending them; the hint row reads
   `Press ↑ to edit queued messages, ⏎ to send now`. DSH and Claude behave the same.

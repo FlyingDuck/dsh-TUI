@@ -114,6 +114,7 @@ export function createChannelUi(channel: ChannelUi, mode: AdapterMode, lease: Ch
     })
   }
   for (const key of Object.keys(CHANNEL_UI_EFFECTS) as (keyof typeof CHANNEL_UI_EFFECTS)[]) {
+    if (key === 'recoverFailedOutgoing' && channel[key] === undefined) continue
     view[key] = (...args: unknown[]) => {
       // Shadow probes may read the already-observed catalog/tier table, but
       // must not warm service caches or emit query-error notifications.
@@ -134,7 +135,7 @@ export function createChannelUi(channel: ChannelUi, mode: AdapterMode, lease: Ch
       // Host Port subscribe capabilities, whose shadow policy is unchanged.
       const observation = key === 'subscribe' || key === 'subscribeAgentView' || key === 'subscribeSettingsSections'
       check(observation ? 'read-only' : CHANNEL_UI_EFFECTS[key])
-      const result = Reflect.apply(channel[key], channel, args)
+      const result = Reflect.apply(channel[key]!, channel, args)
       if (key === 'notify') {
         const timeout = (args[1] as { timeoutMs?: number } | undefined)?.timeoutMs ?? 4000
         let timer: ReturnType<typeof setTimeout> | undefined

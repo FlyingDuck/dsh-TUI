@@ -55,6 +55,10 @@ export function projectChannelState(channel: Channel): HostChannelStateSnapshot 
     todos: Object.freeze(channel.todos.map(todo => Object.freeze({ ...todo }))),
     ...(channel.loadedContext === undefined ? {} : { loadedContext: asRecord(channel.loadedContext) }),
     pending: Object.freeze(channel.pending.map(pending => Object.freeze({ ...pending }))),
+    ...(channel.outgoing === undefined ? {} : { outgoing: Object.freeze(channel.outgoing.map(item => Object.freeze({
+      ...item,
+      ...(item.images === undefined ? {} : { images: Object.freeze(item.images.map(image => Object.freeze({ ...image }))) }),
+    }))) }),
     ...(channel.pluginScene === undefined ? {} : { pluginScene: asRecord(channel.pluginScene) }),
     mode: asRecord(channel.mode) ?? Object.freeze({}),
     ...(channel.agentPreset === undefined ? {} : { agentPreset: channel.agentPreset }),

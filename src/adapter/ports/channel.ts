@@ -22,7 +22,7 @@
 
 import type { ChannelUi } from './channel-ui.js'
 import type { LocalizedDescriptions } from './channel-catalog.js'
-import type { ComposerSubmission, GitStatusSummary } from './channel-view.js'
+import type { ComposerSubmission, GitStatusSummary, OutgoingMessage } from './channel-view.js'
 import type { HostDisposer } from './owner.js'
 
 // ── projection ────────────────────────────────────────────────────────────
@@ -123,6 +123,7 @@ export interface HostChannelStateSnapshot {
   readonly todos: readonly Readonly<Record<string, unknown>>[]
   readonly loadedContext?: Readonly<Record<string, unknown>>
   readonly pending: readonly Readonly<Record<string, unknown>>[]
+  readonly outgoing?: readonly OutgoingMessage[]
   readonly pluginScene?: Readonly<Record<string, unknown>>
   readonly mode: Readonly<Record<string, unknown>>
   readonly agentPreset?: string

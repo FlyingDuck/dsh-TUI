@@ -1,4 +1,4 @@
-import { createUserMessage, type UserMessage } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, freezeMessage, type UserMessage } from '@deepseek-ai/dsh-llm'
 import type { AgentSession } from '../../agent/session.js'
 import { t } from '../../i18n.js'
 import { logForDebugging } from '../../utils/debug.js'
@@ -22,6 +22,8 @@ import type {
   ChannelImageBlock,
   ChannelState,
   ComposerImageRef,
+  ComposerSubmission,
+  OutgoingMessage,
   MentionAttachments,
   MentionFs,
   PendingMessage,
@@ -77,6 +79,7 @@ export function createInputDelivery(
   * simply carries no contexts.
   */
  consumeAttachedContexts?: () => readonly AttachedContext[],
+ outgoingState?: () => Pick<ChannelState, 'outgoing' | 'pending' | 'attachedContexts' | 'emit'>,
 ) {
   /**
    * `@` file mentions (issue #15): expansion reads files asynchronously, so
@@ -84,12 +87,76 @@ export function createInputDelivery(
    * through this chain to keep the send order FIFO.
    */
   let inputChain: Promise<void> = Promise.resolve()
-  /** Monotonic: inputs that entered the FIFO, and how many of them have
-   *  left it (delivered, dropped or failed). `/new` compares them. */
+  /** Monotonic inputs that entered the FIFO; `/new` compares it. */
   let dispatched = 0
-  let settled = 0
-  /** The texts still in the FIFO, oldest first (a switch names the parked one). */
-  const inFlight: string[] = []
+  /** Identity matters: a stale completion must not shift the new FIFO's head. */
+  const inFlight: { id: string; text: string }[] = []
+  const submissions = new Map<string, {
+    readonly origin: UserTextOrigin
+    readonly attach?: UserMessage
+    submitted: boolean
+  }>()
+  const transferring = new Set<string>()
+  const discardedDuringTransfer = new Set<string>()
+  const reservations = new Map<symbol, number>()
+  const assertCapacity = (count = 1, replacing: readonly string[] = []): void => {
+    const replaced = new Set(replacing.filter(id => submissions.has(id))).size
+    const reserved = [...reservations.values()].reduce((sum, slots) => sum + slots, 0)
+    if (submissions.size + reserved - replaced + count > 64) throw new Error(t('input-outgoing-full'))
+  }
+  /** An interrupt's deferred microtask must not lose capacity to a later send. */
+  const reserveCapacity = (count: number, replacing: readonly string[]): (() => void) => {
+    assertCapacity(count, replacing)
+    const token = Symbol()
+    const replaced = new Set(replacing.filter(id => submissions.has(id))).size
+    reservations.set(token, Math.max(0, count - replaced))
+    return () => { reservations.delete(token) }
+  }
+  const removeOutgoing = (id: string): boolean => {
+    const view = outgoingState?.()
+    if (view === undefined) return false
+    const remaining = view.outgoing.filter(item => item.id !== id)
+    if (remaining.length === view.outgoing.length) return false
+    view.outgoing = remaining
+    return true
+  }
+  const transition = (id: string, phase: OutgoingMessage['phase'], error?: string, emit = true): void => {
+    const entry = submissions.get(id)
+    const view = outgoingState?.()
+    if (entry === undefined || !current(entry.origin) || view === undefined) return
+    let changed = false
+    view.outgoing = view.outgoing.map(item => {
+      if (item.id !== id || (item.phase === 'failed' && phase !== 'failed') || (item.phase === 'uncertain' && phase === 'queued')) return item
+      changed = true
+      return { ...item, phase, ...(error === undefined ? {} : { error }) }
+    })
+    if (changed && emit) view.emit()
+  }
+  const restoreContexts = (origin: UserTextOrigin): void => {
+    const view = outgoingState?.()
+    if (view === undefined || !current(origin) || origin.attachedContexts.length === 0) return
+    // Keep newer chips intact, including a new revision of the same source.
+    const key = (context: AttachedContext): string => `${context.sourceId}\u0000${context.title}`
+    const live = new Set(view.attachedContexts.map(key))
+    view.attachedContexts = [...origin.attachedContexts.filter(context => !live.has(key(context))), ...view.attachedContexts]
+  }
+  const forgetOutgoing = (id: string, restore = false): boolean => {
+    const entry = submissions.get(id)
+    if (restore && entry !== undefined) restoreContexts(entry.origin)
+    submissions.delete(id)
+    transferring.delete(id)
+    discardedDuringTransfer.delete(id)
+    return removeOutgoing(id)
+  }
+  const recoverFailedOutgoing = (id: string): ComposerSubmission | undefined => {
+    const view = outgoingState?.()
+    const entry = submissions.get(id)
+    const receipt = view?.outgoing.find(item => item.id === id && item.phase === 'failed')
+    if (receipt === undefined || entry === undefined || !current(entry.origin)) return undefined
+    forgetOutgoing(id, true)
+    view!.emit()
+    return { text: receipt.text, images: receipt.images }
+  }
 
   /**
    * Attached-context registry (issue #842): `deliverUserText(..., attach)`
@@ -119,6 +186,13 @@ export function createInputDelivery(
   /** Drop an attachment whose user message will never be claimed (inbox discard). */
   const retireAttachment = (messageId: string): void => {
     attachedByMessageId.delete(messageId)
+    const view = outgoingState?.()
+    if (transferring.has(messageId)) { discardedDuringTransfer.add(messageId); return }
+    if (!view?.pending.some(item => item.id === messageId && item.docked === true)) {
+      // Queue bookkeeping is not a durable receipt. A discard can accompany
+      // an ambiguous submit failure; only an explicit refusal may restore it.
+      transition(messageId, 'uncertain', undefined, false)
+    }
   }
 
   /**
@@ -185,6 +259,7 @@ export function createInputDelivery(
     placement: PendingMessage['placement'],
     images: readonly ComposerImageRef[],
     origin: UserTextOrigin,
+    seed: UserMessage,
     attach?: UserMessage,
   ): Promise<void> => {
     const orderedImages = orderedComposerImages(text, images, origin.stagedImages)
@@ -219,10 +294,8 @@ export function createInputDelivery(
     // mention/selection attachments. Unlike the selection there is nothing to
     // resolve and nothing that can fail — the body is already in hand.
     appendAttachedContextBlocks(expansion.blocks, origin.attachedContexts)
-    const message = createUserMessage({
-      content: expansion.blocks,
-      source: { kind: 'user' },
-    })
+    if (!current(origin)) return
+    const message = freezeMessage({ ...seed, content: expansion.blocks })
     if (selectionAttached !== undefined) rememberSelection(message.id, selectionAttached)
     // The message is real from here on: remember its attached context BEFORE
     // the submit so the pre-step listener can find it. A throwing submit
@@ -243,21 +316,38 @@ export function createInputDelivery(
         const view = local.facade(block.attachment)
         return view === undefined ? [] : [view]
       })
-      const result = await origin.session.submit({ text, blocks: message.content, clientMessageId: message.id, native: message, ...(images === undefined || images.length === 0 ? {} : { images }) }, placement)
+      const receipt = origin.session.submit({ text, blocks: message.content, clientMessageId: message.id, native: message, ...(images === undefined || images.length === 0 ? {} : { images }) }, placement)
+      // Only a synchronous throw proves the backend never accepted the call.
+      const entry = submissions.get(message.id)
+      if (entry !== undefined) entry.submitted = true
+      const result = await receipt
+      if (!current(origin) || !submissions.has(message.id)) return
       // A backend refusal need not emit pending.changed. Retire its preview
       // and attached context here, and show the refusal instead of queuing it.
       if (!result.accepted) {
         if (attach !== undefined) attachedByMessageId.delete(message.id)
         untrackPending(message.id)
+        transition(message.id, 'failed', result.reason || t('input-not-accepted'))
         // A refusal with no reason is still a refusal: say so, or the send
         // looks successful while nothing was queued.
         if (result.reason !== undefined && result.reason !== '') notify(result.reason, { color: 'warning', timeoutMs: 4000 })
         else notify(t('input-not-accepted'), { color: 'warning', timeoutMs: 4000 })
         return
       }
+      if (result.handled === true) {
+        const changed = forgetOutgoing(message.id)
+        attachedByMessageId.delete(message.id)
+        untrackPending(message.id)
+        if (changed) outgoingState?.().emit()
+        return
+      }
+      transition(message.id, 'queued')
     } catch (error) {
-      if (attach !== undefined) attachedByMessageId.delete(message.id)
-      untrackPending(message.id)
+      if (current(origin) && submissions.has(message.id)) {
+        const entry = submissions.get(message.id)!
+        if (!entry.submitted && attach !== undefined) attachedByMessageId.delete(message.id)
+        untrackPending(message.id)
+      }
       throw error
     }
     if (current(origin)) {
@@ -357,6 +447,7 @@ export function createInputDelivery(
     placement: PendingMessage['placement'],
     images: readonly ComposerImageRef[],
     origin: UserTextOrigin,
+    seed: UserMessage,
     attach?: UserMessage,
   ): Promise<void> => {
     // Stale detection compares the SESSION REFERENCE, not the id: session ids
@@ -387,23 +478,27 @@ export function createInputDelivery(
       // typed line vanish silently (the host-localized fallback mirrors the
       // other decision events' ext-action-cancelled handling).
       if ('cancel' in decision) {
+        transition(seed.id, 'failed', decision.reason ?? t('ext-action-cancelled'))
         notify(decision.reason ?? t('ext-action-cancelled'), { color: 'warning', timeoutMs: 4000 })
         return
       }
       if ('handled' in decision) {
+        if (forgetOutgoing(seed.id)) outgoingState?.().emit()
         notify(decision.notice ?? t('ext-action-handled'), { timeoutMs: 4000 })
         return
       }
       text = decision.text.trim()
     }
     try {
-      await deliverUserText(text, placement, images, origin, attach)
+      await deliverUserText(text, placement, images, origin, seed, attach)
     } catch (error: unknown) {
       // The FIFO must survive a failed expansion/send: surface it, then let
       // the next input proceed through the settled inputChain.
+      if (!current(origin) || !submissions.has(seed.id)) return
       const message = error instanceof Error ? error.message : String(error)
+      transition(seed.id, submissions.get(seed.id)!.submitted ? 'uncertain' : 'failed', message)
       logForDebugging(`submit: delivery failed (${message})`)
-      notify(t('send-failed', { err: message }), { color: 'error' })
+      notify(t(submissions.get(seed.id)?.submitted === true ? 'input-delivery-uncertain' : 'send-failed', { err: message }), { color: 'error' })
     }
   }
   const dispatchUserText = (
@@ -411,18 +506,34 @@ export function createInputDelivery(
     placement: PendingMessage['placement'],
     images: readonly ComposerImageRef[] = [],
     attach?: UserMessage,
+    previousId?: string,
   ): void => {
-    const origin = captureOrigin()
+    assertCapacity(1, previousId === undefined ? [] : [previousId])
+    const previous = previousId === undefined ? undefined : submissions.get(previousId)
     const capturedImages = composer.captureDraftImages(text, images)
+    const origin = previous?.origin ?? captureOrigin()
+    const message = createUserMessage({ content: [{ type: 'text', text: text.trim() }], source: { kind: 'user' } })
+    if (previousId !== undefined) forgetOutgoing(previousId)
+    const companion = attach ?? previous?.attach
+    submissions.set(message.id, { origin, attach: companion, submitted: false })
+    const view = outgoingState?.()
+    if (view !== undefined) {
+      view.outgoing = [...view.outgoing, { id: message.id, text, images: capturedImages, phase: 'sending' }]
+      view.emit()
+    }
     dispatched += 1
-    inFlight.push(text)
-    inputChain = inputChain.then(() => runUserTextDecision(text, placement, capturedImages, origin, attach)).catch((error: unknown) => {
-      // The chain must survive a failed decision: log, then continue with
-      // the next queued submission.
+    inFlight.push({ id: message.id, text })
+    inputChain = inputChain.then(() => runUserTextDecision(text.trim(), placement, capturedImages, origin, message, companion)).catch((error: unknown) => {
+      // Preparation/decision failure is definite: submit has not run yet.
+      if (current(origin) && submissions.has(message.id)) {
+        const reason = error instanceof Error ? error.message : String(error)
+        transition(message.id, submissions.get(message.id)!.submitted ? 'uncertain' : 'failed', reason)
+        notify(t(submissions.get(message.id)?.submitted === true ? 'input-delivery-uncertain' : 'send-failed', { err: reason }), { color: 'error' })
+      }
       ctx.logger.warn('dsh-tui: tui/input dispatch failed: %o', error)
     }).finally(() => {
-      settled += 1
-      inFlight.shift()
+      const index = inFlight.findIndex(entry => entry.id === message.id)
+      if (index !== -1) inFlight.splice(index, 1)
     })
   }
   /** Public companion for callers that own a line but not a draft (skill
@@ -438,20 +549,58 @@ export function createInputDelivery(
   /** Main's `clearStagedImages`: revoke capabilities AND release the FIFO so
    *  a task parked on the replaced session cannot wedge the new one, and drop
    *  every pending-decision indicator owned by the session being replaced. */
-  const clearStagedImages = (): void => {
-    composer.clearStagedImages()
+  const resetOutgoing = (): void => {
+    submissions.clear()
+    transferring.clear()
+    discardedDuringTransfer.clear()
+    reservations.clear()
+    attachedByMessageId.clear()
     inputChain = Promise.resolve()
+    inFlight.length = 0
+    const view = outgoingState?.()
+    if (view !== undefined) view.outgoing = []
     for (const cleanup of [...pendingDecisionCleanups]) cleanup()
+  }
+  owner.own(resetOutgoing)
+  const clearStagedImages = (): void => {
+    resetOutgoing()
+    composer.clearStagedImages()
   }
 
   return {
     dispatchUserText,
+    assertCapacity,
+    reserveCapacity,
+    beginTransfer: (ids: readonly string[]): (() => void) => {
+      for (const id of ids) transferring.add(id)
+      return () => {
+        for (const id of ids) {
+          transferring.delete(id)
+          if (discardedDuringTransfer.delete(id)) transition(id, 'uncertain')
+        }
+      }
+    },
+    hasOutgoing: (id: string): boolean => submissions.has(id),
+    /** A swap parks the current draft's contexts, then restores the old row's. */
+    parkDraft: (id: string, previousId: string): void => {
+      assertCapacity(1, [previousId])
+      const origin = captureOrigin()
+      forgetOutgoing(previousId, true)
+      attachedByMessageId.delete(previousId)
+      submissions.set(id, { origin, submitted: false })
+    },
+    recoverFailedOutgoing,
+    resetOutgoing,
+    /** Event routing owns the single wake after confirmation + projection. */
+    confirmOutgoing: (id: string): boolean => forgetOutgoing(id),
+    /** A successful explicit retraction transfers contexts back to the draft. */
+    retractOutgoing: (id: string): void => { forgetOutgoing(id, true); attachedByMessageId.delete(id) },
     /** Inputs dispatched so far, and whether any is still in the FIFO (a
      *  parked decision, an `@` read, an IDE-selection read). */
     activity: (): { readonly dispatched: number; readonly unsettled: boolean; readonly parked?: string } => ({
       dispatched,
-      unsettled: settled < dispatched,
-      ...(inFlight[0] === undefined ? {} : { parked: inFlight[0] }),
+      unsettled: inFlight.length > 0,
+      ...(inFlight[0] === undefined ? {} : { parked: inFlight[0].text }),
     }),
     deliverUserText: deliverUserTextNow,
     claimAttachments,
