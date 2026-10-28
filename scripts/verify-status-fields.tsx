@@ -15,6 +15,13 @@
  * (`setFieldErrorHandler` → `channel.notify`); this battery drives the same
  * handler shape Chat installs.
  *
+ * Part C — single-line adaptive degradation, still through real StatusLine:
+ * 30/40/60/80/120/200 columns in inline/fullscreen and compact/split layouts,
+ * whole-field removal and accurate +N, model/mode/ctx priority, cell-aware
+ * Unicode and long route/path/title inputs, full hidden-field hover tooltips,
+ * resize recovery, and stale hover cleanup after content-only hiding.
+ * No layout-planner internals are imported.
+ *
  * Run: node --import tsx/esm scripts/verify-status-fields.tsx
  */
 import { mkdtempSync, readFileSync } from 'node:fs'
@@ -55,7 +62,11 @@ const [
 
 const { TuiStatusRuntime, getHostStatusStore } = statusModule
 const { TuiEffectLedgerRuntime } = ledgerModule
-const { StatusLine } = await import('../src/screens/StatusLine.js')
+const [{ StatusLine }, { TooltipLayer }, { DEFAULT_STATUS_BAR }] = await Promise.all([
+  import('../src/screens/StatusLine.js'),
+  import('../src/components/Tooltip.js'),
+  import('../src/tuiDisplayPrefs.js'),
+])
 const { sleep, settled, screenHas, findText, viewportLines } = termTest
 
 let failures = 0
@@ -463,7 +474,13 @@ function makeRig(cols: number, rows: number) {
       term.write(String(chunk), callback)
     }
   }
-  return { term, stdout: new FakeOutput(), stderr: new FakeOutput(), stdin: new FakeStdin() }
+  const stdout = new FakeOutput()
+  return {
+    term, stdout, stderr: new FakeOutput(), stdin: new FakeStdin(),
+    // Writable callbacks follow xterm's parse callback, so this drains every
+    // queued terminal write without guessing a renderer/CI timing window.
+    flush: () => new Promise<void>(resolve => { stdout.write('', () => resolve()) }),
+  }
 }
 
 function KeySink(): null {
@@ -471,17 +488,20 @@ function KeySink(): null {
   return null
 }
 
-function statusNode(props: Record<string, unknown>, channel: Record<string, unknown>) {
-  return React.createElement(
-    ui.AlternateScreen,
-    null,
-    React.createElement(
-      ui.Box,
-      { flexDirection: 'column' },
-      React.createElement(KeySink),
-      React.createElement(StatusLine, { channel: channel as never, ...props }),
-    ),
+function statusNode(
+  props: Record<string, unknown>,
+  channel: Record<string, unknown>,
+  fullscreen = true,
+  tooltips = false,
+) {
+  const body = React.createElement(
+    ui.Box,
+    { flexDirection: 'column' },
+    React.createElement(KeySink),
+    React.createElement(StatusLine, { channel: channel as never, ...props }),
+    tooltips ? React.createElement(TooltipLayer) : null,
   )
+  return fullscreen ? React.createElement(ui.AlternateScreen, null, body) : body
 }
 
 /** Hover: SGR mode-1003 motion with no buttons (coords 1-indexed). */
@@ -512,6 +532,52 @@ async function clickText(stdin: FakeStdin, term: InstanceType<typeof XTerm>, nee
   await sleep(30) // 固定窗:pacing 鼠标 press→release 步间
   stdin.write(`\x1b[<0;${at.col + 1};${at.row + 1}m`)
   return true
+}
+
+async function mountStatus(
+  cols: number,
+  props: Record<string, unknown>,
+  channel: Record<string, unknown>,
+  fullscreen = true,
+  tooltips = false,
+) {
+  const rig = makeRig(cols, tooltips ? 40 : 12)
+  let frames = 0
+  const instance = await ui.render(statusNode(props, channel, fullscreen, tooltips), {
+    stdout: rig.stdout as unknown as NodeJS.WriteStream,
+    stdin: rig.stdin as unknown as NodeJS.ReadStream,
+    exitOnCtrlC: false,
+    patchConsole: false,
+    onFrame: () => { frames += 1 },
+  })
+  const flushFrame = async (after: number): Promise<void> => {
+    if (!await settled(() => frames > after)) throw new Error('StatusLine did not paint a frame')
+    await rig.flush()
+  }
+  await flushFrame(0)
+  return {
+    ...rig,
+    instance,
+    lines: () => viewportLines(rig.term),
+    async rerender(props: Record<string, unknown>, channel: Record<string, unknown>): Promise<void> {
+      const before = frames
+      instance.rerender(statusNode(props, channel, fullscreen, tooltips))
+      await flushFrame(before)
+    },
+    async resize(width: number): Promise<void> {
+      const before = frames
+      rig.term.resize(width, rig.term.rows)
+      rig.stdout.columns = width
+      rig.stdout.emit('resize')
+      await flushFrame(before)
+    },
+    async close(): Promise<void> {
+      instance.unmount()
+      await rig.flush()
+      instance.cleanup()
+      rig.term.dispose()
+    },
+  }
 }
 
 async function capture(cols: number, props: Record<string, unknown>, channel = BASE_CHANNEL): Promise<string[]> {
@@ -839,10 +905,11 @@ try {
     ]
     for (const cols of [60, 80, 120, 160]) {
       const lines = await capture(cols, { pluginFields: fields }, barChannel(cols))
-      const row = statusRow(lines, 'ctx')
+      const row = statusRow(lines)
       check(`R7 ${cols} cols: footer stays within 3 rows`, lines.slice(3).every(line => line.trim() === ''),
         JSON.stringify(lines))
-      check(`R7 ${cols} cols: status row keeps its content and ctx`, row.includes('ctx') && row.trim() !== '',
+      check(`R7 ${cols} cols: status row keeps model and context usage`,
+        row.includes('MODELX') && row.includes('20%') && (cols < 120 || row.includes('ctx')),
         JSON.stringify(row))
     }
   }
@@ -975,6 +1042,263 @@ try {
       await sleep(120) // 固定窗:pacing 等首帧/卸载落定，无单一可轮询锚点
       rig.term.dispose()
       await fiber.dispose()
+    }
+  }
+
+  // ── Part C: adaptive single-line degradation ──────────────────────────────
+
+  const adaptiveFields = [
+    field({ key: 'left', text: 'LEFTX', slot: 'left-tail' }),
+    field({ key: 'head', text: 'HEADX', slot: 'right-head' }),
+    field({ key: 'tail', text: 'TAILX', slot: 'right-tail' }),
+  ]
+  const adaptiveProps = {
+    pluginFields: adaptiveFields,
+    backendMode: { id: 'acceptEdits', name: '自动', onOpen: () => {} },
+  }
+  const adaptiveChannel = (compact: boolean, overrides: Record<string, unknown> = {}) => channelWith({
+    compact, thinking: true, tokens: true, cost: true, contextUsage: true,
+    gitBranch: true, sessionTitle: true, sessionId: true,
+  }, {
+    reasoningEffort: 'high',
+    costReport: { currency: 'USD', amount: 0.125 },
+    contextOccupancy: { usedTokens: 12_800, contextWindow: 64_000 },
+    // Short cwd: a shortened long directory (covered separately) must not be
+    // confused with a removed field when independently counting +N.
+    cwd: '/w/CWD', displayCwd: 'CWD', sessionTitle: 'TITLEX',
+    ...overrides,
+  })
+  const optionalTokens = ['high', '1.2k→34', '$0.1250', 'LEFTX', 'HEADX', 'main', 'CWD', 'TITLEX', '#abcdef01', 'TAILX']
+  const overflowCount = (row: string): number => Number(/\+([1-9]\d*)\b/u.exec(row)?.[1] ?? 0)
+  const ordered = (row: string, tokens: readonly string[]): boolean =>
+    tokens.every(token => row.includes(token))
+    && tokens.every((token, index) => index === 0 || row.indexOf(tokens[index - 1]!) < row.indexOf(token))
+  const singleStatus = (name: string, lines: readonly string[], cols: number): string => {
+    const occupied = lines.filter(line => line.trim() !== '')
+    const row = occupied[0] ?? ''
+    check(`${name}: exactly one text row within the display-cell budget`,
+      occupied.length === 1 && stringWidth(row) <= cols, JSON.stringify(occupied))
+    check(`${name}: no empty separators or ellipsis-only fields`,
+      row.trim() !== '' && !/^\s*·|·\s*$|·\s*·|(?:^|·)\s*…\s*(?:·|$)/u.test(row), JSON.stringify(row))
+    return row
+  }
+  const adaptiveCapture = async (
+    cols: number, props: Record<string, unknown>, channel: Record<string, unknown>, fullscreen: boolean,
+  ): Promise<string[]> => {
+    const rig = await mountStatus(cols, props, channel, fullscreen)
+    try {
+      return rig.lines()
+    } finally {
+      await rig.close()
+    }
+  }
+
+  // C1 — an optional item is either fully readable or counted once by +N.
+  // Per-field flex shrink leaves fragments/ellipses with no count, which a
+  // width-only assertion would incorrectly accept as a valid narrow footer.
+  for (const fullscreen of [false, true]) {
+    for (const compact of [true, false]) {
+      for (const cols of [30, 40, 60, 80, 120, 200]) {
+        const name = `C1 ${fullscreen ? 'fullscreen' : 'inline'}/${compact ? 'compact' : 'split'} ${cols} cols`
+        const lines = await adaptiveCapture(cols, adaptiveProps, adaptiveChannel(compact), fullscreen)
+        const row = singleStatus(name, lines, cols)
+        check(`${name}: model, exact permission name and ctx outrank optional fields`,
+          row.includes('MODELX') && row.includes('自动') && row.includes('20%'), JSON.stringify(row))
+        const missing = optionalTokens.filter(token => !row.includes(token)).length
+        check(`${name}: +N counts whole hidden fields, not shortened ctx`,
+          overflowCount(row) === missing, `missing=${missing}, row=${JSON.stringify(row)}`)
+        if (cols <= 80) {
+          check(`${name}: pressure produces +N and percent-only ctx`,
+            overflowCount(row) > 0 && row.includes('20%') && !row.includes('/64k'), JSON.stringify(row))
+        }
+        if (cols === 200) {
+          const left = ['MODELX', 'high', '自动', '1.2k→34', '$0.1250', 'LEFTX']
+          const right = ['HEADX', 'main', 'CWD', 'TITLEX', '#abcdef01', 'TAILX']
+          const context = compact ? 'ctx 20% (13k/64k)' : 'ctx 13k/64k (20%)'
+          check(`${name}: wide layout preserves every field and existing group order`,
+            overflowCount(row) === 0 && ordered(row, compact ? [...left, ...right, context] : [...left, context, ...right]),
+            JSON.stringify(row))
+          if (!compact) {
+            check(`${name}: split right-tail still reaches the right edge`,
+              row.endsWith('TAILX') && stringWidth(row) === cols - 1, JSON.stringify(row))
+          }
+        }
+      }
+    }
+  }
+
+  // C2 — a route longer than the screen must yield useful model text, not
+  // consume every other field. CJK, a ZWJ emoji and a combining grapheme
+  // distinguish display-cell fitting from JS string-length arithmetic.
+  for (const model of [
+    'MODELSTART-' + 'route-segment-'.repeat(18) + '-MODELEND',
+    '模型👩‍💻e\u0301-' + '推理🙂模型-'.repeat(18) + '-终点',
+  ]) {
+    for (const compact of [true, false]) {
+      for (const cols of [30, 40, 60, 80, 120, 200]) {
+        const name = `C2 ${model.startsWith('MODEL') ? 'ASCII' : 'Unicode'}/${compact ? 'compact' : 'split'} ${cols} cols`
+        const channel = adaptiveChannel(compact, {
+          model,
+          cwd: '/w/项目🙂', displayCwd: '/w/项目🙂',
+          workingDirectory: '/w/项目🙂/' + '目录👩‍💻/'.repeat(8) + 'leaf',
+          sessionTitle: '会话e\u0301🙂-' + '完整标题'.repeat(16) + '-TITLE-END',
+        })
+        const row = singleStatus(name, await adaptiveCapture(cols, adaptiveProps, channel, true), cols)
+        check(`${name}: huge model leaves readable model, exact mode and percentage`,
+          row.includes(model.startsWith('MODEL') ? 'MOD' : '模型')
+          && row.includes('自动') && row.includes('20%') && !row.includes(model), JSON.stringify(row))
+        check(`${name}: Unicode graphemes stay intact without replacement cells`,
+          !/\uFFFD|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(row)
+          && !/[\u200D\u0301👩💻]/u.test(row.replaceAll('👩‍💻', '').replaceAll('e\u0301', '')),
+          JSON.stringify(row))
+      }
+    }
+  }
+
+  // C3 — an enabled DSH mode has the same safety priority as a backend mode.
+  // Permission names are never abbreviated or renamed: when a custom name
+  // cannot fit, hide the whole field and account for it.
+  {
+    const channel = adaptiveChannel(true, {
+      mode: { id: 'review', label: '审阅', plan: true, sandbox: 'read-only', approval: 'ask' },
+      modeIndex: 1,
+    })
+    channel.statusBar.mode = true
+    const row = singleStatus('C3 DSH enabled mode', await adaptiveCapture(40, {
+      pluginFields: adaptiveFields,
+    }, channel, false), 40)
+    check('C3 DSH mode keeps its configured name beside model and ctx',
+      row.includes('MODELX') && row.includes('审阅') && row.includes('20%') && overflowCount(row) > 0,
+      JSON.stringify(row))
+    const modeName = 'Custom-Permission-自动编辑-' + 'do-not-rewrite-'.repeat(8)
+    const narrow = singleStatus('C3 oversized permission', await adaptiveCapture(40, {
+      ...adaptiveProps, backendMode: { id: 'acceptEdits', name: modeName, onOpen: () => {} },
+    }, adaptiveChannel(true), true), 40)
+    check('C3 oversized permission is hidden whole, never mislabeled',
+      !narrow.includes('Custom') && !narrow.includes('Permission') && !narrow.includes('自动')
+      && narrow.includes('MODELX') && narrow.includes('20%') && overflowCount(narrow) > 0,
+      JSON.stringify(narrow))
+  }
+
+  // C4 — defaults at a roomy width retain the actual default-on metrics and
+  // the user's plugin order, rather than permanently reducing the footer.
+  for (const fullscreen of [false, true]) {
+    const fields = [
+      field({ key: 'a', text: 'AAAX', slot: 'left-tail' }),
+      field({ key: 'b', text: 'BBBX', slot: 'left-tail' }),
+      field({ key: 'c', text: 'CCCX', slot: 'right-head' }),
+      field({ key: 'd', text: 'DDDX', slot: 'right-tail' }),
+    ]
+    const channel = channelWith({ ...DEFAULT_STATUS_BAR, pluginFieldsOrder: 'b,a;c;d' }, {
+      reasoningEffort: 'high',
+      lastUsage: { input: 250, output: 34, cacheRead: 750, cacheWrite: 0 },
+      contextOccupancy: { usedTokens: 12_800, contextWindow: 64_000 },
+      costReport: { currency: 'USD', amount: 0.125 },
+    })
+    const row = singleStatus(`C4 default ${fullscreen ? 'fullscreen' : 'inline'}`,
+      await adaptiveCapture(200, { pluginFields: fields }, channel, fullscreen), 200)
+    check('C4 wide defaults preserve metrics and user plugin order without +N',
+      ordered(row, ['MODELX', 'high', '缓存 75.0%', '$0.1250', 'BBBX', 'AAAX', 'CCCX', 'uniqdir', 'DDDX', 'ctx 20% (13k/64k)'])
+      && !row.includes('1.2k→34') && overflowCount(row) === 0, JSON.stringify(row))
+  }
+
+  // C5 — inspect the real floating card, not a tooltip store/helper. Its
+  // wrapped rows must reconstruct the full hidden title and plugin text.
+  {
+    const title = '完整标题🙂-TITLE-BEGIN-' + 'long-session-'.repeat(5) + '-TITLE-END'
+    const pluginText = 'HIDDEN-PLUGIN-FULL-TEXT'
+    const rig = await mountStatus(40, {
+      ...adaptiveProps,
+      pluginFields: [field({ key: 'hidden', text: pluginText, maxCells: 32 })],
+    }, adaptiveChannel(true, { sessionTitle: title }), true, true)
+    try {
+      const row = singleStatus('C5 hidden tooltip idle', rig.lines(), 40)
+      const marker = /\+[1-9]\d*\b/u.exec(row)?.[0]
+      check('C5 hidden title and plugin have a visible overflow target',
+        marker !== undefined && !row.includes(title) && !row.includes(pluginText), JSON.stringify(row))
+      if (marker !== undefined) {
+        const lines = rig.lines()
+        const lineIndex = lines.findIndex(line => line.includes(marker))
+        const line = lines[lineIndex] ?? ''
+        // findText uses JS indices; SGR coordinates need DISPLAY cells when
+        // a wide permission label precedes the overflow target.
+        const col = stringWidth(line.slice(0, line.indexOf(marker)))
+        hover(rig.stdin, col + 1, lineIndex + 1)
+        const cardText = (): string => rig.lines()
+          .filter(line => line.includes('│'))
+          .map(line => line.slice(line.indexOf('│') + 1, line.lastIndexOf('│')).trimEnd())
+          .join('')
+        check('C5 +N hover paints the full hidden title and plugin text',
+          await settled(() => cardText().includes(title) && cardText().includes(pluginText)), JSON.stringify(rig.lines()))
+        hover(rig.stdin, 1, rig.term.rows)
+        check('C5 leaving +N dismisses the real tooltip',
+          await settled(() => rig.lines().every(line => !/[╭╮╰╯]/u.test(line))), JSON.stringify(rig.lines()))
+      }
+    } finally {
+      await rig.close()
+    }
+  }
+
+  // C6 — resize the SAME mounted StatusLine in both terminal modes: fields
+  // hidden at 40 must reappear unchanged at 200, with no stale +N, wrapped
+  // leftovers, or permanently shortened context counts.
+  for (const fullscreen of [false, true]) {
+    for (const compact of [true, false]) {
+      const name = `C6 ${fullscreen ? 'fullscreen' : 'inline'}/${compact ? 'compact' : 'split'}`
+      const rig = await mountStatus(200, adaptiveProps, adaptiveChannel(compact), fullscreen)
+      try {
+        const initial = singleStatus(`${name} initial`, rig.lines(), 200)
+        await rig.resize(40)
+        const narrow = singleStatus(`${name} narrow`, rig.lines(), 40)
+        check(`${name}: resize hides fields but preserves model/mode/ctx`,
+          overflowCount(narrow) > 0 && narrow.includes('MODELX') && narrow.includes('自动') && narrow.includes('20%'),
+          JSON.stringify(narrow))
+        await rig.resize(80)
+        const middle = singleStatus(`${name} middle`, rig.lines(), 80)
+        check(`${name}: widening never increases the hidden count`,
+          overflowCount(middle) <= overflowCount(narrow), JSON.stringify({ narrow, middle }))
+        await rig.resize(200)
+        const restored = singleStatus(`${name} restored`, rig.lines(), 200)
+        check(`${name}: widening restores the exact original wide row`,
+          initial === restored && optionalTokens.every(token => restored.includes(token)) && overflowCount(restored) === 0,
+          JSON.stringify({ initial, restored }))
+      } finally {
+        await rig.close()
+      }
+    }
+  }
+
+  // C7 — content changes, not resize: hiding a hovered field unmounts its
+  // mouse target without guaranteeing a leave event. Its detail must not
+  // become a ghost when pressure lifts and the same field returns.
+  {
+    const channel = channelWith({ tokens: true }, {
+      tokens: { input: 1200, output: 34, cacheRead: 0, cacheWrite: 0 },
+    })
+    const rig = await mountStatus(40, {}, channel)
+    try {
+      const initial = rig.lines()
+      const at = findText(rig.term, '1.2k→34')
+      check('C7 token hover target starts visible', at !== null, JSON.stringify(initial))
+      if (at !== null) {
+        hover(rig.stdin, at.col + 1, at.row + 1)
+        check('C7 token hover displays its real supplemental detail',
+          await settled(() => screenHas(rig.term, 'in 1.2k')), JSON.stringify(rig.lines()))
+        await rig.rerender(adaptiveProps, adaptiveChannel(true))
+        check('C7 added content pressure hides the entire token field without resizing',
+          !statusRow(rig.lines()).includes('1.2k→34') && overflowCount(statusRow(rig.lines())) > 0,
+          JSON.stringify(rig.lines()))
+        hover(rig.stdin, 1, rig.term.rows)
+        await new Promise<void>(resolve => setImmediate(resolve))
+        await rig.rerender({}, channel)
+        const restored = rig.lines()
+        check('C7 restored tokens are painted again', statusRow(restored).includes('1.2k→34'), JSON.stringify(restored))
+        check('C7 restoring an unmounted hover target keeps the original idle footer',
+          restored.map(line => line.trimEnd()).join('\n') === initial.map(line => line.trimEnd()).join('\n')
+          && !screenHas(rig.term, 'in 1.2k'), JSON.stringify({ initial, restored }))
+      }
+    } finally {
+      await rig.close()
     }
   }
 

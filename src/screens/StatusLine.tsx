@@ -9,7 +9,9 @@ import { estimateSessionCostSnapshotCny, isDeepSeekOfficialProvider, isPeakHour 
 import { getActiveBrand } from '../branding.js'
 import { ActivityLine, contextPressurePct, type ActivityLineValue } from '../components/ActivityLine.js'
 import { formatClock } from '../trajectory/format.js'
-import { GoalStatusChip } from '../components/GoalTodoPanel.js'
+import { formatGoalStatusChip, GoalStatusChip } from '../components/GoalTodoPanel.js'
+import { stringWidth } from '../ink/stringWidth.js'
+import { getGraphemeSegmenter } from '../utils/intl.js'
 import { formatGoalBudget } from '../channel/goal-command.js'
 import { formatJobDuration, type BackgroundJobState } from '../dsh-adapter/jobs.js'
 import type { TuiStatusFieldEntry, TuiStatusFieldSlot, TuiStatusFieldTone } from '../dsh-adapter/status.js'
@@ -138,38 +140,167 @@ type BuiltinHoverTarget =
 /** Hover ids are an open set: plugin fields add `plugin:<key>` to the built-ins. */
 type HoverTarget = BuiltinHoverTarget | `plugin:${string}`
 
-/** One inline footer field: `node` renders inside a shrinkable, optionally
- *  hoverable Box; `key` doubles as the React key in its row. */
+/** A footer field keeps its mouse target while the row budgets whole fields. */
 type FieldPart = {
   key: string
   node: React.ReactNode
-  /** Present when the field shows a detail readout on hover. */
+  /** Plain text for a component whose text is not in its children (goal chip). */
+  text?: string
   id?: HoverTarget
-  /** Present when the field's own text may be truncated: hovering pops a
-   *  tooltip with the full string (e.g. the session title, cut mid-word
-   *  when the right-aligned group runs out of columns). */
   tooltip?: string
-  /** Click target (fullscreen mouse): the backend mode segment opens the
-   *  /permission picker — the same route the launchpad param row takes. */
   onClick?: () => void
-  /** Flex shrink weight; defaults to 1. 0 protects a field the row must not
-   *  lose under pressure (the model); the long cwd field gives up width
-   *  before the rest. */
-  flexShrink?: number
+  /** A shorter, still complete readout, tried before hiding any field. */
+  compactNode?: React.ReactNode
+  /** Only names/paths can be elided; metrics and permission names stay whole. */
+  shorten?: (cells: number) => React.ReactNode
+  minCells?: number
 }
 
-/**
- * Render field parts as sibling shrinkable Boxes joined by the Byline
- * separator (` · `). The Box-per-field layout is what makes individual
- * fields hoverable — a Byline inside one Text cannot carry per-field mouse
- * rects — at the cost of truncating each field on its own under pressure
- * instead of truncating the joined string's tail.
- */
+type FittedField = FieldPart & { width: number; fullText: string; group: 0 | 1 }
+
+const FIELD_SEPARATOR = ' · '
+const FIELD_SEPARATOR_CELLS = stringWidth(FIELD_SEPARATOR)
+const FIELD_GROUP_GAP = 2
+const FIELD_PRIORITY: Readonly<Record<string, number>> = {
+  mode: 100, starting: 95, model: 90, context: 85, jobs: 80,
+  ideSelection: 75, goal: 70, effort: 60, cwd: 50, git: 45,
+  cost: 40, cache: 30, tps: 25, tokens: 20, title: 10, sessionId: 5,
+}
+
+/** Text/Fragment children only; opaque components supply `FieldPart.text`. */
+function fieldText(node: React.ReactNode): string {
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(fieldText).join('')
+  return React.isValidElement<{ children?: React.ReactNode }>(node)
+    ? fieldText(node.props.children)
+    : ''
+}
+
+/** Elide names without splitting a combining character or an emoji sequence. */
+function elideField(text: string, cells: number): string {
+  if (stringWidth(text) <= cells) return text
+  const graphemes = Array.from(getGraphemeSegmenter().segment(text), part => part.segment)
+  const tailBudget = Math.floor((cells - 1) / 2)
+  let tail = ''
+  while (graphemes.length > 0 && stringWidth(graphemes.at(-1)! + tail) <= tailBudget) {
+    tail = graphemes.pop()! + tail
+  }
+  let head = ''
+  const headBudget = cells - 1 - stringWidth(tail)
+  for (const grapheme of graphemes) {
+    if (stringWidth(head + grapheme) > headBudget) break
+    head += grapheme
+  }
+  return `${head}…${tail}`
+}
+
+/** Fit -> shorten -> hide whole fields, retaining source order and group edges. */
+function fitStatusFields(
+  left: readonly FieldPart[],
+  right: readonly FieldPart[],
+  cells: number,
+  overflowGroup: 0 | 1,
+): { left: FittedField[]; right: FittedField[] } {
+  const visible = [left, right].flatMap((parts, group) => parts.map(part => {
+    const fullText = part.text ?? fieldText(part.node)
+    return { ...part, fullText, width: stringWidth(fullText), group: group as 0 | 1 }
+  })).filter(part => part.width > 0)
+  const originals = [...visible]
+  const hidden: FittedField[] = []
+  const width = (): number => {
+    const widths = [0, 0]
+    const counts = [0, 0]
+    for (const part of visible) {
+      widths[part.group] += part.width
+      counts[part.group] += 1
+    }
+    if (hidden.length > 0) {
+      widths[overflowGroup] += stringWidth(`+${hidden.length}`)
+      counts[overflowGroup] += 1
+    }
+    return widths[0] + widths[1]
+      + counts.reduce((sum, count) => sum + Math.max(0, count - 1) * FIELD_SEPARATOR_CELLS, 0)
+      + (counts[0] > 0 && counts[1] > 0 ? FIELD_GROUP_GAP : 0)
+  }
+  const replace = (index: number, node: React.ReactNode): void => {
+    const part = visible[index]!
+    visible[index] = {
+      ...part, node, width: stringWidth(fieldText(node)),
+      tooltip: part.tooltip ?? part.fullText,
+    }
+  }
+  if (width() > cells) {
+    for (let index = 0; index < visible.length; index += 1) {
+      const part = visible[index]!
+      if (part.compactNode !== undefined && stringWidth(fieldText(part.compactNode)) < part.width) {
+        replace(index, part.compactNode)
+      }
+    }
+    // Spend only the excess, starting with the name/path that can give up most.
+    while (width() > cells) {
+      let pick = -1
+      let reducible = 0
+      visible.forEach((part, index) => {
+        const available = part.shorten === undefined ? 0 : part.width - (part.minCells ?? 12)
+        if (available > reducible) { pick = index; reducible = available }
+      })
+      if (pick < 0) break
+      const part = visible[pick]!
+      replace(pick, part.shorten!(part.width - Math.min(reducible, width() - cells)))
+    }
+    while (width() > cells && visible.length > 0) {
+      // An unshortenable name wider than the entire row must not evict every
+      // useful sibling before finally being hidden itself.
+      let pick = visible.findIndex(part => part.width > cells)
+      if (pick < 0) {
+        pick = 0
+        visible.forEach((part, index) => {
+          if ((FIELD_PRIORITY[part.key] ?? 20) <= (FIELD_PRIORITY[visible[pick]!.key] ?? 20)) pick = index
+        })
+      }
+      hidden.push(...visible.splice(pick, 1))
+    }
+    // A large field may have forced several smaller ones out before being
+    // hidden itself. Refill those holes, highest priority first.
+    for (const part of [...hidden].sort((a, b) => (FIELD_PRIORITY[b.key] ?? 20) - (FIELD_PRIORITY[a.key] ?? 20))) {
+      const index = hidden.indexOf(part)
+      hidden.splice(index, 1)
+      visible.push(part)
+      if (width() > cells) {
+        visible.pop()
+        hidden.splice(index, 0, part)
+      }
+    }
+    visible.sort((a, b) => originals.findIndex(part => part.key === a.key) - originals.findIndex(part => part.key === b.key))
+    // Give any remaining space back to names rather than leaving tiny names
+    // beside a mostly empty row.
+    for (const original of [...originals].sort((a, b) => (FIELD_PRIORITY[b.key] ?? 20) - (FIELD_PRIORITY[a.key] ?? 20))) {
+      const index = visible.findIndex(part => part.key === original.key)
+      const part = visible[index]
+      if (part === undefined || part.width >= original.width) continue
+      const budget = part.width + Math.max(0, cells - width())
+      if (budget >= original.width) visible[index] = original
+      else if (part.shorten !== undefined && budget > part.width) replace(index, part.shorten(budget))
+    }
+  }
+  hidden.sort((a, b) => originals.findIndex(part => part.key === a.key) - originals.findIndex(part => part.key === b.key))
+  if (hidden.length > 0 && width() <= cells) {
+    const text = `+${hidden.length}`
+    visible.push({
+      key: 'overflow', group: overflowGroup, width: stringWidth(text), fullText: text,
+      node: <Text dimColor>{text}</Text>,
+      tooltip: hidden.map(part => `${part.key.replace(/^plugin:/u, '')}: ${part.tooltip ?? part.fullText}`).join('\n'),
+    })
+  }
+  return { left: visible.filter(part => part.group === 0), right: visible.filter(part => part.group === 1) }
+}
+
+/** Fixed measured cells prevent Yoga from reducing every field to an ellipsis. */
 function FieldLine({
   parts,
   hoverProps,
 }: {
-  parts: readonly FieldPart[]
+  parts: readonly FittedField[]
   hoverProps: (id: HoverTarget) => {
     onMouseEnter: () => void
     onMouseLeave: () => void
@@ -182,17 +313,18 @@ function FieldLine({
     <>
       {visible.map((part, index) => (
         <React.Fragment key={part.key}>
-          {index > 0 ? <Text dimColor wrap="truncate"> · </Text> : null}
+          {index > 0 ? <Text dimColor>{FIELD_SEPARATOR}</Text> : null}
           <Box
-            flexShrink={part.flexShrink ?? 1}
+            width={part.width}
+            flexShrink={0}
             {...(part.id === undefined ? {} : hoverProps(part.id))}
             {...(part.onClick === undefined ? {} : { onClick: part.onClick })}
           >
             {part.tooltip === undefined || part.tooltip === '' ? (
-              <Text wrap="truncate">{part.node}</Text>
+              <Text>{part.node}</Text>
             ) : (
               <TooltipTarget content={part.tooltip}>
-                <Text wrap="truncate">{part.node}</Text>
+                <Text>{part.node}</Text>
               </TooltipTarget>
             )}
           </Box>
@@ -511,10 +643,20 @@ const selectionBadge = formatSelectionBadge(channel.selection)
         node: <Text color="warning">{t('status-starting', { backend: channel.backendCapabilities?.backendLabel ?? 'DSH' })}</Text>,
       }
     : undefined
+  const modelLabel = channel.modelDisplay ?? channel.model
+  if (tpsPart !== undefined && channel.tps !== undefined) {
+    tpsPart.compactNode = <Text dimColor>{Math.round(channel.tps)} tps</Text>
+  }
   const builtinLeft: FieldPart[] = [
     ...(startingPart !== undefined ? [startingPart] : []),
     ...(statusBar.model
-      ? [{ key: 'model', id: 'model' as const, flexShrink: 0, ...(modelPicker === undefined ? {} : { onClick: modelPicker.onOpen }), node: <Text color="inactiveShimmer">{channel.modelDisplay ?? channel.model}</Text> }]
+      ? [{
+          key: 'model', id: 'model' as const,
+          ...(modelPicker === undefined ? {} : { onClick: modelPicker.onOpen }),
+          node: <Text color="inactiveShimmer">{modelLabel}</Text>,
+          shorten: (cells: number) => <Text color="inactiveShimmer">{elideField(modelLabel, cells)}</Text>,
+          minCells: 8,
+        }]
       : []),
     ...(tpsPart !== undefined ? [tpsPart] : []),
     ...(jobsPart !== undefined ? [jobsPart] : []),
@@ -598,6 +740,7 @@ const selectionBadge = formatSelectionBadge(channel.selection)
       ? [{
           key: 'goal',
           id: 'goal' as const,
+          text: formatGoalStatusChip(channel.goal, channel.minimalUi),
           node: <GoalStatusChip goal={channel.goal} minimal={channel.minimalUi} />,
         }]
       : []),
@@ -621,7 +764,10 @@ const selectionBadge = formatSelectionBadge(channel.selection)
       ? [{
           key: 'cwd',
           id: 'cwd' as const,
-          flexShrink: 2,
+          tooltip: currentCwd,
+          compactNode: <Text color="inactiveShimmer">{compactCwd(channel, displayCwd)}</Text>,
+          shorten: (cells: number) => <Text color="inactiveShimmer">{elideField(fieldText(compactCwd(channel, displayCwd)), cells)}</Text>,
+          minCells: 10,
           node: (
             <Text color="inactiveShimmer">
               {statusBar.compact ? compactCwd(channel, displayCwd) : displayCwd}
@@ -661,6 +807,17 @@ const selectionBadge = formatSelectionBadge(channel.selection)
     ...inSlot('right-tail'),
   ]
 
+  const contextField: FieldPart[] = ctxNode === undefined ? [] : [{
+    key: 'context', id: 'ctx', node: ctxNode,
+    compactNode: <Text color="inactiveShimmer">{ctxParts?.percent ?? formattedContext}</Text>,
+  }]
+  const fitted = fitStatusFields(
+    statusBar.compact ? [...leftFields, ...rightFields] : [...leftFields, ...contextField],
+    statusBar.compact ? contextField : rightFields,
+    Math.max(0, columns - 2),
+    statusBar.compact ? 0 : 1,
+  )
+  const hasStatusFields = leftFields.length + rightFields.length + contextField.length > 0
   const hint = selectionActive
     ? t('statusline-hint-select')
     : channel.working
@@ -702,10 +859,19 @@ const selectionBadge = formatSelectionBadge(channel.selection)
     contextUsed !== undefined &&
     contextWindow !== undefined
 
+  const visibleHover = hover === 'bar'
+    ? barVisible ? hover : null
+    : [...fitted.left, ...fitted.right].some(part => part.id === hover) ? hover : null
+  // An unmounted mouse target cannot deliver its leave event. Forget it now,
+  // so restoring a hidden field cannot resurrect a detail under a new pointer.
+  React.useEffect(() => {
+    if (hover !== null && visibleHover === null) setHover(current => current === hover ? null : current)
+  }, [hover, visibleHover])
+
   // The supplemental-row readout for the hovered field: replaces the idle
   // hint (never the activity line) while the pointer dwells on a field.
   const detail = buildHoverDetail(
-    hover,
+    visibleHover,
     visibleFields,
     channel,
     occupancy,
@@ -722,12 +888,6 @@ const selectionBadge = formatSelectionBadge(channel.selection)
       ? <Text color="inactiveShimmer">{hint}</Text>
       : null
 
-  const compactFields = [...leftFields, ...rightFields]
-  const fullLeftFields = [
-    ...leftFields,
-    ...(ctxNode !== undefined ? [{ key: 'context', id: 'ctx' as const, node: ctxNode }] : []),
-  ]
-  const hasStatusFields = compactFields.length > 0 || ctxNode !== undefined
   // The supplemental row is PERMANENTLY mounted (height pinned to 1)
   // whenever the footer carries hoverable chrome — mounting it from nothing
   // on hover is what made the footer grow mid-gesture and shoved the
@@ -773,30 +933,18 @@ const selectionBadge = formatSelectionBadge(channel.selection)
           />
         ) : null}
         {/* Row 2: optional status fields — every field is independently gated. */}
-        {hasStatusFields ? statusBar.compact ? (
-          <Box flexDirection="row" justifyContent="space-between" gap={2}>
-            <Box flexGrow={1} flexShrink={1} flexDirection="row" overflow="hidden">
-              <FieldLine parts={compactFields} hoverProps={hoverProps} />
-            </Box>
-            {ctxNode !== undefined ? (
-              <Box flexShrink={0} {...hoverProps('ctx')}>
-                <Text wrap="truncate">{ctxNode}</Text>
+        {hasStatusFields ? (
+          <Box height={1} overflow="hidden" flexDirection="row" justifyContent={fitted.left.length === 0 ? 'flex-end' : 'space-between'} gap={FIELD_GROUP_GAP}>
+            {fitted.left.length > 0 ? (
+              <Box flexGrow={1} flexDirection="row" overflow="hidden">
+                <FieldLine parts={fitted.left} hoverProps={hoverProps} />
               </Box>
             ) : null}
-          </Box>
-        ) : (
-          <Box flexDirection="row" justifyContent="space-between" gap={2}>
-            <Box flexGrow={1} flexShrink={1} flexDirection="row" overflow="hidden">
-              <FieldLine parts={fullLeftFields} hoverProps={hoverProps} />
-            </Box>
-            <Box
-              justifyContent="flex-end"
-              flexShrink={2}
-              flexDirection="row"
-              overflow="hidden"
-            >
-              <FieldLine parts={rightFields} hoverProps={hoverProps} />
-            </Box>
+            {fitted.right.length > 0 ? (
+              <Box justifyContent="flex-end" flexShrink={0} flexDirection="row" overflow="hidden">
+                <FieldLine parts={fitted.right} hoverProps={hoverProps} />
+              </Box>
+            ) : null}
           </Box>
         ) : null}
         {/* Row 3: one stable hint/activity/detail area plus an optional

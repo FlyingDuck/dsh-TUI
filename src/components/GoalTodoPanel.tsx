@@ -47,13 +47,15 @@ function formatDuration(ms: number): string {
  * phase. `minimal` swaps the glyph for a text form, per the minimal-mode
  * no-emoji contract.
  */
-export function GoalStatusChip({ goal, minimal = false }: { goal: ChannelGoal; minimal?: boolean }): React.ReactNode {
+export function formatGoalStatusChip(goal: ChannelGoal, minimal = false): string {
   const progress = goal.budget === undefined ? `${goal.roundsStarted}/${goal.maxGoalRounds}` : formatGoalBudgetCompact(goal.budget)
+  return `${minimal ? 'goal' : PHASE_GLYPH[goal.phase]} ${progress}`
+}
+
+export function GoalStatusChip({ goal, minimal = false }: { goal: ChannelGoal; minimal?: boolean }): React.ReactNode {
   return (
     <Text color={phaseColor(goal.phase)} dimColor={goal.phase === 'complete'}>
-      {minimal
-        ? `goal ${progress}`
-        : `${PHASE_GLYPH[goal.phase]} ${progress}`}
+      {formatGoalStatusChip(goal, minimal)}
     </Text>
   )
 }

@@ -357,8 +357,13 @@ Object.assign(channel, {
   contextSegments: { system: 0, prompt: 0, assistant: 0, thinking: 0, tools: 0 },
 })
 const fullFooterVisible = (): boolean => {
-  const statusRow = rows().findIndex(line => line.includes('deepseek-v4') && line.includes('ctx'))
-  return statusRow >= 0 && statusRow < stdout.rows - 1 && visible('12.0%')
+  const screen = rows()
+  // Narrow status rows keep the percentage but may drop the `ctx` label and
+  // counts. Still require the separate bar immediately above and room below.
+  const statusRow = screen.findIndex(line => line.includes('deepseek-v4') && line.includes('12%'))
+  return statusRow > 0 && statusRow < stdout.rows - 1
+    && screen[statusRow - 1]?.includes('12.0%') === true
+    && (stdout.columns < COLS || screen[statusRow]?.includes('ctx') === true)
 }
 stdout.rows = 24
 term.resize(COLS, 24)
