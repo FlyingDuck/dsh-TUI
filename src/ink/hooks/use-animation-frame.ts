@@ -31,13 +31,15 @@ export function useAnimationFrame(
   intervalMs: number | null = 16,
 ): [ref: (element: DOMElement | null) => void, time: number] {
   const clock = useContext(ClockContext)
-  const [viewportRef, { isVisible }] = useTerminalViewport()
+  const [viewportRef, viewport] = useTerminalViewport()
   const [time, setTime] = useState(() => clock?.now() ?? 0)
 
-  const active = isVisible && intervalMs !== null
+  const active = viewport.isVisible && intervalMs !== null
 
   useEffect(() => {
-    if (!clock || !active) return
+    // Preserve the first sampling tick while a sticky scroll tail settles, but
+    // never let a stale hidden snapshot stop an animation now visible in layout.
+    if (!clock || intervalMs === null || (!active && !viewport.isVisible)) return
 
     let lastUpdate = clock.now()
 
@@ -51,7 +53,7 @@ export function useAnimationFrame(
 
     // keepAlive: true — visible animations drive the clock
     return clock.subscribe(onChange, true)
-  }, [clock, intervalMs, active])
+  }, [clock, intervalMs, active, viewport])
 
   return [viewportRef, time]
 }

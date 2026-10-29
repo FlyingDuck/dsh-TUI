@@ -15,10 +15,10 @@ type ViewportEntry = {
  * Returns a callback ref and a viewport entry object.
  * Attach the ref to the component you want to track.
  *
- * The entry is updated during the layout phase (useLayoutEffect) so callers
- * always read fresh values during render. Visibility changes do NOT trigger
- * re-renders on their own — callers that re-render for other reasons (e.g.
- * animation ticks, state changes) will pick up the latest value naturally.
+ * The stable entry is updated during layout. Effects can read this commit's
+ * geometry instead of retaining a render-time visibility snapshot. Visibility
+ * changes do NOT trigger re-renders on their own — callers that re-render for
+ * other reasons (e.g. animation ticks) pick up the latest value naturally.
  * This avoids infinite update loops when combined with other layout effects
  * that also call setState.
  *
@@ -91,9 +91,9 @@ export function useTerminalViewport(): [
     const viewportBottom = viewportY + rows
     const visible = bottom > viewportY && absoluteTop < viewportBottom
 
-    if (visible !== entryRef.current.isVisible) {
-      entryRef.current = { isVisible: visible }
-    }
+    // Passive effects must see the geometry from this commit, not an entry
+    // object captured before ScrollBox finished pinning the viewport.
+    entryRef.current.isVisible = visible
   })
 
   return [setElement, entryRef.current]

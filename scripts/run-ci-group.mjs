@@ -209,6 +209,8 @@ const GROUPS = {
     ["verify-idle-repaint", ['node', '--import', 'tsx/esm', 'scripts/verify-idle-repaint.tsx']],
 // Long histories stay untouched by title, mini-wake and session-row animation frames (#1207).
     ['verify-animation-ownership', ['node', '--import', 'tsx/esm', 'scripts/verify-animation-ownership.tsx']],
+// Sticky-pinned pending previews keep sweeping after layout catches up with a long transcript.
+    ['verify-outgoing-shimmer-viewport', ['node', '--import', 'tsx/esm', 'scripts/verify-outgoing-shimmer-viewport.tsx']],
 // 开屏头部契约：大字 5 行高且等宽（8×7 = 7×8）、bigTextWidth 与实际画出的列数
 // 一致；窄终端按「鲸鱼+大字 → 纯大字 → 纯鲸鱼 → 纯文字」逐档降级，档位无空档。
     ['verify-raw-color-depth', ['node', 'scripts/verify-raw-color-depth.mjs']],
