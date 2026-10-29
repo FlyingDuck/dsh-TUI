@@ -4319,9 +4319,26 @@ export function PromptInput({
   // pending block paints (steer/followup previews, labels, hints, padding)
   // so the window always fits the overlay's effective height.
   // Identity, not text, decides whether the transcript-tail preview already
-  // covers a pending copy. Docked rows keep their existing editor/actions.
-  const outgoingIds = new Set(channel.outgoing?.map(item => item.id))
+  // covers a pending copy. Running-origin previews stay here until the real
+  // user receipt, including preflight and claimed-before-recorded gaps.
+  // Display-only copies never enter pending actions or the dock.
+  const outgoingIds = new Set(channel.outgoing?.filter(item =>
+    !(item.queuePlacement !== undefined && (item.phase === 'sending' || item.phase === 'queued'))
+    && !channel.pending.some(pending => pending.id === item.id && pending.docked === true),
+  ).map(item => item.id))
   const previewPending = channel.pending.filter(item => item.docked === true || !outgoingIds.has(item.id))
+  const outgoingOrder = new Map(channel.outgoing?.map((item, index) => [item.id, index]))
+  // Insert gap previews in enqueue order without reordering real pending rows.
+  for (const [index, item] of (channel.outgoing ?? []).entries()) {
+    if (item.queuePlacement === undefined
+      || (item.phase !== 'sending' && item.phase !== 'queued')
+      || channel.pending.some(pending => pending.id === item.id)) continue
+    const next = previewPending.findIndex(pending => (outgoingOrder.get(pending.id) ?? -1) > index)
+    previewPending.splice(next < 0 ? previewPending.length : next, 0, {
+      id: item.id, text: item.text, images: item.images ?? [], placement: item.queuePlacement, docked: false,
+    })
+  }
+  const showPendingActions = previewPending.every(item => channel.pending.some(pending => pending.id === item.id))
   const steerPreviewCount = previewPending.filter(
     item => item.placement === 'steer' && item.docked !== true,
   ).length
@@ -4331,7 +4348,7 @@ export function PromptInput({
   const dockWindowRows = useOverlayListRows(
     (steerPreviewCount > 0 ? 1 + steerPreviewCount : 0)
     + (followupPreviewCount > 0 ? 1 + followupPreviewCount : 0)
-    + 1 /* dock label */ + 1 /* dock hint row */ + 1 /* Alt+↑ hint */ + 1 /* block paddingBottom */,
+    + 1 /* dock label */ + 1 /* dock hint row */ + (showPendingActions ? 1 : 0) /* Alt+↑ hint */ + 1 /* block paddingBottom */,
   )
   const dockFocus = dockSelected ?? Math.max(dockCount - 1, 0)
   const { start: dockStart, end: dockEnd } = listWindow(
@@ -4593,7 +4610,7 @@ export function PromptInput({
                 </Box>
               </Box>
             )}
-            <Text dimColor>Alt+↑ {t('input-pending-actions-hint')}</Text>
+            {showPendingActions && <Text dimColor>Alt+↑ {t('input-pending-actions-hint')}</Text>}
           </Box>
         )}
         {fileOverlayOpen && (

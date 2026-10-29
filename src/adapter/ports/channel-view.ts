@@ -965,6 +965,9 @@ export interface OutgoingMessage {
   readonly text: string
   readonly images?: readonly ComposerImageRef[]
   readonly phase: 'sending' | 'queued' | 'failed' | 'uncertain'
+  /** Enqueue-time placement of a normal submission made while the UI turn
+   *  was running; volatile display origin only. */
+  readonly queuePlacement?: 'steer' | 'followup'
   readonly error?: string
 }
 

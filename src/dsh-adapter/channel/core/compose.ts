@@ -463,7 +463,7 @@ export function createCoreChannel(
   const state: ChannelState = {
     ...createInputActions(() => state, () => binding.session, owner, inputConvergence,
       composer,
-      (text, placement, images, previousId) => dispatchUserText(text, placement, images, undefined, previousId),
+      (text, placement, images, previousId, presentation) => dispatchUserText(text, placement, images, undefined, previousId, presentation),
       (command, includeInContext) => getReadyActions().runLocalCommand(command, includeInContext),
       sessionId => { extension.touchSession?.(sessionId) }, inputDelivery),
     recoverFailedOutgoing: id => { owner.assertActive(); return inputDelivery.recoverFailedOutgoing(id) },

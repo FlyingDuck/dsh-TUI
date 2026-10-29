@@ -59,7 +59,7 @@ export interface UserTextOrigin {
 /** Input FIFO, staged attachments and decision notice timers share one lifetime. */
 export function createInputDelivery(
  ctx: ChannelHost, owner: ChannelOwner, binding: { readonly session: AgentSession },
- state: () => Pick<ChannelState, 'cwd' | 'workingDirectory' | 'agentId' | 'agentBindingGeneration'>,
+ state: () => Pick<ChannelState, 'cwd' | 'workingDirectory' | 'agentId' | 'agentBindingGeneration' | 'working'>,
  notify: ChannelState['notify'],
  trackPending: (message: { id: string; text: string; images?: readonly ComposerImageRef[] }, placement: PendingMessage['placement']) => void,
  untrackPending: (id: string) => void,
@@ -507,8 +507,11 @@ export function createInputDelivery(
     images: readonly ComposerImageRef[] = [],
     attach?: UserMessage,
     previousId?: string,
+    presentation?: 'immediate',
   ): void => {
     assertCapacity(1, previousId === undefined ? [] : [previousId])
+    // Capture before the async FIFO: later turn changes cannot move this preview.
+    const queuePlacement = presentation !== 'immediate' && state().working === true ? placement : undefined
     const previous = previousId === undefined ? undefined : submissions.get(previousId)
     const capturedImages = composer.captureDraftImages(text, images)
     const origin = previous?.origin ?? captureOrigin()
@@ -518,7 +521,10 @@ export function createInputDelivery(
     submissions.set(message.id, { origin, attach: companion, submitted: false })
     const view = outgoingState?.()
     if (view !== undefined) {
-      view.outgoing = [...view.outgoing, { id: message.id, text, images: capturedImages, phase: 'sending' }]
+      view.outgoing = [...view.outgoing, {
+        id: message.id, text, images: capturedImages, phase: 'sending',
+        ...(queuePlacement === undefined ? {} : { queuePlacement }),
+      }]
       view.emit()
     }
     dispatched += 1

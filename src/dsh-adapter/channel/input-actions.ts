@@ -36,7 +36,7 @@ export function createInputActions(
   owner: { assertActive(): void },
   input: InputConvergence,
   composer: { includeLegacyImageRefs(text: string, images: readonly ComposerImageRef[]): readonly ComposerImageRef[] },
-  dispatchUserText: (text: string, placement: 'steer' | 'followup', images?: readonly ComposerImageRef[], previousId?: string) => void,
+  dispatchUserText: (text: string, placement: 'steer' | 'followup', images?: readonly ComposerImageRef[], previousId?: string, presentation?: 'immediate') => void,
   runLocalCommand: (command: string, includeInContext: boolean) => Promise<void>,
   /** Move the used session to the front of the `/resume` MRU (DSH session
    *  history); a backend whose sessions that list cannot open passes a no-op. */
@@ -387,7 +387,8 @@ export function createInputActions(
             if (!entry.local && entry.previousId !== undefined && outgoing !== undefined && !outgoing.hasOutgoing(entry.previousId)) continue
             touch(state.agentId)
             state.pending = state.pending.filter(item => item.id !== entry.previousId)
-            dispatchUserText(entry.text, 'followup', entry.images, entry.previousId)
+            // This is an explicit send-now action even before turn.end clears working.
+            dispatchUserText(entry.text, 'followup', entry.images, entry.previousId, 'immediate')
           }
         } finally {
           endTransfer?.()

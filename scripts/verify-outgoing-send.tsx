@@ -270,6 +270,34 @@ const firstId = (f: Fixture) => outgoing(f)[0]!.id
   } finally { f.close() }
 }
 
+// Preview placement is enqueue-time UI intent, not a later admission phase.
+{
+  const f = fixture()
+  try {
+    f.first.emit({ type: 'turn.start', turn: 1, origin: 'user', time: 0 })
+    f.channel.steer('RUNNING_ORIGIN')
+    check('running input captures composer-queue origin synchronously', outgoing(f)[0]?.queuePlacement === 'steer')
+    f.first.emit({ type: 'turn.end', turn: 1, reason: { kind: 'completed' }, time: 0 })
+    await wait('running-origin input survives its FIFO while the prior turn ends', () => f.first.submits.length === 1)
+    f.first.submits[0]!.receipt.resolve({ accepted: true })
+    await wait('admission preserves running-origin placement', () => outgoing(f)[0]?.phase === 'queued')
+    check('ending a turn does not promote an unclaimed queue item to the transcript', outgoing(f)[0]?.queuePlacement === 'steer')
+    f.channel.submit('IDLE_ORIGIN')
+    check('idle direct input does not acquire a queue origin', outgoing(f).find(item => item.text === 'IDLE_ORIGIN')?.queuePlacement === undefined)
+    f.first.emit({ type: 'turn.start', turn: 2, origin: 'user', time: 0 })
+    check('starting a turn does not reclassify an idle-origin preview', outgoing(f).find(item => item.text === 'IDLE_ORIGIN')?.queuePlacement === undefined)
+  } finally { f.close() }
+}
+{
+  const f = fixture()
+  try {
+    f.first.emit({ type: 'turn.start', turn: 1, origin: 'user', time: 0 })
+    f.channel.interruptAndDeliver([{ text: 'EXPLICIT_INTERRUPT_SEND' }])
+    await wait('an explicit interrupt send reaches the backend once', () => f.first.submits.length === 1)
+    check('interrupt send is not mistaken for ordinary running queue input', outgoing(f)[0]?.queuePlacement === undefined)
+  } finally { f.close() }
+}
+
 // ── Actual input events, draft safety, image capabilities and confirmation. ──
 class FakeStdin extends PassThrough {
   isTTY = true
@@ -342,6 +370,134 @@ for (const fullscreen of [false, true]) for (const columns of [40, 100]) {
     rig.f.first.submits[2]!.receipt.resolve({ accepted: true })
     await wait(`${label}: persisted confirmation replaces the transient input`, () => outgoing(rig.f).length === 0 && rig.f.raw.rows.filter(row => row.kind === 'user' && row.text === text).length === 1)
     check(`${label}: successful confirmation does not put a draft back`, rig.controller.current?.text?.() === '')
+  } finally { await rig.close() }
+}
+
+// Running Enter/Tab must retain the original dim arrow queue, not a second
+// transcript bubble. Model output and working=false alone cannot promote it.
+for (const fullscreen of [false, true]) for (const columns of [40, 100]) {
+  for (const placement of ['steer', 'followup'] as const) {
+    const rig = await mount(fullscreen, columns)
+    const label = `${fullscreen ? 'fullscreen' : 'inline'} ${columns} ${placement} queue`
+    const text = placement === 'steer' ? 'QUEUE_STEER' : 'QUEUE_FOLLOWUP'
+    const appearance = (value: string) => {
+      const at = findText(rig.term, value)
+      if (at === null) return undefined
+      const line = rig.term.buffer.active.getLine(rig.term.buffer.active.baseY + at.row)
+      return { line: line?.translateToString(true),
+        fg: Array.from({ length: value.length }, (_, index) => line?.getCell(at.col + index)?.getFgColor()),
+        bold: Array.from({ length: value.length }, (_, index) => line?.getCell(at.col + index)?.isBold()) }
+    }
+    try {
+      await wait(`${label}: composer mounts`, () => rig.controller.current !== null)
+      rig.f.first.emit(
+        { type: 'turn.start', turn: 1, origin: 'user', userMessageId: 'older', time: Date.now() },
+        { type: 'step.start', turn: 1, step: 1 },
+        { type: 'user.message', id: 'older', anchor: '1', seq: 1, turn: 1, time: Date.now(), source: 'user', text: 'OLDER_NORMAL', blocks: [{ type: 'text', text: 'OLDER_NORMAL' }] },
+        { type: 'assistant.attempt.start', attemptId: 'older-attempt', turn: 1, step: 1 },
+        { type: 'assistant.delta', attemptId: 'older-attempt', index: 0, time: Date.now(), delta: { kind: 'text', text: 'ACTIVE_REPLY' } },
+      )
+      await wait(`${label}: the preceding turn is visibly running`, () => rig.f.raw.working && appearance('OLDER_NORMAL') !== undefined)
+      const normal = appearance('OLDER_NORMAL')!.fg[0]
+      rig.stdin.write(text)
+      await wait(`${label}: additional draft is editable`, () => rig.controller.current?.text() === text)
+      if (placement === 'steer') await rig.enter()
+      else rig.stdin.write('\t')
+      await wait(`${label}: the queued submission reaches the backend`, () => rig.f.first.submits.length === 1)
+      const submission = rig.f.first.submits[0]!
+      const id = submission.input.clientMessageId
+      submission.receipt.resolve({ accepted: true })
+      await wait(`${label}: queue receipt is admitted`, () => outgoing(rig.f).find(item => item.id === id)?.phase === 'queued')
+      check(`${label}: queue origin survives the guarded UI snapshot`, outgoing(rig.f).find(item => item.id === id)?.queuePlacement === placement)
+      check(`${label}: backend placement is unchanged`, submission.placement === placement)
+      await wait(`${label}: the original arrow queue is visible`, () => appearance(text)?.line?.includes('↳') === true)
+      // ThemedText's dimColor resolves to theme.inactive RGB, not ANSI dim.
+      const queueColor = appearance('↳')!.fg[0]
+      check(`${label}: the old muted, non-bold styling is preserved`, appearance(text)!.fg.every(color => color === queueColor) && !appearance(text)!.bold.some(Boolean), appearance(text))
+      check(`${label}: there is exactly one preview and no durable user row`, rig.lines().filter(line => line.includes(text)).length === 1 && !rig.f.raw.rows.some(row => row.kind === 'user' && row.text === text))
+      rig.f.first.emit({ type: 'assistant.delta', attemptId: 'older-attempt', index: 1, time: Date.now(), delta: { kind: 'text', text: '\nOLDER_MORE' } })
+      await wait(`${label}: more output from the preceding request is projected`, () => rig.f.raw.rows.some(row => row.text.includes('OLDER_MORE')))
+      // The restored absolute queue can cover that assistant row. A visible
+      // new draft fences the next real paint without demanding occluded text.
+      rig.controller.current!.append('QUEUE_NEW_DRAFT')
+      await wait(`${label}: a new draft fences the next queue paint`, () => rig.lines().some(line => line.includes('QUEUE_NEW_DRAFT')))
+      check(`${label}: preceding output leaves the item in the original queue`, appearance(text)?.line?.includes('↳') && appearance(text)!.fg.every(color => color === queueColor) && !appearance(text)!.bold.some(Boolean))
+      rig.f.first.emit({ type: 'turn.end', turn: 1, reason: { kind: 'completed' }, time: Date.now() })
+      rig.controller.current!.append('_')
+      await wait(`${label}: the idle frame and latest draft paint`, () => !rig.f.raw.working && rig.lines().some(line => line.includes('QUEUE_NEW_DRAFT_')))
+      check(`${label}: ending the preceding turn keeps its unclaimed queue in place`, appearance(text)?.line?.includes('↳') === true)
+      rig.f.first.emit({ type: 'pending.changed', items: [], claimed: [id] })
+      rig.controller.current!.append('C')
+      await wait(`${label}: the claimed-before-record frame paints`, () => rig.lines().some(line => line.includes('QUEUE_NEW_DRAFT_C')))
+      check(`${label}: claiming alone retains the composer preview without inventing pending`, rig.f.raw.pending.length === 0 && appearance(text)?.line?.includes('↳') === true && !rig.f.raw.rows.some(row => row.kind === 'user' && row.text === text))
+      check(`${label}: a claimed display-only preview advertises no retraction`, !rig.lines().some(line => line.includes('Alt+↑')))
+      rig.f.first.emit(
+        { type: 'turn.start', turn: 2, origin: 'user', userMessageId: id, time: Date.now() },
+        { type: 'step.start', turn: 2, step: 1 },
+        { type: 'user.message', id, anchor: '2', seq: 2, turn: 2, time: Date.now(), source: 'user', text, blocks: [{ type: 'text', text }] },
+        { type: 'assistant.attempt.start', attemptId: 'own-attempt', turn: 2, step: 1 },
+      )
+      await wait(`${label}: only its recorded real bubble is promoted`, () => {
+        const row = rig.f.raw.rows.find(row => row.kind === 'user' && row.text === text)
+        return row !== undefined && outgoing(rig.f).every(item => item.id !== id)
+          && rig.f.channel.userMessageResponses?.some(item => item.rowId === row.id && item.phase === 'waiting') === true
+          && appearance(text)?.bold.every(Boolean) === true && appearance(text)?.line?.includes('↳') === false
+      })
+      check(`${label}: promotion does not duplicate its text`, rig.lines().filter(line => line.includes(text)).length === 1)
+      rig.f.first.emit({ type: 'assistant.delta', attemptId: 'own-attempt', index: 0, time: Date.now(), delta: { kind: 'reasoning', text: 'OWN_THOUGHT' } })
+      await wait(`${label}: only its own model output restores the normal bubble color`, () => appearance(text)?.fg.every(color => color === normal) === true)
+      check(`${label}: queue promotion never overwrites the newer draft`, rig.controller.current?.text() === 'QUEUE_NEW_DRAFT_C')
+    } finally { await rig.close() }
+  }
+}
+
+// The second input can still be behind a slow FIFO predecessor: it needs a
+// composer-only preview before it has any actual backend queue/retraction.
+{
+  const rig = await mount(true, 80)
+  try {
+    await wait('FIFO queue case mounts', () => rig.controller.current !== null)
+    rig.f.first.emit({ type: 'turn.start', turn: 1, origin: 'user', time: Date.now() })
+    rig.f.channel.steer('FIFO_HEAD')
+    await wait('the first queue input blocks its admission receipt', () => rig.f.first.submits.length === 1)
+    rig.stdin.write('FIFO_PREFLIGHT')
+    await wait('the later FIFO draft is editable', () => rig.controller.current?.text() === 'FIFO_PREFLIGHT')
+    await rig.enter()
+    await wait('preflight input remains visible in the old queue style', () => rig.lines().some(line => line.includes('↳ FIFO_PREFLIGHT')))
+    const staged = outgoing(rig.f).find(item => item.text === 'FIFO_PREFLIGHT')!
+    check('a display-only FIFO item is not a backend pending message', rig.f.first.submits.length === 1 && !rig.f.raw.pending.some(item => item.id === staged.id))
+    check('preflight appears once and advertises no fake retraction', rig.lines().filter(line => line.includes('FIFO_PREFLIGHT')).length === 1 && !rig.lines().some(line => line.includes('Alt+↑')))
+    rig.f.first.submits[0]!.receipt.resolve({ accepted: true })
+    await wait('the later FIFO input is really delivered once', () => rig.f.first.submits.length === 2)
+    rig.f.first.submits[1]!.receipt.resolve({ accepted: true })
+    await wait('actual backend queue graduation restores the old action hint', () => rig.f.raw.pending.some(item => item.id === staged.id) && rig.lines().some(line => line.includes('Alt+↑')))
+    check('real pending replaces its display-only copy without duplication', rig.lines().filter(line => line.includes('FIFO_PREFLIGHT')).length === 1)
+    rig.f.first.emit({ type: 'pending.changed', items: [{ id: staged.id, text: staged.text, placement: 'steer' }], claimed: [rig.f.first.submits[0]!.input.clientMessageId] })
+    rig.controller.current!.append('FIFO_ORDER_FENCE')
+    await wait('the claimed-head queue frame paints', () => rig.lines().some(line => line.includes('FIFO_ORDER_FENCE')))
+    const headLine = rig.lines().findIndex(line => line.includes('↳ FIFO_HEAD'))
+    const followerLine = rig.lines().findIndex(line => line.includes('↳ FIFO_PREFLIGHT'))
+    check('a claimed display-only head keeps its enqueue order before real pending', headLine >= 0 && followerLine > headLine)
+  } finally { await rig.close() }
+}
+
+// Failed/unknown admissions are not normal queue items and must remain
+// recoverable/visible after the composer queue relinquishes their identities.
+for (const uncertain of [false, true]) {
+  const rig = await mount(true, 80)
+  const text = uncertain ? 'UNKNOWN_QUEUE' : 'REFUSED_QUEUE'
+  try {
+    await wait(`${text}: composer mounts`, () => rig.controller.current !== null)
+    rig.f.first.emit({ type: 'turn.start', turn: 1, origin: 'user', time: Date.now() })
+    rig.stdin.write(text)
+    await wait(`${text}: running draft is editable`, () => rig.controller.current?.text() === text)
+    await rig.enter()
+    await wait(`${text}: backend receipt is pending`, () => rig.f.first.submits.length === 1)
+    rig.controller.current!.append('PROTECTED_QUEUE_DRAFT')
+    if (uncertain) rig.f.first.submits[0]!.receipt.reject(new Error('unknown queue acceptance'))
+    else rig.f.first.submits[0]!.receipt.resolve({ accepted: false, reason: 'queue refused' })
+    await wait(`${text}: failed or uncertain input stays visible outside the normal queue`, () => outgoing(rig.f).some(item => item.phase === (uncertain ? 'uncertain' : 'failed')) && rig.lines().some(line => line.includes(text) && !line.includes('↳')))
+    check(`${text}: a newer draft is never overwritten`, rig.controller.current?.text() === 'PROTECTED_QUEUE_DRAFT')
   } finally { await rig.close() }
 }
 

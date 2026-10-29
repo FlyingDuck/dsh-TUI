@@ -28,7 +28,7 @@ const [React, xterm, ui, { Context }, { default: AgentRegistry },
   { default: SessionStore, SessionId }, { default: SessionProjectionRegistry },
   { default: SystemPrompt }, { default: ToolRuntime }, { createChannel },
   { mountChannelUi }, { registerTuiChannel }, { Chat }, { QuestionStore },
-  { settled, findText, viewportLines },
+  { settled, findText, viewportLines, sleep },
 ] = await Promise.all([
   import('react'), import('@xterm/headless'), import('../src/ui.js'), import('@deepseek-ai/cordis'),
   import('@deepseek-ai/dsh-agent'), import('@deepseek-ai/dsh-agent-loop'),
@@ -132,6 +132,7 @@ async function mount(fullscreen: boolean, columns: number, mode: 'text' | 'reaso
   const app = await ui.render(React.createElement(Chat, { channel, fullscreen, trajectorySeen: true,
     questionStore: new QuestionStore(), promptControllerRef: controller, launchpadOnBoot: false }),
   { stdout: stdout as never, stderr: stderr as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
+  let lastEnterAt = 0
   const appearance = (text: string) => {
     const at = findText(term, text)
     if (at === null) return undefined
@@ -142,6 +143,13 @@ async function mount(fullscreen: boolean, columns: number, mode: 'text' | 'reaso
   const phase = (rowId: number) => channel.userMessageResponses?.find(item => item.rowId === rowId)?.phase
   return { raw, channel, adapter, handle, term, stdin, controller, appearance, phase,
     lines: () => viewportLines(term),
+    enter: async () => {
+      const remaining = 90 - (Date.now() - lastEnterAt)
+      // 固定窗:墙钟 the composer's 80ms CR/LF debounce must not eat a second submit.
+      if (remaining > 0) await sleep(remaining)
+      stdin.write('\r')
+      lastEnterAt = Date.now()
+    },
     close: async () => {
       adapter.release()
       raw.cancel()
@@ -167,7 +175,7 @@ async function verify(fullscreen: boolean, columns: number, mode: 'text' | 'reas
     const normal = rig.appearance('HISTORICAL_NORMAL')!.fg[0]
     rig.stdin.write(sent)
     await wait(`${label}: draft is editable`, () => rig.controller.current?.text() === sent)
-    rig.stdin.write('\r')
+    await rig.enter()
     await wait(`${label}: real DSH records the user before model output`, () => rig.raw.rows.some(row => row.kind === 'user' && row.text === sent) && rig.adapter.requests > 0)
     const row = rig.raw.rows.find(row => row.kind === 'user' && row.text === sent)!
     check(`${label}: the session log already contains the submitted user`, rig.handle.agent.session.snapshotEvents().some(event => event.type === 'user/message' && (event.data as { content?: { text?: string }[] }).content?.some(block => block.text === sent)))
@@ -202,4 +210,35 @@ async function verify(fullscreen: boolean, columns: number, mode: 'text' | 'reas
 for (const fullscreen of [false, true]) for (const columns of [40, 100]) await verify(fullscreen, columns, 'text')
 await verify(true, 80, 'reasoning')
 await verify(true, 80, 'error')
+
+// Real DSH inbox + gated model: an already-recorded primary prompt may
+// shimmer while a later unclaimed steer keeps its original composer queue.
+{
+  const rig = await mount(true, 80, 'text')
+  try {
+    await wait('real DSH queue: composer mounts', () => rig.controller.current !== null)
+    rig.stdin.write('PRIMARY_REQUEST')
+    await wait('real DSH queue: primary draft is editable', () => rig.controller.current?.text() === 'PRIMARY_REQUEST')
+    await rig.enter()
+    await wait('real DSH queue: the primary model request is gated', () => rig.adapter.requests === 1 && rig.raw.rows.some(row => row.text === 'PRIMARY_REQUEST'))
+    const primary = rig.raw.rows.find(row => row.kind === 'user' && row.text === 'PRIMARY_REQUEST')!
+    rig.stdin.write('NATIVE_QUEUED_STEER')
+    await wait('real DSH queue: the later draft is editable', () => rig.controller.current?.text() === 'NATIVE_QUEUED_STEER')
+    await rig.enter()
+    await wait('real DSH queue: the native inbox owns the queued steer', () => rig.raw.pending.some(item => item.text === 'NATIVE_QUEUED_STEER' && item.placement === 'steer'))
+    const queued = rig.raw.pending.find(item => item.text === 'NATIVE_QUEUED_STEER')!
+    await wait('real DSH queue: the old arrow preview is visible', () => rig.lines().some(line => line.includes('↳ NATIVE_QUEUED_STEER')))
+    check('real DSH queue: recorded primary and unclaimed queue have separate presentation', rig.phase(primary.id) === 'waiting' && rig.channel.outgoing?.find(item => item.id === queued.id)?.queuePlacement === 'steer')
+    check('real DSH queue: the unclaimed steer has no fake transcript row or duplicate text', !rig.raw.rows.some(row => row.kind === 'user' && row.text === queued.text) && rig.lines().filter(line => line.includes(queued.text)).length === 1)
+    rig.adapter.headers.resolve()
+    rig.adapter.content.resolve()
+    await wait('real DSH queue: primary output acknowledges only the primary prompt', () => rig.phase(primary.id) === undefined && rig.raw.rows.some(row => row.text.includes('FIRST_MODEL_TEXT')))
+    check('real DSH queue: primary output does not retire the later queue', rig.raw.pending.some(item => item.id === queued.id) && rig.channel.outgoing?.some(item => item.id === queued.id))
+    check('real DSH queue: native retraction still works', rig.channel.removePending(queued.id))
+    await wait('real DSH queue: retraction consumes both queue and volatile receipt', () => !rig.raw.pending.some(item => item.id === queued.id) && rig.channel.outgoing?.every(item => item.id !== queued.id) === true)
+    rig.adapter.finish.resolve()
+    await wait('real DSH queue: the primary turn settles', () => !rig.raw.working)
+    check('real DSH queue: the withdrawn steer never starts a second model request', rig.adapter.requests === 1 && !rig.raw.rows.some(row => row.kind === 'user' && row.text === queued.text))
+  } finally { await rig.close() }
+}
 console.log(`verify-user-response-start OK (${checks} checks)`)

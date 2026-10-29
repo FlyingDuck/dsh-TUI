@@ -7205,7 +7205,10 @@ export function Chat({
         />
         {channel.outgoing !== undefined && (
           <OutgoingMessages
-            messages={channel.outgoing.filter(item => !channel.pending.some(pending => pending.id === item.id && pending.docked === true))}
+            messages={channel.outgoing.filter(item =>
+              !(item.queuePlacement !== undefined && (item.phase === 'sending' || item.phase === 'queued'))
+              && !channel.pending.some(pending => pending.id === item.id && pending.docked === true),
+            )}
             onRecover={channel.recoverFailedOutgoing === undefined
               ? undefined
               : id => promptControllerRef.current?.recoverFailedOutgoing?.(id)}
