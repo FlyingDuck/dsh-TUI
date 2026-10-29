@@ -7163,6 +7163,7 @@ export function Chat({
         )}
         <MessageList
           rows={channel.rows}
+          userMessageResponses={channel.userMessageResponses}
           failureHintRowId={failureHintRowId}
           failureHint={t('traj-hint-failure', { key: primaryComboString('trajectory') })}
           expanded={expanded}

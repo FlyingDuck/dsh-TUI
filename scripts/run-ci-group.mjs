@@ -887,6 +887,9 @@ const GROUPS = {
 // 灰色扫光发送预览与明确失败回填：真实channel/facade/Chat，回执不等于持久化、
 // ID确认去重、迟到失败/换会话围栏、拒绝后恢复且不覆盖新草稿。
     ['verify-outgoing-send', ['node', '--import', 'tsx/esm', 'scripts/verify-outgoing-send.tsx']],
+// Response presentation stays grey after persistence until causally matched model content.
+    ['verify-user-response-state', ['node', '--import', 'tsx/esm', 'scripts/verify-user-response-state.ts']],
+    ['verify-user-response-start', ['node', '--import', 'tsx/esm', 'scripts/verify-user-response-start.tsx']],
 // 打断后排队消息停靠（Esc 打断不自动发、↑ 选一条编辑、空输入 ⏎ 全部发送各一次）：
 // channel 层分别用 DSH 会话夹具和 Claude 形会话夹具覆盖撤回、取消回执（确认/失败/
 // 未知）与回执在途时的门控。UI 键位在 verify-queue.mjs。

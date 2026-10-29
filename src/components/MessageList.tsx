@@ -3,7 +3,7 @@ import { getLang, subscribeLang, t, type I18nKey, type Lang } from '../i18n.js'
 import { Box, Text, useTerminalSize, type ScrollBoxHandle } from '../ui.js'
 import type { ClickEvent } from '../ink/events/click-event.js'
 import type { ChatRow, ToolRow, ToolCallView, ToolResultView, SubagentRow, JobGroupRow, JobRow } from '../dsh-adapter/channel.js'
-import type { TurnUsageSummary } from '../adapter/ports/channel-view.js'
+import type { TurnUsageSummary, UserMessageResponseState } from '../adapter/ports/channel-view.js'
 import { isPeerMessageRow, peerMessageOf } from '../channel/transcript.js'
 import type { JobGroupFoldMode } from '../tuiDisplayPrefs.js'
 import { normalizeIdePath } from '../dsh-adapter/ide-channel.js'
@@ -367,6 +367,7 @@ function signatureParts(
 
 export function MessageList({
   rows,
+  userMessageResponses,
   expanded,
   expandedRows,
   selectedId,
@@ -407,6 +408,8 @@ export function MessageList({
   suppressImageGraphics = false,
 }: {
   rows: readonly ChatRow[]
+  /** Temporary display states keyed only by persisted human user row IDs. */
+  userMessageResponses?: readonly UserMessageResponseState[]
   expanded: boolean
   expandedRows: ReadonlySet<number>
   selectedId: number | null
@@ -525,6 +528,9 @@ export function MessageList({
   suppressImageGraphics?: boolean
 }) {
   const lang = React.useSyncExternalStore(subscribeLang, getLang)
+  // Only the per-row primitive crosses MemoRow; animation never updates this map.
+  const responsePhases = new Map<number, UserMessageResponseState['phase']>()
+  for (const state of userMessageResponses ?? []) responsePhases.set(state.rowId, state.phase)
   const hiddenCount = rows.length - RENDERED_ROW_CAP
   // The thinking filter runs BEFORE virtualization so window indices line up.
   //
@@ -1561,6 +1567,7 @@ export function MessageList({
               sender={peer?.sender}
               senderCaptionKey={peer?.captionKey}
               senderLead={peer?.lead}
+              userMessageResponsePhase={row.kind === 'user' && peer === undefined ? responsePhases.get(row.id) : undefined}
               streaming={displayStreaming}
               thinkingOpen={row.thinkingOpen === true}
               durationMs={row.durationMs}
@@ -1648,6 +1655,8 @@ type MemoRowProps = {
   senderCaptionKey?: I18nKey
   /** A plugin relay row's sanitized head before the sender (`intercom · receive ← `). */
   senderLead?: string
+  /** Visual sidecar only; does not affect row geometry or delivery. */
+  userMessageResponsePhase: UserMessageResponseState['phase'] | undefined
   /** Session cwd for the indicator's display-path relativization (T-FIX-01). */
   sessionCwd: string | undefined
   streaming: boolean
@@ -1757,6 +1766,7 @@ function TranscriptRow({
   sender,
   senderCaptionKey,
   senderLead,
+  userMessageResponsePhase,
   sessionCwd,
   streaming,
   thinkingOpen,
@@ -1899,6 +1909,7 @@ function TranscriptRow({
               text={displayText}
               marginTopOnTurn={marginTopOnTurn}
               isSelected={isSelected}
+              phase={userMessageResponsePhase}
             />
           )}
           {images !== undefined && (

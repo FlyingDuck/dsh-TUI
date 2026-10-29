@@ -82,6 +82,7 @@ async function run(cols: number, fullscreen: boolean): Promise<void> {
     await sleep(60)
   }
   const pick = async (digit: string): Promise<void> => { await type(digit); stdin.write('\r') }
+  const userRowsByTurn = new Map<string, number>()
   const start = async (text: string): Promise<string> => {
     const before = h.sent('turn/start').length
     await type(text)
@@ -90,6 +91,10 @@ async function run(cols: number, fullscreen: boolean): Promise<void> {
     const params = h.sent('turn/start').at(-1)!
     const id = 'turn-' + (before + 1)
     await h.startTurn(id, String(params.clientUserMessageId), text)
+    const event = h.events().findLast(event => event.type === 'user.message' && event.id === String(params.clientUserMessageId))
+    const row = event?.type === 'user.message' ? channel.rows.findLast(row => row.kind === 'user' && row.seq === event.seq) : undefined
+    check(tag + ': recorded input stays grey before Codex produces content', row !== undefined && channel.userMessageResponses.some(item => item.rowId === row.id && item.phase === 'waiting'), view())
+    if (row !== undefined) userRowsByTurn.set(id, row.id)
     return id
   }
   const resolveLast = async (): Promise<void> => { await h.notify('serverRequest/resolved', { requestId: [...h.fake.responses.keys()].at(-1) }) }
@@ -109,6 +114,7 @@ async function run(cols: number, fullscreen: boolean): Promise<void> {
       view())
     const turn = await start('stream output')
     await h.notify('item/started', { turnId: turn, item: command('live') })
+    check(tag + ': first native tool call acknowledges its real user row', !channel.userMessageResponses.some(item => item.rowId === userRowsByTurn.get(turn)), view())
     await h.notify('item/commandExecution/outputDelta', { turnId: turn, itemId: 'live', delta: Array.from({ length: 12 }, (_, i) => 'live-tail-' + (i + 1)).join('\n') + '\n' })
     h.clock.advance(100)
     check(tag + ': newest live output arrives before completion', await settled(() => view().includes('live-tail-12')) && channel.rows.some(row => row.tool?.callId === 'live' && row.tool.status === 'running'), view())

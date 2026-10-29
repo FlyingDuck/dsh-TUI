@@ -217,6 +217,7 @@ export function createBindingEvents(ctx: Context, deps: {
     state: deps.state,
     inputConvergence: deps.inputConvergence,
     route: router.route,
+    resetResponses: router.resetResponses,
     hooks: () => hooks,
   })
   return { bind: binder.bind, hooks }

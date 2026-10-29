@@ -236,6 +236,7 @@ export const CHANNEL_UI_PROPERTIES = [
   'loadedContext',
   'pending',
   'outgoing',
+  'userMessageResponses',
   'commandList',
   'pluginScene',
   'contextSegments',

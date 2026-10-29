@@ -162,6 +162,27 @@ export function createCoreChannel(
   // construction rollback funnel immediately; normal release remains
   // idempotent through the same disposer.
   owner.own(() => emitter.dispose())
+  // A feed batch may publish a notification while projecting durable facts.
+  // Coalesce those wakes until rows, receipts and response display agree.
+  let feedDepth = 0
+  let feedWake: 'sync' | 'frame' | undefined
+  const wake = (mode: 'sync' | 'frame'): void => {
+    if (feedDepth > 0) {
+      if (mode === 'sync' || feedWake === undefined) feedWake = mode
+    } else if (mode === 'sync') emitter.emit()
+    else emitter.emitStream()
+  }
+  const batchFeed = (apply: () => void): void => {
+    feedDepth += 1
+    try { apply() } finally {
+      feedDepth -= 1
+      if (feedDepth === 0 && feedWake !== undefined) {
+        const mode = feedWake
+        feedWake = undefined
+        wake(mode)
+      }
+    }
+  }
   const notify: ChannelState['notify'] = (...args) => {
     if (!owner.current()) return () => undefined
     return channelCommands(state).notify(...args)
@@ -449,8 +470,8 @@ export function createCoreChannel(
     subscribe: emitter.subscribe,
     // Filled by the git refresher: on a cwd change, then once per settled turn.
     gitStatus: undefined,
-    emit: emitter.emit,
-    emitStream: emitter.emitStream,
+    emit: () => wake('sync'),
+    emitStream: () => wake('frame'),
     ...createSettingsHosts(ctx, owner.assertActive),
     ...createPreferences(() => state),
     /** Mount-owned settings namespace: the section registers under it, so this
@@ -783,6 +804,7 @@ export function createCoreChannel(
     state,
     options,
     inputConvergence,
+    batch: batchFeed,
     projection: {
       rowIds, resetContextWarning,
       jobs: NO_JOB_FEED,

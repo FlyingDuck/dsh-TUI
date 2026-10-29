@@ -665,6 +665,12 @@ export interface LoadedContextTool {
   readonly description: string
 }
 
+/** Display-only response state of a durable human row; never a delivery receipt. */
+export interface UserMessageResponseState {
+  readonly rowId: number
+  readonly phase: 'waiting' | 'stopped'
+}
+
 /** @internal */
 /** One user message submitted while the model was working, not yet claimed
  *  by a turn. `steer` lands at the next step boundary of the running turn;

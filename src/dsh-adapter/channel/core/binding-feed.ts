@@ -29,6 +29,7 @@ import type { ChannelLaunchOptions } from '../state.js'
 import { createTaskCompletion } from '../task-completion.js'
 import type { ChannelState } from '../types.js'
 import type { SessionControls } from './session-controls.js'
+import { createUserMessageResponses } from './user-message-responses.js'
 
 /** What one bind hands an extension's per-binding listeners. */
 export interface BindingScope {
@@ -66,6 +67,8 @@ export function createSessionBatchRouter(deps: {
   state: ChannelState
   projector: ChannelProjection
   inputConvergence: InputConvergence
+  /** Defer nested renderer wakes until this whole synchronous batch agrees. */
+  batch?(apply: () => void): void
   /** Drop channel-side context attached to a discarded input (DSH pre-step
    *  attachments); absent where nothing is ever attached. */
   retireAttachment?(messageId: string): void
@@ -82,7 +85,8 @@ export function createSessionBatchRouter(deps: {
   *  git facts it cannot otherwise notice while the directory stays put. */
   onTurnSettled?(): void
 }) {
-  const reconcileRetiredProjection = (status: 'idle' | 'disposed'): void => {
+  const responses = createUserMessageResponses(deps.state)
+  const settleRetiredProjection = (status: 'idle' | 'disposed'): void => {
     if (!deps.state.working) return
     deps.warn(`dsh-tui: agent became ${status} while the channel still projected an open turn; releasing volatile UI gates`)
     deps.inputConvergence.cancelInFlight = false
@@ -97,12 +101,12 @@ export function createSessionBatchRouter(deps: {
   const applyStatus = (status: 'idle' | 'running' | 'requires-action' | 'disposed'): void => {
     if (status === 'disposed') {
       deps.state.status = 'disposed'
-      reconcileRetiredProjection('disposed')
+      settleRetiredProjection('disposed')
       return
     }
     // The channel's status is idle/running only; a parked prompt is mid-turn.
     deps.state.status = status === 'idle' ? 'idle' : 'running'
-    if (status === 'idle') reconcileRetiredProjection('idle')
+    if (status === 'idle') settleRetiredProjection('idle')
   }
   /**
    * The backend queue lost inputs. A claim and a discard both retire the
@@ -129,7 +133,7 @@ export function createSessionBatchRouter(deps: {
   let turnStarts = 0
   let turnEnds = 0
 
-  const route = (batch: readonly AgentEvent[], meta: AgentEventMeta, current: () => boolean): void => {
+  const applyBatch = (batch: readonly AgentEvent[], meta: AgentEventMeta, current: () => boolean): void => {
     // The generation fence covers the whole batch, whatever it carries. A
     // callback retained past a rebind (an in-flight dispatch, a compaction
     // summary stream that outlived the binding it started under) must never
@@ -140,7 +144,7 @@ export function createSessionBatchRouter(deps: {
     // Confirmation wins even over a discard/refusal in this same batch. Do
     // not emit until the shared projector has painted the durable user row.
     for (const event of batch) {
-      if (event.type !== 'user.message') continue
+      if (meta.replay || event.type !== 'user.message') continue
       receiptChanged = (deps.confirmOutgoing?.(event.id) ?? false) || receiptChanged
       const pending = deps.state.pending.filter(item => item.id !== event.id)
       if (pending.length !== deps.state.pending.length) {
@@ -186,28 +190,49 @@ export function createSessionBatchRouter(deps: {
       deps.state.emitStream()
       return
     }
-    // The one writer of the foreground transcript. A live conversation
-    // reset splits the batch: what came before it is projected first.
-    const onReset = meta.replay ? undefined : deps.onReset
-    if (onReset !== undefined && events.some(event => event.type === 'session.reset')) {
+    // The one writer of the foreground transcript. Publish response display
+    // state only after its real rows exist, before the receipt's single wake.
+    let responseChanged = false
+    const project = (segment: readonly AgentEvent[]): void => {
+      deps.projector.apply(segment, meta)
+      responseChanged = responses.apply(segment, meta) || responseChanged
+    }
+    // A live conversation reset splits both ledgers at exactly the same point.
+    if (!meta.replay && events.some(event => event.type === 'session.reset')) {
       let start = 0
       events.forEach((event, index) => {
         if (event.type !== 'session.reset') return
-        if (index > start) deps.projector.apply(events.slice(start, index), meta)
-        onReset(event)
+        if (index > start) project(events.slice(start, index))
+        responseChanged = deps.state.userMessageResponses.length > 0 || responseChanged
+        responses.reset()
+        if (deps.onReset === undefined) deps.projector.apply([event], meta)
+        else deps.onReset(event)
         start = index + 1
       })
-      if (start < events.length) deps.projector.apply(events.slice(start), meta)
+      if (start < events.length) project(events.slice(start))
     } else {
-      deps.projector.apply(events, meta)
+      project(events)
     }
     if (meta.wake === 'frame') deps.state.emitStream()
-    else if (meta.wake !== 'none' || receiptChanged || batch.some(event => event.type === 'session.status' || event.type === 'pending.changed')) deps.state.emit()
+    else if (meta.wake !== 'none' || receiptChanged || responseChanged || batch.some(event => event.type === 'session.status' || event.type === 'pending.changed')) deps.state.emit()
     deps.taskCompletion?.(events, meta, current)
     if (wasWorking && !deps.state.working) deps.onTurnSettled?.()
   }
 
-  return { route, reconcileRetiredProjection, turnStarts: (): number => turnStarts, turnEnds: (): number => turnEnds }
+  return {
+    route(batch: readonly AgentEvent[], meta: AgentEventMeta, current: () => boolean): void {
+      if (!current()) return
+      if (deps.batch === undefined) applyBatch(batch, meta, current)
+      else deps.batch(() => applyBatch(batch, meta, current))
+    },
+    resetResponses: responses.reset,
+    reconcileRetiredProjection(status: 'idle' | 'disposed'): void {
+      settleRetiredProjection(status)
+      responses.stop()
+    },
+    turnStarts: (): number => turnStarts,
+    turnEnds: (): number => turnEnds,
+  }
 }
 
 /**
@@ -226,6 +251,8 @@ export function createSessionBinder(deps: {
   resetTrajectory?(): void
   /** Clear input receipts and release the old FIFO on every binding generation. */
   resetInput?(): void
+  /** Drop live response display state before any replacement seed paints. */
+  resetResponses?(): void
   /** The stores a session's prompts park in (`ChannelLaunchOptions.interaction`). */
   interaction?: ChannelLaunchOptions['interaction']
   /** The session-level facts kept unless the extension owns them. */
@@ -252,6 +279,7 @@ export function createSessionBinder(deps: {
     try {
       state.agentBindingGeneration = binding.bind()
       deps.resetInput?.()
+      deps.resetResponses?.()
       deps.resetTrajectory?.()
       hooks.onGeneration?.()
       inputConvergence.cancelInFlight = false
@@ -306,6 +334,8 @@ export function createBindingFeed(ctx: { readonly logger: ChannelHostLogger }, d
   /** A live turn just settled (see createSessionBatchRouter). */
   onTurnSettled?(): void
   inputConvergence: InputConvergence
+  /** Compose-owned wake transaction (durable projection remains synchronous). */
+  batch?(apply: () => void): void
   /** The projector's channel-side dependencies; `jobs` and `pricingWindow`
    *  stay writable until the channel starts (`configureProjection`). */
   projection: Omit<ChannelProjectionDeps, 'inputConvergence'>
@@ -332,6 +362,7 @@ export function createBindingFeed(ctx: { readonly logger: ChannelHostLogger }, d
     state,
     projector,
     inputConvergence,
+    batch: deps.batch,
     retireAttachment: deps.retireAttachment,
     confirmOutgoing: deps.confirmOutgoing,
     ownsCompactionProgress: () => deps.hooks().ownsCompactionProgress?.() ?? false,
@@ -344,6 +375,7 @@ export function createBindingFeed(ctx: { readonly logger: ChannelHostLogger }, d
   /** Forget every per-session projection ledger: the projector's and the
    *  bound session translator's, together. */
   const resetProjection = (): void => {
+    router.resetResponses()
     projector.reset()
     deps.hooks().resetTranslation?.()
   }
@@ -390,6 +422,7 @@ export function createBindingFeed(ctx: { readonly logger: ChannelHostLogger }, d
     state,
     inputConvergence,
     route: router.route,
+    resetResponses: router.resetResponses,
     hooks: deps.hooks,
     ...(deps.resetTrajectory === undefined ? {} : { resetTrajectory: deps.resetTrajectory }),
     ...(deps.resetInput === undefined ? {} : { resetInput: deps.resetInput }),

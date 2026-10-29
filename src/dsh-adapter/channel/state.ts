@@ -199,7 +199,7 @@ export function createInitialChannelView(
   'foldTerminalCommand' | 'turnUsageRow' | 'promptSessionLabel' | 'expandEditor' | 'smoothStreaming' |
   'statusBar' | 'whale' | 'whaleIdle' | 'splashFont' | 'brand' | 'minimalUi' | 'activityEnabled' | 'contextBarEnabled' |
   'statusBar' | 'whale' | 'whaleIdle' | 'whaleGirl' | 'minimalUi' | 'activityEnabled' | 'contextBarEnabled' |
-  'agentPreset' | 'goal' | 'todos' | 'loadedContext' | 'pending' | 'outgoing' | 'commandList' |
+  'agentPreset' | 'goal' | 'todos' | 'loadedContext' | 'pending' | 'outgoing' | 'userMessageResponses' | 'commandList' |
   'lastUsage' | 'turnUsage' | 'turnOutcome' | 'tps' | 'tpsSamples' | 'contextSegments' | 'mainCost' | 'subagentCost' | 'subagents' | 'backgroundJobs' | 'selection'
 > {
   return {
@@ -223,7 +223,7 @@ export function createInitialChannelView(
     smoothStreaming: options.smoothStreaming !== false, statusBar: normalizeStatusBar(options.statusBar),
     whale: options.whale !== false, whaleIdle: options.whaleIdle !== false, whaleGirl: options.whaleGirl === true, splashFont: normalizeSplashFont(options.splashFont), brand: normalizeBrandSetting(options.brand), minimalUi: options.minimalUi === true, activityEnabled: options.activity !== false,
     contextBarEnabled: options.contextBar !== false, agentPreset: options.agentPreset, goal: undefined,
-    todos: [], loadedContext: undefined, pending: [], outgoing: [], commandList: [], lastUsage: undefined, turnUsage: undefined, turnOutcome: undefined,
+    todos: [], loadedContext: undefined, pending: [], outgoing: [], userMessageResponses: [], commandList: [], lastUsage: undefined, turnUsage: undefined, turnOutcome: undefined,
     tps: undefined, tpsSamples: [], contextSegments: { system: 0, prompt: 0, assistant: 0, thinking: 0, tools: 0 },
     // 费用估算输入：主会话按模型分桶 + 子代理快照。与 tokens 并行累计，
     // tokens 的既有语义/显示不变（DESIGN D2）。
