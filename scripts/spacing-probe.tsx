@@ -267,14 +267,14 @@ check(
 )
 
 // 8. Status line metrics (pi-bar style): pressure percent/window, think
-//    level, cache hits, tps gauge/sparkline. The footer row also carries
+//    level, cache hits, then a plain `N tps` readout. The footer row also carries
 //    the cwd, so pin it by the model id + cache label (zh locale: 缓存).
 const statusLine = contentLines.find(l => l.includes('deepseek-v4-flash') && l.includes('缓存')) ?? ''
 check('statusline think level', statusLine.includes('max') && !statusLine.includes('think:max'), 'bare effort level (no think: prefix)')
 check('statusline cache', statusLine.includes('缓存 20.5%'), 'cache hit rate, one decimal (3400/16600)')
-check('statusline tps single value', statusLine.includes('tps') && !statusLine.includes('μ') && !statusLine.includes('p95'), `sparkline + one tps number (got: ${statusLine})`)
-check('statusline sparkline blocks', /[▁▂▃▄▅▆▇█]/.test(cursorMoved), 'sparkline glyphs present')
-check('statusline speed color', cursorMoved.includes('\x1b[38;2;202;138;4m') || cursorMoved.includes('\x1b[38;2;78;186;101m'), 'warning/success tps color')
+check('statusline tps single value', statusLine.includes('42 tps') && !statusLine.includes('μ') && !statusLine.includes('p95'), `one plain tps number (got: ${statusLine})`)
+check('statusline tps after cache', statusLine.indexOf('缓存') >= 0 && statusLine.indexOf('缓存') < statusLine.indexOf('42 tps'), `tps follows the cache hit rate (got: ${statusLine})`)
+check('statusline tps no gauge', !/[▁▂▃▄▅▆▇▕▏]/.test(statusLine), `no gauge/sparkline glyphs (got: ${statusLine})`)
 // 9. Segmented context bar (pi-nano-context algorithm, DeepSeek palette) on
 //    its own first footer row. The bar is fill-only: its one piece of text is
 //    the right-aligned `counts percent` readout (labels were removed

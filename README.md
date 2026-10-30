@@ -19,7 +19,7 @@
 
 > An interactive terminal UI for DeepSeek Harness. It ships a pixel-whale
 > header, live work status, streaming thinking, double-Esc time rewind, a
-> context progress bar, and a TPS gauge. Zero core changes: it consumes only
+> context progress bar, and a TPS readout. Zero core changes: it consumes only
 > DSH's public exports, and is moving from a mounted plugin to an app with its
 > own entry and composition root, where DSH loads in process as the first-party
 > backend. Install to enable; uninstall leaves no patches behind.

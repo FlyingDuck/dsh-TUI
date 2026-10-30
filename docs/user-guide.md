@@ -567,7 +567,7 @@ DSH 插件只有在持久消息来源中明确提供 `kind: 'plugin:…'`、`for
 - 悬停整条弹出图例：色块 + 名称 + token 数（窄屏自动改用短名）。
 
 **Row 2 — 状态字段行**（每个字段独立开关，见 `/settings`）
-- 左组：模型 → TPS → thinking → mode → ctx（**上下文占用** `19.5% (13k/64k)`：与分段条、工作线压力前缀、`/tokens`、`/status` 和上下文告警**同读一个值**，来源是 harness 自带的 `contextPressure` 投影——`projectedTokens ?? pressureTokens`，即「下一次请求」的占用，压缩与被拒请求都会立刻反映，不再等一次成功请求；投影缺席的裸 `cordis.yml` 组合回退到上次请求的计费用量）→ cache 缓存命中率 → tokens（`1.2k→340` 输入→输出）→
+- 左组：模型 → thinking → mode → ctx（**上下文占用** `19.5% (13k/64k)`：与分段条、工作线压力前缀、`/tokens`、`/status` 和上下文告警**同读一个值**，来源是 harness 自带的 `contextPressure` 投影——`projectedTokens ?? pressureTokens`，即「下一次请求」的占用，压缩与被拒请求都会立刻反映，不再等一次成功请求；投影缺席的裸 `cordis.yml` 组合回退到上次请求的计费用量）→ cache 缓存命中率 → TPS（`42 tps`）→ tokens（`1.2k→340` 输入→输出）→
   cost（`≈¥0.05 谷`，**本会话估算**：包含子代理用量，按各自模型 × 峰值/空闲 × 缓存分项计价；
   hover 拆「主会话 ¥ / 子代理 ¥ / 未计价 N tok」；非官方/未收录模型只显示 token 并标注未计价；
   **估算是参考，以平台账单为准**）
@@ -586,8 +586,7 @@ DSH 插件只有在持久消息来源中明确提供 `kind: 'plugin:…'`、`for
 - 右侧**迷你轨迹条 MiniWake**（`statusBar.trajectory`，默认关）：会话投影为密度字形，颜色区分通道，失败列染红；
   窄屏降格/隐藏。
 
-**TPS 仪表**（`statusBar.tps`，默认关）：流式中显示实时 gauge + `N tps`，回合后显示 sparkline；
-速度 **≥50 绿 / ≥20 黄 / <20 红**。
+**TPS**（`statusBar.tps`，默认关）：纯文字 `N tps`，不画仪表；hover 显示 60 秒均值、全程均值与 p95。
 
 ### 5.3 /settings 设置编辑器
 

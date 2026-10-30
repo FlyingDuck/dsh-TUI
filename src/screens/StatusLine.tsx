@@ -48,9 +48,6 @@ import {
   contextBarBreakdown,
   contextBarSegmentColors,
   renderMiniContextBar,
-  renderTpsGauge,
-  renderTpsSparkline,
-  speedColor,
   tpsStats,
 } from './StatusMetrics.js'
 import type { WaveBand } from '../dsh-adapter/types.js'
@@ -59,8 +56,8 @@ import type { ContextOccupancy } from '../adapter/ports/channel-view.js'
 /**
  * The footer under the prompt input: the segmented context progress bar on
  * its own first line, the
- * status line below (left group: model · tokens · think level · cache · tps
- * gauge/sparkline; right group: git · cwd · title · short session id,
+ * status line below (left group: model · tokens · think level · cache · tps;
+ * right group: git · cwd · title · short session id,
  * right-aligned), an independent current-directory row while away from the
  * workspace, and the mode/hint line last. The right side of the footer shows the latest
  * transient notification (errors in red, warnings in amber).
@@ -576,41 +573,11 @@ export function StatusLine({
     }
   }
 
-  let tpsPart: FieldPart | undefined
-  if (statusBar.tps && channel.tps !== undefined) {
-    if (channel.working && channel.tpsSamples.length === 0) {
-      tpsPart = {
-        key: 'tps',
-        id: 'tps',
-        node: (
-          <Text>
-            {renderTpsGauge(channel.tps, channel.tps)}{' '}
-            <Text dimColor>{Math.round(channel.tps)} tps</Text>
-          </Text>
-        ),
-      }
-    } else if (channel.tpsSamples.length > 0) {
-      const peak = Math.max(...channel.tpsSamples.map(sample => sample.tps), channel.tps)
-      tpsPart = {
-        key: 'tps',
-        id: 'tps',
-        node: (
-          <Text>
-            {channel.working
-              ? renderTpsGauge(channel.tps, peak)
-              : renderTpsSparkline(channel.tpsSamples)}{' '}
-            {speedColor(channel.tps, `${Math.round(channel.tps)}`)} tps
-          </Text>
-        ),
-      }
-    } else {
-      tpsPart = {
-        key: 'tps',
-        id: 'tps',
-        node: <Text dimColor>{Math.round(channel.tps)} t/s</Text>,
-      }
-    }
-  }
+  // Plain `N tps` text, no gauge or sparkline; the hover detail keeps the
+  // rolling stats.
+  const tpsPart: FieldPart | undefined = statusBar.tps && channel.tps !== undefined
+    ? { key: 'tps', id: 'tps', node: <Text dimColor>{Math.round(channel.tps)} tps</Text> }
+    : undefined
 
 const selectionBadge = formatSelectionBadge(channel.selection)
   // The short id names the backend's own session, the id `--resume`
@@ -646,9 +613,6 @@ const selectionBadge = formatSelectionBadge(channel.selection)
       }
     : undefined
   const modelLabel = channel.modelDisplay ?? channel.model
-  if (tpsPart !== undefined && channel.tps !== undefined) {
-    tpsPart.compactNode = <Text dimColor>{Math.round(channel.tps)} tps</Text>
-  }
   const builtinLeft: FieldPart[] = [
     ...(startingPart !== undefined ? [startingPart] : []),
     ...(statusBar.model
@@ -660,9 +624,9 @@ const selectionBadge = formatSelectionBadge(channel.selection)
           minCells: 8,
         }]
       : []),
-    ...(tpsPart !== undefined ? [tpsPart] : []),
     ...(jobsPart !== undefined ? [jobsPart] : []),
     ...contextParts,
+    ...(tpsPart !== undefined ? [tpsPart] : []),
     ...(statusBar.tokens
       ? [{
           key: 'tokens',

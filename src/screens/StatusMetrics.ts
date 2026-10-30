@@ -583,12 +583,9 @@ export function renderMiniContextBar(
   return `▕${pressureColor(pct, fill)}${`\x1b[2m${track}\x1b[22m`}▏`
 }
 
-// --- TPS gauge + sparkline (pi-tps-meter) ---
+// --- Bar glyphs + TPS colour (pi-tps-meter) ---
 
-const BLOCKS = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█']
 const HBLOCKS = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉']
-const GAUGE_LEN = 11
-const GAUGE_FLOOR = 40
 const TRACK = '·'
 const FAST = 50
 const MED = 20
@@ -611,52 +608,6 @@ function colorHex(key: 'success' | 'warning' | 'error'): string {
     error: '#ff6b80',
   }
   return palette[key] ?? '#ffffff'
-}
-
-/** Live 1/8-cell horizontal gauge: `▕███████▋···▏`.
- * @param tps - Current tokens per second.
- * @param peak - Scaling peak; values below 40 scale against the floor instead.
- * @returns The ANSI gauge string.
- */
-export function renderTpsGauge(tps: number, peak: number): string {
-  const scale = Math.max(peak, GAUGE_FLOOR)
-  const frac = Math.min(1, Math.max(0, scale > 0 ? tps / scale : 0))
-  const eighths = Math.round(frac * GAUGE_LEN * 8)
-  const full = Math.floor(eighths / 8)
-  const rem = eighths % 8
-  let fill = '█'.repeat(full)
-  if (full < GAUGE_LEN && rem > 0) {
-    fill += HBLOCKS[rem]
-  }
-  const track = TRACK.repeat(Math.max(0, GAUGE_LEN - fill.length))
-  return `▕${speedColor(tps, fill)}${`\x1b[2m${track}\x1b[22m`}▏`
-}
-
-/** Min-max normalized 12-sample sparkline: `▁▄▇▅▂▁▇█▅▃▆▇`.
- * @param samples - Turn TPS samples; only the last 12 are rendered.
- * @returns The ANSI sparkline string.
- */
-export function renderTpsSparkline(samples: readonly { tps: number }[]): string {
-  const vals = samples.slice(-12)
-  if (vals.length === 0) return '\x1b[2m' + TRACK.repeat(12) + '\x1b[22m'
-  let min = Infinity
-  let max = 0
-  for (const { tps } of vals) {
-    if (tps < min) min = tps
-    if (tps > max) max = tps
-  }
-  const range = max - min
-  return vals
-    .map(({ tps }) => {
-      const norm =
-        range < 1e-6
-          ? max > 0
-            ? 4
-            : 0
-          : Math.min(7, Math.max(0, Math.round(((tps - min) / range) * 7)))
-      return speedColor(tps, BLOCKS[norm] ?? '▁')
-    })
-    .join('')
 }
 
 /** Rolling stats: 60s average, all-time mean and p95.

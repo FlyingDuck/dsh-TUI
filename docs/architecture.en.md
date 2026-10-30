@@ -146,9 +146,9 @@ Do not print diagnostics to an active TUI's stdout; use stderr
 
 - **Context progress bar**: based on the pi-nano-context algorithm
   (largest-remainder segmented coloring + multi-level condensed readouts).
-- **TPS meter**: based on pi-tps-meter — a streaming 1/8-block gauge,
-  historical min-max sparkline, and speed-based semantic colors (≥50 green /
-  ≥20 yellow / <20 red).
+- **TPS**: the footer shows plain `N tps` text; the speed-based semantic
+  colors (≥50 green / ≥20 yellow / <20 red, from pi-tps-meter) remain in the
+  side-panel info panel.
 - **working-activity**: the plugin
   [dsh-working-activity](https://github.com/ccch1mneyyy/working-activity)
   folds the working-status line and publishes it as the `workingActivity`

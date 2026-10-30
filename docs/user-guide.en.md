@@ -624,12 +624,12 @@ An empty session shows the whale logo area at the top (scrolls away with the con
 - Hover the whole bar for the legend: color block + name + token count (narrow screens shorten the names).
 
 **Row 2 — status field row** (each field toggled separately, see `/settings`)
-- left group: model → TPS → thinking → mode → ctx (**context occupancy** `19.5% (13k/64k)`: the SAME
+- left group: model → thinking → mode → ctx (**context occupancy** `19.5% (13k/64k)`: the SAME
   value the segmented bar, the working line's pressure prefix, `/tokens`, `/status` and the context-low
   warning read, sourced from the harness's own `contextPressure` projection — `projectedTokens ??
   pressureTokens`, i.e. what the NEXT request would occupy, so a compaction or a rejected request shows
   up immediately instead of waiting for one successful request; a bare `cordis.yml` composition without
-  the meter falls back to the last request's billed usage) → cache hit rate → tokens (`1.2k→340` input→output) →
+  the meter falls back to the last request's billed usage) → cache hit rate → TPS (`42 tps`) → tokens (`1.2k→340` input→output) →
   cost (`≈¥0.05 谷`, **a session estimate** that includes subagent usage, priced per
   each agent's model × peak/idle × cache components; hover splits main ¥ / subagent ¥ / unpriced N tok;
   unofficial or unlisted models show tokens only and are marked unpriced;
@@ -649,8 +649,7 @@ An empty session shows the whale logo area at the top (scrolls away with the con
 - Right-side **mini trace bar MiniWake** (`statusBar.trajectory`, default off): session projected as density glyphs, color per channel, failures red;
   degrades/hides on narrow screens.
 
-**TPS gauge** (`statusBar.tps`, default off): streaming shows a live gauge + `N tps`, after the turn a sparkline;
-speed **≥50 green / ≥20 yellow / <20 red**.
+**TPS** (`statusBar.tps`, default off): plain `N tps` text, no gauge; hover shows the 60s average, all-time mean and p95.
 
 ### 5.3 The /settings editor
 
