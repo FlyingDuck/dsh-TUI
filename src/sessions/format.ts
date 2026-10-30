@@ -339,7 +339,7 @@ function relativeInside(base: string, target: string): string | undefined {
 /** Keep the deepest whole segments that fit the budget under a leading `…/`.
  *  A single component wider than the budget keeps its own tail: the leaf names
  *  the directory, its head is the predictable part to lose. */
-function truncateRelative(relative: string, maxCells: number): string {
+export function truncateDirectoryPath(relative: string, maxCells: number): string {
   if (stringWidth(relative) <= maxCells) return relative
   const segments = relative.split('/').filter(segment => segment !== '')
   let tail = ''
@@ -348,7 +348,15 @@ function truncateRelative(relative: string, maxCells: number): string {
     if (stringWidth(`…/${next}`) > maxCells) break
     tail = next
   }
-  return tail === '' ? tailWidth(relative, maxCells) : `…/${tail}`
+  if (tail !== '') return `…/${tail}`
+  let suffix = ''
+  const graphemes = Array.from(getGraphemeSegmenter().segment(relative), part => part.segment)
+  for (let index = graphemes.length - 1; index >= 0; index -= 1) {
+    const next = graphemes[index]! + suffix
+    if (stringWidth(`…${next}`) > maxCells) break
+    suffix = next
+  }
+  return maxCells > 0 ? `…${suffix}` : ''
 }
 
 /**
@@ -364,6 +372,7 @@ function truncateRelative(relative: string, maxCells: number): string {
 export function compactWorkingDirectory(
   channel: { readonly cwd: string; readonly displayCwd: string; readonly workingDirectory: string | undefined },
   home: string,
+  maxCells = COMPACT_RELATIVE_MAX_CELLS,
 ): CompactWorkingDirectory | undefined {
   const current = channel.workingDirectory
   if (current === undefined || current === channel.cwd) return undefined
@@ -371,5 +380,5 @@ export function compactWorkingDirectory(
   const inside = relativeInside(channel.cwd, current)
   return inside === undefined
     ? { anchor, separator: '→', target: formatProject(current, home) }
-    : { anchor, separator: '›', target: truncateRelative(inside, COMPACT_RELATIVE_MAX_CELLS) }
+    : { anchor, separator: '›', target: truncateDirectoryPath(inside, maxCells) }
 }

@@ -86,7 +86,8 @@ function makeChannel() {
     lastUsage: { input: 40_000, output: 25, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100_000,
     contextBarEnabled: true,
     contextSegments: { system: 4_000, prompt: 20_000, assistant: 6_000, thinking: 2_000, tools: 8_000 },
-    cwd: CWD, displayCwd: CWD, gitBranch: 'main', minimalUi: false,
+    cwd: CWD, displayCwd: CWD, workingDirectory: undefined as string | undefined,
+    gitBranch: 'main', minimalUi: false,
     statusBar: {
       ...prefs.DEFAULT_STATUS_BAR, compact: true, shortcutHint: true,
       thinking: false, cache: false, cost: false, contextUsage: true,
@@ -316,6 +317,37 @@ await verify('footer preference heights are measured, not fixed', async () => {
     await f.assertShared('restored footer')
   } finally { await f.close() }
 })
+
+for (const fullscreen of [false, true]) {
+  await verify(`directory moves resize the ${fullscreen ? 'fullscreen' : 'inline'} footer without losing drafts`, async () => {
+    const f = await mount({ fullscreen })
+    try {
+      f.stdin.write(DRAFT)
+      check('draft is present before moving', await settled(() => f.rowOf(DRAFT) >= 0), f.snapshot())
+      const initial = await f.assertShared('before move', fullscreen)
+      f.channel.workingDirectory = `${CWD}/.worktrees/footer-leaf`
+      f.channel.emit()
+      check('move adds exactly one measured footer row', await settled(() => f.rect('StatusLine')?.height === initial.footer!.height + 1), f.snapshot())
+      const moved = await f.assertShared('away', fullscreen)
+      const statusRow = f.point(MODEL, moved.footer!.y)!.row
+      check('workspace and current leaf are on consecutive footer rows',
+        f.point('footer-leaf', moved.footer!.y)?.row === statusRow + 1
+        && f.point('FOOTER_DIRECTORY', moved.footer!.y)?.row === statusRow, f.snapshot())
+      check('growing footer preserves the real composer draft', f.rowOf(DRAFT) >= 0, f.snapshot())
+      if (fullscreen) check('sidebar gives the current-directory row its measured space',
+        moved.side!.height === initial.side!.height - 1, JSON.stringify({ initial, moved }))
+      await f.resize(80)
+      await f.assertShared('away narrow', false)
+      check('narrow Chat keeps the directory leaf and draft visible', f.rowOf('footer-leaf') >= 0 && f.rowOf(DRAFT) >= 0, f.snapshot())
+      f.channel.workingDirectory = CWD
+      f.channel.emit()
+      check('return removes the row and restores measured footer height', await settled(() =>
+        f.rowOf('footer-leaf') < 0 && f.rect('StatusLine')?.height === initial.footer!.height), f.snapshot())
+      await f.assertShared('returned narrow', false)
+      check('return preserves the unchanged draft', f.rowOf(DRAFT) >= 0, f.snapshot())
+    } finally { await f.close() }
+  })
+}
 
 await verify('plugin fields use the shared footer and follow its width', async () => {
   const f = await mount()

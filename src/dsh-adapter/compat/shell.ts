@@ -6,6 +6,8 @@ export interface ShellRequest {
 }
 
 export interface ShellResult {
+  /** Older embedders may omit this; current shell services report it. */
+  exitCode?: number | null
   stdout: { text: string }
   stderr: { text: string }
   timedOut: boolean

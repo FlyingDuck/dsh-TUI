@@ -733,9 +733,8 @@ try {
     }
   }
 
-  // R16 — compact cwd keeps the project anchor once the session moves. The
-  // leaf alone (`ink`, `try`) says where the session is but not which project
-  // it belongs to; the breadcrumb keeps both.
+  // R16 — the compact workspace stays fixed while a separate row reports
+  // moves. The current-directory row must never wrap into the hint area.
   {
     const moved = (workingDirectory: string | undefined) => channelWith({}, {
       cwd: '/w/app',
@@ -749,19 +748,14 @@ try {
     check('R16 unmoved session shows the bare project name',
       statusRow(still).includes('app') && !statusRow(still).includes('›'),
       JSON.stringify(statusRow(still)))
-    check('R16 in-project move shows project›relative',
-      statusRow(inside).includes('app›src/ink'), JSON.stringify(statusRow(inside)))
-    check('R16 deep path truncates from the left, keeping the anchor and leaf',
-      statusRow(deep).includes('app›…/nested/nested/nested/leaf'), JSON.stringify(statusRow(deep)))
-    check('R16 outside move shows project→path',
-      statusRow(outside).includes('app→') && statusRow(outside).includes('other/repo'),
-      JSON.stringify(statusRow(outside)))
-    // A narrow footer is the tightest budget: the anchor must survive even
-    // when the target has to truncate, and the footer must stay one line.
-    // `statusRow` alone cannot prove the second half: a wrapped continuation
-    // leaves the MODELX line and its anchor intact, and every viewport line is
-    // at most the terminal width. Inspect the whole viewport instead: only
-    // the status row may carry text.
+    const locationRow = (lines: readonly string[]): string => lines.find(line => /[›→]/u.test(line)) ?? ''
+    check('R16 in-project move has its own relative path row',
+      statusRow(inside) === statusRow(still) && locationRow(inside).includes('› src/ink'), JSON.stringify(inside))
+    check('R16 deep move keeps the workspace and path leaf separately',
+      statusRow(deep) === statusRow(still) && locationRow(deep).includes('nested/leaf'), JSON.stringify(deep))
+    check('R16 outside move has its own absolute path row',
+      statusRow(outside) === statusRow(still) && locationRow(outside).includes('→ /other/repo'), JSON.stringify(outside))
+    // Tight budgets preserve the workspace and leaf on their own rows.
     const narrow = async (target: string): Promise<{ row: string; lines: readonly string[] }> => {
       const lines = await capture(40, {}, moved(target))
       return { row: statusRow(lines), lines }
@@ -769,11 +763,13 @@ try {
     const narrowInside = await narrow('/w/app/src/ink')
     const narrowDeep = await narrow('/w/app/' + 'nested/'.repeat(6) + 'leaf')
     const narrowOutside = await narrow('/other/' + 'nested/'.repeat(6) + 'leaf')
-    const oneFooterRow = (sample: { row: string; lines: readonly string[] }): boolean =>
-      sample.lines.every(line => line === sample.row || line.trim() === '')
-    check('R16 narrow footer keeps the anchor on one line',
-      narrowInside.row.includes('app›') && narrowDeep.row.includes('app›') && narrowOutside.row.includes('app→')
-      && [narrowInside, narrowDeep, narrowOutside].every(oneFooterRow),
+    const twoFooterRows = (sample: { row: string; lines: readonly string[] }): boolean =>
+      sample.lines.filter(line => line.trim() !== '').length === 2
+      && sample.row.includes('app') && /^[›→] /u.test(locationRow(sample.lines).trim())
+    check('R16 narrow footer keeps workspace and current leaf on separate rows',
+      locationRow(narrowInside.lines).includes('ink') && locationRow(narrowDeep.lines).includes('leaf')
+      && locationRow(narrowOutside.lines).includes('leaf')
+      && [narrowInside, narrowDeep, narrowOutside].every(twoFooterRows),
       JSON.stringify([narrowInside, narrowDeep, narrowOutside].map(sample =>
         sample.lines.filter(line => line.trim() !== ''))))
   }
@@ -1073,11 +1069,11 @@ try {
   const ordered = (row: string, tokens: readonly string[]): boolean =>
     tokens.every(token => row.includes(token))
     && tokens.every((token, index) => index === 0 || row.indexOf(tokens[index - 1]!) < row.indexOf(token))
-  const singleStatus = (name: string, lines: readonly string[], cols: number): string => {
+  const singleStatus = (name: string, lines: readonly string[], cols: number, expectedRows = 1): string => {
     const occupied = lines.filter(line => line.trim() !== '')
     const row = occupied[0] ?? ''
-    check(`${name}: exactly one text row within the display-cell budget`,
-      occupied.length === 1 && stringWidth(row) <= cols, JSON.stringify(occupied))
+    check(`${name}: ${expectedRows} text row(s) within the display-cell budget`,
+      occupied.length === expectedRows && occupied.every(line => stringWidth(line) <= cols), JSON.stringify(occupied))
     check(`${name}: no empty separators or ellipsis-only fields`,
       row.trim() !== '' && !/^\s*·|·\s*$|·\s*·|(?:^|·)\s*…\s*(?:·|$)/u.test(row), JSON.stringify(row))
     return row
@@ -1143,7 +1139,7 @@ try {
           workingDirectory: '/w/项目🙂/' + '目录👩‍💻/'.repeat(8) + 'leaf',
           sessionTitle: '会话e\u0301🙂-' + '完整标题'.repeat(16) + '-TITLE-END',
         })
-        const row = singleStatus(name, await adaptiveCapture(cols, adaptiveProps, channel, true), cols)
+        const row = singleStatus(name, await adaptiveCapture(cols, adaptiveProps, channel, true), cols, 2)
         check(`${name}: huge model leaves readable model, exact mode and percentage`,
           row.includes(model.startsWith('MODEL') ? 'MOD' : '模型')
           && row.includes('自动') && row.includes('20%') && !row.includes(model), JSON.stringify(row))

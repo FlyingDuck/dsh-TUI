@@ -83,9 +83,11 @@ export function createSessionBatchRouter(deps: {
   ownsCompactionProgress?(): boolean
   warn(message: string): void
   taskCompletion?: ReturnType<typeof createTaskCompletion>
-  /** A live turn just settled (working true→false): the footer refreshes the
-  *  git facts it cannot otherwise notice while the directory stays put. */
+  /** A live turn just settled (working true→false): refresh git without
+   *  waiting for the periodic status scan. */
   onTurnSettled?(): void
+  /** The projector folded a directory move; invalidate directory-scoped facts before waking. */
+  onWorkingDirectoryChange?(): void
 }) {
   const responses = createUserMessageResponses(deps.state, deps.interrupted)
   const settleRetiredProjection = (status: 'idle' | 'disposed'): void => {
@@ -142,6 +144,7 @@ export function createSessionBatchRouter(deps: {
     // write the replacement session's transcript.
     if (!current()) return
     const wasWorking = deps.state.working
+    const previousDirectory = deps.state.workingDirectory
     let receiptChanged = false
     // Confirmation wins even over a discard/refusal in this same batch. Do
     // not emit until the shared projector has painted the durable user row.
@@ -216,6 +219,7 @@ export function createSessionBatchRouter(deps: {
     } else {
       project(events)
     }
+    if (previousDirectory !== deps.state.workingDirectory) deps.onWorkingDirectoryChange?.()
     if (meta.wake === 'frame') deps.state.emitStream()
     else if (meta.wake !== 'none' || receiptChanged || responseChanged || batch.some(event => event.type === 'session.status' || event.type === 'pending.changed')) deps.state.emit()
     deps.taskCompletion?.(events, meta, current)
@@ -337,6 +341,8 @@ export function createBindingFeed(ctx: { readonly logger: ChannelHostLogger }, d
   options: Pick<ChannelLaunchOptions, 'interaction' | 'onTaskComplete'>
   /** A live turn just settled (see createSessionBatchRouter). */
   onTurnSettled?(): void
+  /** A projected directory move (see createSessionBatchRouter). */
+  onWorkingDirectoryChange?(): void
   inputConvergence: InputConvergence
   /** Compose-owned wake transaction (durable projection remains synchronous). */
   batch?(apply: () => void): void
@@ -376,6 +382,7 @@ export function createBindingFeed(ctx: { readonly logger: ChannelHostLogger }, d
     warn: message => ctx.logger.warn(message),
     taskCompletion: deps.options.onTaskComplete === undefined ? undefined : createTaskCompletion(state, owner, deps.options.onTaskComplete),
     ...(deps.onTurnSettled === undefined ? {} : { onTurnSettled: deps.onTurnSettled }),
+    ...(deps.onWorkingDirectoryChange === undefined ? {} : { onWorkingDirectoryChange: deps.onWorkingDirectoryChange }),
   })
 
   /** Forget every per-session projection ledger: the projector's and the

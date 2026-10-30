@@ -188,6 +188,8 @@ export const CHANNEL_UI_PROPERTIES = [
   'workingDirectory',
   'gitBranch',
   'gitStatus',
+  'workingDirectoryGitBranch',
+  'workingDirectoryGitStatus',
   'working',
   'compaction',
   'cancelPending',

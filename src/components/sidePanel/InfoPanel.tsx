@@ -21,7 +21,8 @@ import { modeDisplayName, type SessionModeSpec } from '../../sessionModes.js'
 import { estimateSessionCostSnapshotCny, isDeepSeekOfficialProvider, isPeakHour } from '../../deepseekPricing.js'
 import { formatCacheHitRate, formatCostReport } from '../../screens/StatusLine.js'
 import { contextPressureStep, speedColor } from '../../screens/StatusMetrics.js'
-import { displayWorkingDirectory, formatProject } from '../../sessions/format.js'
+import { formatProject } from '../../sessions/format.js'
+import { gitStatusSuffix } from '../../utils/gitStatus.js'
 import { homeDir } from '../../utils/paths.js'
 import { Divider } from '../design-system/Divider.js'
 import { useSidePanelChannel } from './SidePanelRuntimeContext.js'
@@ -71,10 +72,16 @@ export function InfoPanel({ width, height, focused, visible }: PanelProps): Reac
 
   const usage = channel.lastUsage
   const used = contextUsedOf(channel)
-  const currentCwd = displayWorkingDirectory(channel)
   const displayCwd = channel.displayCwd === channel.cwd
-    ? formatProject(currentCwd, homeDir())
-    : currentCwd
+    ? formatProject(channel.cwd, homeDir())
+    : channel.displayCwd
+  const moved = channel.workingDirectory !== undefined && channel.workingDirectory !== channel.cwd
+  const branchText = (branch: string | undefined, status: typeof channel.gitStatus): string => {
+    if (!branch) return t('info-value-none')
+    const suffix = status === undefined ? {} : gitStatusSuffix(status)
+    return [status?.isLinkedWorktree === true ? `⧉${branch}` : branch, suffix.ahead, suffix.behind, suffix.dirty]
+      .filter(Boolean).join(' ')
+  }
 
   // --- 值构造（全部复用状态栏口径） -------------------------------------
   const none = t('info-value-none')
@@ -121,7 +128,8 @@ export function InfoPanel({ width, height, focused, visible }: PanelProps): Reac
     const labelWidth = Math.min(
       Math.max(...[
         t('info-row-title'), t('info-row-session-id'), t('info-row-agent-id'), t('info-row-cwd'),
-        t('info-row-branch'), t('info-row-model'), t('info-row-effort'), t('info-row-mode'),
+        t('info-row-branch'), t('info-row-current-cwd'), t('info-row-current-branch'),
+        t('info-row-model'), t('info-row-effort'), t('info-row-mode'),
         t('info-row-approval'), t('info-row-context'), t('info-row-window'), t('info-row-tokens'),
         t('info-row-cache'), t('info-row-cost'), t('info-row-tps'), t('info-row-status'),
         t('info-row-activity'), t('info-row-jobs'), t('info-row-subagents'),
@@ -166,7 +174,11 @@ export function InfoPanel({ width, height, focused, visible }: PanelProps): Reac
           <Row label={t('info-row-session-id')} value={channel.sessionId !== '' ? '#' + channel.sessionId.slice(0, 8) : none} />
           <Row label={t('info-row-agent-id')} value={channel.agentId !== '' ? '#' + channel.agentId.slice(0, 8) : none} />
           <Row label={t('info-row-cwd')} value={displayCwd !== '' ? displayCwd : none} />
-          <Row label={t('info-row-branch')} value={channel.gitBranch !== undefined && channel.gitBranch !== '' ? channel.gitBranch : none} />
+          <Row label={t('info-row-branch')} value={branchText(channel.gitBranch, channel.gitStatus)} />
+          {moved ? <>
+            <Row label={t('info-row-current-cwd')} value={formatProject(channel.workingDirectory!, homeDir())} />
+            <Row label={t('info-row-current-branch')} value={branchText(channel.workingDirectoryGitBranch, channel.workingDirectoryGitStatus)} />
+          </> : null}
         </Section>
         <Section title={t('info-section-model')}>
           <Row label={t('info-row-model')} value={channel.model !== '' ? channel.model : none} />

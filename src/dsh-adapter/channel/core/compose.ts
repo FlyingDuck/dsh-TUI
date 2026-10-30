@@ -479,8 +479,6 @@ export function createCoreChannel(
     recoverFailedOutgoing: id => { owner.assertActive(); return inputDelivery.recoverFailedOutgoing(id) },
     recoverInterruptedInput: id => { owner.assertActive(); return interruptedInput.recover(id) },
     subscribe: emitter.subscribe,
-    // Filled by the git refresher: on a cwd change, then once per settled turn.
-    gitStatus: undefined,
     emit: () => wake('sync'),
     emitStream: () => wake('frame'),
     ...createSettingsHosts(ctx, owner.assertActive),
@@ -831,10 +829,11 @@ export function createCoreChannel(
     confirmOutgoing: inputDelivery.confirmOutgoing,
     interrupted: interruptedInput,
     resetInput: inputDelivery.resetOutgoing,
-    // The footer cannot poll: a turn that edits files is the moment its git
-    // facts changed, and the cwd did not move. Deferred so the const below can
-    // be declared after the feed (it is only called from a live turn).
+    // Refresh immediately at semantic boundaries; background status polling
+    // still catches changes made outside a turn. These callbacks run after
+    // construction, once the refresher below exists.
     onTurnSettled: () => refreshGitBranch(),
+    onWorkingDirectoryChange: () => refreshGitBranch(),
     controls,
     hooks: () => extension.bind ?? {},
     onReset: event => { resetConversation(event) },

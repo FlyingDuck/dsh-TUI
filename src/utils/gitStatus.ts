@@ -1,7 +1,7 @@
 /**
  * `git status --porcelain=v2 --branch` as the footer needs it: the branch, how
  * far it is from its upstream, and whether the work tree has uncommitted
- * changes — one call, one parse, no polling.
+ * changes — one shell query, one parse, no polling.
  *
  * The footer used to run `git branch --show-current` and refresh only when the
  * working directory changed, so a turn that edited files left the footer
@@ -10,21 +10,21 @@
  * on it), and `--branch` folds the upstream/ahead/behind headers into the same
  * answer.
  *
- * Only counts leave this module: the footer asks "is there anything to say",
- * and listing a large dirty tree would cost more than it tells. The scan is
+ * Only checkout identity and summary counts leave this module: listing a
+ * large dirty tree would cost more than it tells. The scan is
  * capped so a runaway work tree (a build directory that is not ignored) cannot
  * stall the footer; the cap is reported, never silent.
  *
  * @module dsh-tui/utils/gitStatus
  */
+import { isAbsolute } from 'node:path'
 import type { GitStatusSummary } from '../adapter/ports/channel-view.js'
-
 
 /** How many output lines are parsed before the scan gives up and reports it. */
 export const GIT_STATUS_MAX_LINES = 2000
 
-/** The command the footer runs (one process, both halves of the answer). */
-export const GIT_STATUS_COMMAND = 'git status --porcelain=v2 --branch --untracked-files=normal'
+/** Absolute checkout identity first, then the stable branch/dirty stream. */
+export const GIT_STATUS_COMMAND = 'git rev-parse --path-format=absolute --git-dir --git-common-dir && git status --porcelain=v2 --branch --untracked-files=normal'
 
 /** `# branch.ab +2 -1` */
 const BRANCH_AB = /^# branch\.ab \+(\d+) -(\d+)$/u
@@ -45,7 +45,14 @@ export function parseGitStatus(stdout: string): GitStatusSummary | undefined {
   let untracked = 0
   let truncated = false
   let scanned = 0
-  for (const line of stdout.split('\n')) {
+  const lines = stdout.split('\n')
+  // Plain porcelain remains valid for callers without checkout metadata. Both
+  // rev-parse paths must be absolute: a relative common-dir from a nested cwd
+  // would otherwise misclassify an ordinary checkout as a linked worktree.
+  const gitDir = lines[0] !== undefined && isAbsolute(lines[0]) ? lines[0] : undefined
+  const commonDir = lines[1] !== undefined && isAbsolute(lines[1]) ? lines[1] : undefined
+  const hasIdentity = gitDir !== undefined && commonDir !== undefined
+  for (const line of hasIdentity ? lines.slice(2) : lines) {
     if (line === '') continue
     scanned += 1
     if (scanned > GIT_STATUS_MAX_LINES) {
@@ -77,6 +84,7 @@ export function parseGitStatus(stdout: string): GitStatusSummary | undefined {
   const branch = detached ? shortOid(oid) : unborn ? '' : head
   return {
     branch,
+    ...(hasIdentity ? { gitDir, isLinkedWorktree: gitDir !== commonDir } : {}),
     ahead,
     behind,
     changed,

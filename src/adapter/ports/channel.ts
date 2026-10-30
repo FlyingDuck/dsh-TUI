@@ -106,9 +106,13 @@ export interface HostChannelStateSnapshot {
   readonly provider: string
   readonly cwd: string
   readonly displayCwd: string
+  readonly workingDirectory?: string
+  /** Git branch and facts of the fixed workspace `cwd`. */
   readonly gitBranch?: string
-  /** Git facts behind the footer branch segment; absent outside a work tree. */
   readonly gitStatus?: GitStatusSummary
+  /** Git facts of a recorded current directory distinct from `cwd`. */
+  readonly workingDirectoryGitBranch?: string
+  readonly workingDirectoryGitStatus?: GitStatusSummary
   readonly working: boolean
   readonly cancelPending: boolean
   readonly spinnerMode: string

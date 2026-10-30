@@ -38,7 +38,7 @@ import { MiniWake } from '../components/trajectory/MiniWake.js'
 import { getTheme, isLightThemeActive } from '../theme.js'
 import { ContextBarView } from '../components/ContextBarView.js'
 import { TooltipTarget } from '../components/Tooltip.js'
-import { compactWorkingDirectory, displayWorkingDirectory, formatProject } from '../sessions/format.js'
+import { compactWorkingDirectory, formatProject, projectName, truncateDirectoryPath } from '../sessions/format.js'
 import { homeDir } from '../utils/paths.js'
 import {
   USED_SEGMENTS,
@@ -61,8 +61,8 @@ import type { ContextOccupancy } from '../adapter/ports/channel-view.js'
  * its own first line, the
  * status line below (left group: model · tokens · think level · cache · tps
  * gauge/sparkline; right group: git · cwd · title · short session id,
- * right-aligned), and the
- * mode/hint line last. The right side of the footer shows the latest
+ * right-aligned), an independent current-directory row while away from the
+ * workspace, and the mode/hint line last. The right side of the footer shows the latest
  * transient notification (errors in red, warnings in amber).
  *
  * Every metric field is hover-aware (fullscreen mouse): dwelling on a field
@@ -134,6 +134,7 @@ type BuiltinHoverTarget =
   | 'git'
   | 'sessionId'
   | 'cwd'
+  | 'workingDirectory'
   | 'title'
   | 'bar'
 
@@ -163,7 +164,7 @@ const FIELD_SEPARATOR_CELLS = stringWidth(FIELD_SEPARATOR)
 const FIELD_GROUP_GAP = 2
 const FIELD_PRIORITY: Readonly<Record<string, number>> = {
   mode: 100, starting: 95, model: 90, context: 85, jobs: 80,
-  ideSelection: 75, goal: 70, effort: 60, cwd: 50, git: 45,
+  ideSelection: 75, goal: 70, effort: 60, workingDirectory: 55, cwd: 50, git: 45,
   cost: 40, cache: 30, tps: 25, tokens: 20, title: 10, sessionId: 5,
 }
 
@@ -450,10 +451,11 @@ export function StatusLine({
     visibleFields.filter(field => field.slot === slot).map(toFieldPart)
   // Provider workspaces expose a remote display path alongside a host alias;
   // only the local target has identical cwd/displayCwd values to fold.
-  const currentCwd = displayWorkingDirectory(channel)
   const displayCwd = channel.displayCwd === channel.cwd
-    ? formatProject(currentCwd, homeDir())
-    : currentCwd
+    ? formatProject(channel.cwd, homeDir())
+    : channel.displayCwd
+  const workspaceName = projectName(displayCwd)
+  const currentDirectory = compactWorkingDirectory(channel, homeDir(), Infinity)
   const usage = channel.lastUsage
   // ONE occupancy reading behind every ctx surface in this footer (the field,
   // its hover gauge, the segmented bar, the working line's pressure prefix):
@@ -722,7 +724,6 @@ const selectionBadge = formatSelectionBadge(channel.selection)
 
   // The git segment carries its own suffixes: ahead / behind / dirty, all
   // dropped when zero so a clean checkout draws no arithmetic at all.
-  const gitSuffix = channel.gitStatus === undefined ? {} : gitStatusSuffix(channel.gitStatus)
   const builtinRight: FieldPart[] = [
     // Live IDE-selection badge first: it tracks the user's in-editor gesture,
     // the freshest signal in the footer (T-FIX-02). Absent without an IDE —
@@ -749,14 +750,7 @@ const selectionBadge = formatSelectionBadge(channel.selection)
           {
             key: 'git',
             id: 'git' as const,
-            node: (
-              <Text color="professionalBlue">
-                {channel.gitBranch}
-                {gitSuffix.ahead === undefined ? null : <Text color="success">{` ${gitSuffix.ahead}`}</Text>}
-                {gitSuffix.behind === undefined ? null : <Text color="warning">{` ${gitSuffix.behind}`}</Text>}
-                {gitSuffix.dirty === undefined ? null : <Text color="warning">{` ${gitSuffix.dirty}`}</Text>}
-              </Text>
-            ),
+            node: gitNode(channel.gitBranch, channel.gitStatus),
           },
         ]
       : []),
@@ -764,13 +758,13 @@ const selectionBadge = formatSelectionBadge(channel.selection)
       ? [{
           key: 'cwd',
           id: 'cwd' as const,
-          tooltip: currentCwd,
-          compactNode: <Text color="inactiveShimmer">{compactCwd(channel, displayCwd)}</Text>,
-          shorten: (cells: number) => <Text color="inactiveShimmer">{elideField(fieldText(compactCwd(channel, displayCwd)), cells)}</Text>,
+          tooltip: channel.displayCwd,
+          compactNode: <Text color="inactiveShimmer">{workspaceName}</Text>,
+          shorten: (cells: number) => <Text color="inactiveShimmer">{elideField(workspaceName, cells)}</Text>,
           minCells: 10,
           node: (
             <Text color="inactiveShimmer">
-              {statusBar.compact ? compactCwd(channel, displayCwd) : displayCwd}
+              {statusBar.compact ? workspaceName : displayCwd}
             </Text>
           ),
         }]
@@ -818,6 +812,39 @@ const selectionBadge = formatSelectionBadge(channel.selection)
     statusBar.compact ? 0 : 1,
   )
   const hasStatusFields = leftFields.length + rightFields.length + contextField.length > 0
+  // A move is situational state, not decoration: like live jobs it survives
+  // saved field switches and the minimal UI. Its own row cannot displace the
+  // workspace, hover detail, activity or wake, and gives the leaf first claim
+  // on narrow terminals.
+  const currentGit = channel.workingDirectoryGitStatus
+  const differentCheckout = channel.gitStatus?.gitDir !== undefined
+    && currentGit?.gitDir !== undefined && channel.gitStatus.gitDir !== currentGit.gitDir
+  const currentBranch = statusBar.gitBranch && differentCheckout ? channel.workingDirectoryGitBranch : undefined
+  const currentPath = currentDirectory === undefined ? '' : channel.minimalUi
+    ? projectName(currentDirectory.target) : currentDirectory.target
+  const currentNode = (cells = Infinity): React.ReactNode => {
+    const marker = `${currentDirectory?.separator ?? '→'} `
+    const branch = currentBranch === undefined ? null : gitNode(currentBranch, currentGit, true)
+    const branchCells = branch === null ? 0 : stringWidth(fieldText(branch)) + FIELD_SEPARATOR_CELLS
+    // Shorten the path first, but never sacrifice a readable leaf just to
+    // repeat the branch. A very long leaf is elided by grapheme, from the left.
+    const pathCells = cells - stringWidth(marker)
+    const showBranch = branch !== null && pathCells - branchCells >= stringWidth(projectName(currentPath))
+    return (
+      <Text color="inactiveShimmer">
+        <Text dimColor>{marker}</Text>
+        {showBranch ? <>{branch}<Text dimColor>{FIELD_SEPARATOR}</Text></> : null}
+        {truncateDirectoryPath(currentPath, Math.max(0, pathCells - (showBranch ? branchCells : 0)))}
+      </Text>
+    )
+  }
+  const currentFields = currentDirectory === undefined ? [] : fitStatusFields([], [{
+    key: 'workingDirectory', id: 'workingDirectory',
+    tooltip: channel.workingDirectory,
+    node: currentNode(),
+    shorten: currentNode,
+    minCells: Math.min(stringWidth(projectName(currentPath)) + 2, Math.max(2, columns - 2)),
+  }], Math.max(0, columns - 2), 1).right
   const hint = selectionActive
     ? t('statusline-hint-select')
     : channel.working
@@ -861,7 +888,7 @@ const selectionBadge = formatSelectionBadge(channel.selection)
 
   const visibleHover = hover === 'bar'
     ? barVisible ? hover : null
-    : [...fitted.left, ...fitted.right].some(part => part.id === hover) ? hover : null
+    : [...fitted.left, ...fitted.right, ...currentFields].some(part => part.id === hover) ? hover : null
   // An unmounted mouse target cannot deliver its leave event. Forget it now,
   // so restoring a hidden field cannot resurrect a detail under a new pointer.
   React.useEffect(() => {
@@ -947,8 +974,15 @@ const selectionBadge = formatSelectionBadge(channel.selection)
             ) : null}
           </Box>
         ) : null}
-        {/* Row 3: one stable hint/activity/detail area plus an optional
-            wake. Permanently one line tall — hover swaps what it says,
+        {/* A separate, right-aligned position readout only while away. It
+            never replaces the workspace above or supplemental content below. */}
+        {currentDirectory !== undefined ? (
+          <Box height={1} overflow="hidden" flexDirection="row" justifyContent="flex-end">
+            <FieldLine parts={currentFields} hoverProps={hoverProps} />
+          </Box>
+        ) : null}
+        {/* One stable hint/activity/detail area plus an optional wake.
+            Permanently one line tall — hover swaps what it says,
             never whether it exists. */}
         {showSupplementalRow ? <Box
           height={1}
@@ -1274,7 +1308,7 @@ function buildHoverDetail(
       const status = channel.gitStatus
       return (
         <Text wrap="truncate">
-          {dim('git ')}{channel.gitBranch}
+          {dim('git ')}{channel.gitBranch} · {dim('workspace ')}{channel.displayCwd}
           {status?.upstream === undefined ? null : <> · {dim(t('status-detail-git-upstream', { name: status.upstream }))}</>}
           {status === undefined || (status.ahead === 0 && status.behind === 0)
             ? null
@@ -1295,9 +1329,26 @@ function buildHoverDetail(
     case 'cwd':
       return (
         <Text wrap="truncate">
-          {dim('cwd ')}{displayWorkingDirectory(channel)}
+          {dim('workspace ')}{channel.displayCwd}
         </Text>
       )
+    case 'workingDirectory': {
+      if (channel.workingDirectory === undefined || channel.workingDirectory === channel.cwd) return null
+      const status = channel.workingDirectoryGitStatus
+      const branch = channel.workingDirectoryGitBranch
+      return (
+        <Text wrap="truncate">
+          {dim('cwd ')}{channel.workingDirectory}
+          {branch === undefined ? null : <> · {gitNode(branch, status, true)}</>}
+          {status?.upstream === undefined ? null : <> · {dim(t('status-detail-git-upstream', { name: status.upstream }))}</>}
+          {status === undefined || (status.ahead === 0 && status.behind === 0)
+            ? null : <> · {dim(t('status-detail-git-ab', { ahead: status.ahead, behind: status.behind }))}</>}
+          {status === undefined || status.changed + status.untracked === 0
+            ? null : <> · {dim(t('status-detail-git-changes', { changed: status.changed, untracked: status.untracked }))}</>}
+          {status?.truncated === true ? <> · {dim(t('status-detail-git-truncated'))}</> : null}
+        </Text>
+      )
+    }
     case 'title':
       return (
         <Text wrap="truncate">
@@ -1335,22 +1386,15 @@ export function formatSelectionBadge(
   return `⧉ ${lines} ${lines === 1 ? 'line' : 'lines'} selected`
 }
 
-function basename(path: string): string {
-  const parts = path.split(/[\\/]/)
-  return parts[parts.length - 1] ?? path
-}
-
-/** Compact footer cwd: the plain project name until the session moves, then a
- *  breadcrumb that keeps the project as the anchor (`project›relative`) and
- *  names the directory a move out of the project landed in. The anchor is
- *  dimmed so the relative half reads as position, not as part of the name. */
-function compactCwd(channel: Channel, displayCwd: string): React.ReactNode {
-  const breadcrumb = compactWorkingDirectory(channel, homeDir())
-  if (breadcrumb === undefined) return basename(displayCwd)
+/** The two location regions share suffix semantics, but not visual weight. */
+function gitNode(branch: string, status: Channel['gitStatus'], muted = false): React.ReactNode {
+  const suffix = status === undefined ? {} : gitStatusSuffix(status)
   return (
-    <>
-      <Text dimColor>{breadcrumb.anchor}</Text>
-      {`${breadcrumb.separator}${breadcrumb.target}`}
-    </>
+    <Text color={muted ? 'inactiveShimmer' : 'professionalBlue'}>
+      {status?.isLinkedWorktree === true ? '⧉' : ''}{branch}
+      {suffix.ahead === undefined ? null : <Text color={muted ? undefined : 'success'}>{` ${suffix.ahead}`}</Text>}
+      {suffix.behind === undefined ? null : <Text color={muted ? undefined : 'warning'}>{` ${suffix.behind}`}</Text>}
+      {suffix.dirty === undefined ? null : <Text color={muted ? undefined : 'warning'}>{` ${suffix.dirty}`}</Text>}
+    </Text>
   )
 }

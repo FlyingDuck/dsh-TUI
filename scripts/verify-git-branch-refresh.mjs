@@ -9,9 +9,9 @@
  * and the side panel all read that same field.
  *
  * The current probe reads porcelain v2: one answer carries the branch and
- * ahead/behind/dirty facts. Timer samples only re-probe a changed HEAD (or a
- * retry); explicit refreshes also re-probe unchanged HEAD after turn settlement.
- * The count-only/forced-refresh cases live in verify-git-status.ts.
+ * ahead/behind/dirty facts. HEAD samples run every second; a full status scan
+ * every five seconds catches counts even when HEAD is unchanged. Explicit
+ * refreshes also re-probe both active directories after turn settlement.
  *
  * These checks drive a real `createChannel` over a throwaway cwd (fake host
  * shell whose answer the test can change, plus a self-made `.git` directory),
@@ -19,9 +19,11 @@
  *
  * - a rewritten `.git/HEAD` reaches `gitBranch` without rebuilding the channel;
  * - a detached HEAD replaces the stale branch with its short oid;
- * - an unchanged HEAD without an explicit refresh neither re-probes nor redraws;
+ * - unchanged HEAD still refreshes status periodically, without redundant redraws;
  * - `releaseContributions()` stops the refresh for good;
- * - a cwd without `.git` stays quiet: no probe, no throw, no value change;
+ * - a cwd without local `.git` still polls shell status without throwing or
+ *   clearing facts solely because the local HEAD is absent;
+ * - the current-directory route starts on a move, then stops and clears on return;
  * - a linked worktree (`.git` is a `gitdir:` file) follows its real git dir,
  *   both with an absolute target and with the relative one git writes for a
  *   submodule;
@@ -38,6 +40,8 @@
  *
  * Reads the compiled output, so `pnpm compile` must have produced `lib/types/`:
  *   node scripts/verify-git-branch-refresh.mjs
+ * Or exercise sources without compiling:
+ *   DSH_TUI_VERIFY_SOURCE=1 node --import tsx/esm scripts/verify-git-branch-refresh.mjs
  */
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
@@ -63,8 +67,9 @@ process.env.HOME = home
 process.env.USERPROFILE = home
 process.env.DSH_HOME = home
 
-const { createChannel } = await import('../lib/types/dsh-adapter/channel.js')
-const { GIT_STATUS_COMMAND } = await import('../lib/types/utils/gitStatus.js')
+const source = process.env.DSH_TUI_VERIFY_SOURCE === '1'
+const { createChannel } = await import(source ? '../src/dsh-adapter/channel.ts' : '../lib/types/dsh-adapter/channel.js')
+const { GIT_STATUS_COMMAND } = await import(source ? '../src/utils/gitStatus.ts' : '../lib/types/utils/gitStatus.js')
 
 const HEAD_REF = branch => `ref: refs/heads/${branch}\n`
 /** What git writes when HEAD is detached: 40 lowercase hex digits, no `ref:`. */
@@ -163,6 +168,7 @@ function holdHeadReads(headPath) {
  */
 function openChannel(cwd, branch) {
   let stdout = `${branch}\n`
+  let facts = ''
   /** Once held, each later probe parks until the test opens its gate. */
   let held = false
   let parkedReplies = 0
@@ -181,6 +187,7 @@ function openChannel(cwd, branch) {
       // Snapshot the answer at issue time: a reply says what was checked out
       // when the probe was sent, which is what a slow shell delivers.
       const reply = stdout
+      const statusFacts = facts
       const parked = held
       const failure = failures.shift()
       let open
@@ -192,7 +199,7 @@ function openChannel(cwd, branch) {
           const delivered = await gate
           if (parked) parkedReplies += 1
           if (failure === 'reject') throw new Error('temporary shell failure')
-          return { stdout: { text: statusReply(delivered ?? reply) }, stderr: { text: '' }, timedOut: failure === 'timeout' }
+          return { stdout: { text: statusReply(delivered ?? reply) + statusFacts }, stderr: { text: '' }, timedOut: failure === 'timeout' }
         },
       }
     },
@@ -212,6 +219,7 @@ function openChannel(cwd, branch) {
     probes,
     /** The next porcelain branch header; '' means detached HEAD. */
     answer(text) { stdout = text },
+    answerFacts(text) { facts = text },
     failNext(kind) { failures.push(kind) },
     setShellAvailable(value) { shellAvailable = value },
     missingShellLookups: () => missingShellLookups,
@@ -379,17 +387,19 @@ try {
   })
 
   const steadyRepo = makeRepo()
-  await scenario('an unchanged HEAD neither re-probes nor redraws', { cwd: steadyRepo, branch: 'main' }, async ({ channel, probes }) => {
-    assert.ok(await settled(() => channel.gitBranch === 'main', { timeoutMs: DETECT_TIMEOUT_MS }),
-      'the boot probe must publish the branch the host shell reports')
-    // 固定窗:探针 let the boot probe and any first-tick baseline capture land; only steady state is the invariant
-    await sleep(POLL_WINDOW_MS)
+  await scenario('unchanged HEAD polls full status without redundant redraws', { cwd: steadyRepo, branch: 'main' }, async ({ channel, probes, answerFacts }) => {
+    assert.ok(await settled(() => channel.gitBranch === 'main', { timeoutMs: DETECT_TIMEOUT_MS }))
     const probesAtStart = probes.length
     const emits = countEmits(channel)
-    // 固定窗:探针 an unchanged HEAD must stay silent: polling an already-true condition would prove nothing
-    await sleep(POLL_WINDOW_MS)
-    assert.equal(probes.length, probesAtStart, 'an unchanged HEAD must not re-run the porcelain status query')
-    assert.equal(emits.count, 0, 'an unchanged HEAD must not redraw the statusline')
+    assert.ok(await settled(() => probes.length > probesAtStart, { timeoutMs: 8000 }),
+      'unchanged HEAD must still issue the periodic porcelain status query')
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(emits.count, 0, 'identical full status must not redraw the statusline')
+    answerFacts('# branch.ab +3 -2\n1 .M N... 100644 100644 100644 aaa bbb edited.ts\n? new.txt\n')
+    assert.ok(await settled(() => channel.gitStatus?.ahead === 3 && channel.gitStatus?.behind === 2
+      && channel.gitStatus?.changed === 1 && channel.gitStatus?.untracked === 1, { timeoutMs: 8000 }),
+    'dirty and ahead/behind changes must land without a HEAD rewrite or a settled turn')
+    assert.equal(emits.count, 1, 'changed counts must wake consumers once')
   })
 
   const releasedRepo = makeRepo()
@@ -432,17 +442,38 @@ try {
     assert.equal(channel.gitBranch, undefined, 'a reply for the vanished HEAD must not restore the branch')
   })
 
+  const dualRepo = makeRepo()
+  const currentRepo = makeRepo()
+  await scenario('the moved-directory poll stops and clears on return to cwd', { cwd: dualRepo, branch: 'main' }, async ({ channel, probes }) => {
+    assert.ok(await settled(() => channel.gitBranch === 'main', { timeoutMs: DETECT_TIMEOUT_MS }))
+    assert.equal(channel.workingDirectoryGitBranch, undefined)
+    channel.workingDirectory = currentRepo
+    assert.ok(await settled(() => channel.workingDirectoryGitBranch === 'main', { timeoutMs: DETECT_TIMEOUT_MS }),
+      'the timer must start the distinct current-directory route')
+    assert.equal(channel.gitBranch, 'main', 'workspace facts remain independent of the directory move')
+    const movedProbes = () => probes.filter(probe => probe.workdir === currentRepo).length
+    const probesBeforeReturn = movedProbes()
+    channel.workingDirectory = dualRepo
+    assert.ok(await settled(() => channel.workingDirectoryGitBranch === undefined
+      && channel.workingDirectoryGitStatus === undefined, { timeoutMs: DETECT_TIMEOUT_MS }))
+    writeFileSync(join(currentRepo, '.git', 'HEAD'), HEAD_REF('left-behind'))
+    // 固定窗:探针 a changed HEAD would trigger a stale current-directory lane immediately on the next tick
+    await sleep(POLL_WINDOW_MS)
+    assert.equal(movedProbes(), probesBeforeReturn, 'returning to cwd must stop current-directory filesystem/shell polling')
+    assert.equal(channel.gitBranch, 'main')
+  })
+
   const noRepo = tempDir('dsh-tui-no-repo-')
-  await scenario('a cwd without .git stays quiet', { cwd: noRepo, branch: 'main' }, async ({ channel, probes }) => {
-    // 固定窗:探针 no `.git` means no pollable ready anchor: let boot and one poll period pass first
-    await sleep(POLL_WINDOW_MS)
+  await scenario('a shell-only workspace polls status without local .git', { cwd: noRepo, branch: 'main' }, async ({ channel, probes, answerFacts }) => {
+    assert.ok(await settled(() => channel.gitBranch === 'main', { timeoutMs: DETECT_TIMEOUT_MS }))
     const probesAtBoot = probes.length
-    const branchAtBoot = channel.gitBranch
-    // 固定窗:探针 a non-repository must not be re-probed or rewritten: polling an already-true condition proves nothing
-    await sleep(POLL_WINDOW_MS)
-    assert.equal(probes.length, probesAtBoot, 'a cwd without .git must not be probed on every tick')
-    assert.equal(channel.gitBranch, branchAtBoot, 'a cwd without .git must not change the breadcrumb')
-    assert.equal(unhandled.length, 0, 'a cwd without .git must not throw out of the refresh')
+    answerFacts('# branch.ab +4 -2\n? remote-file.txt\n')
+    assert.ok(await settled(() => channel.gitStatus?.ahead === 4 && channel.gitStatus?.behind === 2
+      && channel.gitStatus?.untracked === 1, { timeoutMs: 8000 }),
+    'shell-only workspaces must not need a local HEAD to refresh dirty/upstream facts')
+    assert.ok(probes.length > probesAtBoot, 'the periodic full query must reach the remote shell')
+    assert.equal(channel.gitBranch, 'main', 'an absent local HEAD must not clear shell-only facts')
+    assert.equal(unhandled.length, 0, 'an absent local HEAD must not throw out of the refresh')
   })
 
   /**

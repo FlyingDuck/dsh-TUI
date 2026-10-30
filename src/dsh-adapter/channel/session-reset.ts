@@ -10,6 +10,10 @@ export type SessionResetState = Pick<
   | 'sessionTitle'
   | 'sessionColor'
   | 'workingDirectory'
+  | 'gitBranch'
+  | 'gitStatus'
+  | 'workingDirectoryGitBranch'
+  | 'workingDirectoryGitStatus'
   | 'tokens'
   | 'mainCost'
   | 'subagentCost'
@@ -57,6 +61,10 @@ export function resetSessionProjection(
   state.sessionTitle = ''
   state.sessionColor = ''
   state.workingDirectory = undefined
+  state.gitBranch = undefined
+  state.gitStatus = undefined
+  state.workingDirectoryGitBranch = undefined
+  state.workingDirectoryGitStatus = undefined
   state.tokens = {
     input: 0,
     output: 0,

@@ -1400,6 +1400,10 @@ export interface TeamView {
 export interface GitStatusSummary {
   /** The branch name; the short oid on a detached HEAD. */
   readonly branch: string
+  /** Absolute per-checkout Git directory; equal for subdirectories of one checkout. */
+  readonly gitDir?: string
+  /** True only for a linked worktree, not a subdirectory or a submodule. */
+  readonly isLinkedWorktree?: boolean
   readonly ahead: number
   readonly behind: number
   /** Tracked entries with staged or unstaged changes (porcelain v2 `1`/`2`/`u`). */

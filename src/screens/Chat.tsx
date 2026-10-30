@@ -3660,7 +3660,10 @@ export function Chat({
           `${t('status-model', { model: channel.model })}${channel.reasoningEffort ? ` · ${capitalize(channel.reasoningEffort)} effort` : ''}`,
           `${t('status-state', { state: channel.working ? t('status-working') : t('status-idle') })}`,
           `${t('status-session', { id: channel.agentId })}`,
-          `${t('status-dir', { cwd: displayWorkingDirectory(channel) })}${channel.gitBranch ? ` · ${channel.gitBranch}` : ''}`,
+          `${t('status-workspace', { cwd: channel.displayCwd })}${channel.gitBranch ? ` · ${channel.gitBranch}` : ''}`,
+          ...(channel.workingDirectory !== undefined && channel.workingDirectory !== channel.cwd
+            ? [`${t('status-dir', { cwd: displayWorkingDirectory(channel) })}${channel.workingDirectoryGitBranch ? ` · ${channel.workingDirectoryGitBranch}` : ''}`]
+            : []),
           t('tokens-session-total', {
             input: formatTokens(channel.tokens.input),
             output: formatTokens(channel.tokens.output),

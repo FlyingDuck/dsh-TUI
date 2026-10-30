@@ -145,10 +145,14 @@ export interface ChannelUi {
   /** Directory the session moved to after it opened (DSH `working_directory`
    *  tool, worktrees). `cwd` stays the project; undefined = never recorded. */
   readonly workingDirectory: string | undefined
-  /** Current git branch, when the cwd is inside a git worktree. */
+  /** Git branch of the fixed workspace `cwd`, independent of directory moves. */
   readonly gitBranch: string | undefined
-  /** Ahead/behind and dirty counts for the footer branch segment. */
+  /** Git facts for the fixed workspace `cwd`. */
   readonly gitStatus: GitStatusSummary | undefined
+  /** Git branch of `workingDirectory`; undefined when absent or equal to `cwd`. */
+  readonly workingDirectoryGitBranch: string | undefined
+  /** Git facts for that distinct current directory, cleared immediately on return. */
+  readonly workingDirectoryGitStatus: GitStatusSummary | undefined
   /** True between turn/start and turn/end — drives the working spinner. */
   readonly working: boolean
   /** In-flight compaction of this session's history, or undefined when none
