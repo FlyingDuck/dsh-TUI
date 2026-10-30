@@ -1,5 +1,5 @@
 /** Host-owned in-process Channel contract. No runtime or upstream imports. */
-import type { ChatRow, AgentStatus, TokenUsage, TurnUsageSummary, TurnOutcome, SessionCostByModel, SubagentCostEntry, NotificationItem, ChannelGoal, TodoPanelItem, LoadedContext, PendingMessage, OutgoingMessage, UserMessageResponseState, ChannelSceneMetadata, SubagentState, SubagentControl, BackgroundJobState, JobControl, StagedImageInput, StagedImageHandle, ComposerImageRef, ComposerSubmission, ExternalCommandOutcome, TranscriptImage, ResumeResult, EffortOption, PermissionPresetSnapshot, PresetOption, LlmModelInfo, LlmProviderInfo, SkillInfo, CredentialStatus, AgentViewRow, AgentViewDispatchResult, BackgroundResult, RawTrajEvent, TrajectoryLane, TrajectorySource, ChannelSelection, AttachedContext, CompactionStatus, ContextOccupancy, ContextBreakdown, TeamView, ChannelCapabilities, ChannelCostReport, ChannelRateLimit, ChannelSessionRef, BackendModeOption, BackendChannelOption, BackendChannelInput, GitStatusSummary } from './channel-view.js'
+import type { ChatRow, AgentStatus, TokenUsage, TurnUsageSummary, TurnOutcome, SessionCostByModel, SubagentCostEntry, NotificationItem, ChannelGoal, TodoPanelItem, LoadedContext, PendingMessage, OutgoingMessage, UserMessageResponseState, InterruptedInput, ChannelSceneMetadata, SubagentState, SubagentControl, BackgroundJobState, JobControl, StagedImageInput, StagedImageHandle, ComposerImageRef, ComposerSubmission, ExternalCommandOutcome, TranscriptImage, ResumeResult, EffortOption, PermissionPresetSnapshot, PresetOption, LlmModelInfo, LlmProviderInfo, SkillInfo, CredentialStatus, AgentViewRow, AgentViewDispatchResult, BackgroundResult, RawTrajEvent, TrajectoryLane, TrajectorySource, ChannelSelection, AttachedContext, CompactionStatus, ContextOccupancy, ContextBreakdown, TeamView, ChannelCapabilities, ChannelCostReport, ChannelRateLimit, ChannelSessionRef, BackendModeOption, BackendChannelOption, BackendChannelInput, GitStatusSummary } from './channel-view.js'
 import type { SpinnerMode, ToolBackground, ScrollGutterMode, PageMarginSetting, StatusBarConfig, SessionModeSpec, SplashFontSetting, JobGroupFoldMode, BrandSetting } from './channel-display.js'
 import type { LocalCommand, CommandCompletion, BalanceResult, FileCandidate, RecapOutcome } from './channel-catalog.js'
 import type { AgentCapabilities } from './channel-capabilities.js'
@@ -503,6 +503,10 @@ export interface ChannelUi {
   /** Consume only an explicitly failed receipt, once. Restores its owned
    * contexts and transfers image capabilities without revoking them. */
   recoverFailedOutgoing?(id: string): ComposerSubmission | undefined
+  /** Latest recoverable explicit stop; never changes the durable transcript. */
+  readonly interruptedInput?: InterruptedInput
+  /** Take that same-session draft once, without resending or reattaching context. */
+  recoverInterruptedInput?(id: string): ComposerSubmission | undefined
   submit(text: string, images?: readonly ComposerImageRef[]): void
   /**
    * Steer a message into the running turn (Codex/pi semantics): injected at
@@ -513,8 +517,9 @@ export interface ChannelUi {
   removePending(id: string): boolean
   /** Abort the in-flight turn (`Ctrl+C` while working). While `cancelPending`
    *  stays true the abort has not converged; Chat force-exits on the next
-   *  Ctrl+C press in that window. */
-  cancel(): void
+   *  Ctrl+C press in that window. Only a real stop gesture should opt into
+   *  unanswered-input recovery; programmatic/teardown cancels keep the default. */
+  cancel(options?: { readonly restoreUnanswered?: true }): void
   /** Abort the in-flight turn and process `texts` right away (Ctrl+Enter
    *  with queued input): each text is re-queued as a followup once the abort
    *  settles, so the new turn starts immediately. Returns the count queued. */
@@ -525,7 +530,7 @@ export interface ChannelUi {
    *  dock (⏎ / `deliverDocked`) or retracts items (Alt+↑ / the ↑ editor).
    *  Returns the count docked; 0 means nothing new was parked (the caller
    *  may still `cancel`). */
-  interruptAndDock(): number
+  interruptAndDock(options?: { readonly restoreUnanswered?: true }): number
   /** Deliver every docked queued message now (⏎ on an empty draft), FIFO,
    *  exactly once. Rows still awaiting their interrupt receipt's verdict
    *  stay parked, since their backend copies may yet run, and the call

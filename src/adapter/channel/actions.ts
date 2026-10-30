@@ -26,7 +26,7 @@ export function createChannelActions(
   return Object.freeze({
     submit: text => channel.submit(text),
     steer: text => channel.steer(text),
-    cancel: () => channel.cancel(),
+    cancel: options => channel.cancel(options),
     interruptAndDeliver: texts => channel.interruptAndDeliver(texts),
     clear: () => channel.clear(),
     loadOlder: () => channel.loadOlder(),

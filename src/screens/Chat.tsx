@@ -4866,6 +4866,18 @@ export function Chat({
   }, [channel.working, channel.cancelPending])
   React.useEffect(() => () => clearInterruptWatchdog(), [clearInterruptWatchdog])
 
+  /** Explicit stop only: replacement sends, exits and teardown must not opt in.
+   * Capture the composer's lease before a synchronous cancel can publish ready. */
+  const stopWorkingTurn = (dockPending = false): void => {
+    if (!channel.cancelPending) promptControllerRef.current?.prepareInterruptedRecovery?.()
+    const options = { restoreUnanswered: true } as const
+    if (dockPending) {
+      if (channel.interruptAndDock(options) === 0 && !channel.cancelPending) channel.cancel(options)
+    } else {
+      channel.cancel(options)
+    }
+  }
+
   useInput((input, key, event) => {
     // 开屏"求 star"弹窗开着时键盘全归它（↑/↓/Enter/Esc 由它自己的
     // useInput 处理），滚轮也不许滚动它身后的转录——和下面的整屏界面
@@ -5797,7 +5809,7 @@ export function Chat({
       if (undocked) {
         // Docking is Esc's documented meaning for queued rows, and it starts
         // its own interrupt; keep it even while a plain abort is in flight.
-        if (channel.interruptAndDock() === 0 && !channel.cancelPending) channel.cancel()
+        stopWorkingTurn(true)
       } else if (channel.cancelPending) {
         // The abort is already in flight: `cancel()`/`interruptAndDock()`
         // ignore repeats by contract, so answer the press instead of
@@ -5808,7 +5820,7 @@ export function Chat({
           timeoutMs: interruptWarnedRef.current ? 10_000 : 4_000,
         })
       } else {
-        channel.cancel()
+        stopWorkingTurn()
       }
       event.stopImmediatePropagation()
     } else if (
@@ -5875,7 +5887,8 @@ export function Chat({
         if (channel.cancelPending) {
           onExit()
         } else {
-          channel.cancel()
+          if (input === 'c') stopWorkingTurn()
+          else channel.cancel()
           // Interrupt replaces any previously armed exit: the next press
           // must re-confirm instead of exiting out from under the turn.
           exitPendingRef.current = false

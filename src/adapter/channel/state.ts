@@ -60,6 +60,10 @@ export function projectChannelState(channel: Channel): HostChannelStateSnapshot 
       ...(item.images === undefined ? {} : { images: Object.freeze(item.images.map(image => Object.freeze({ ...image }))) }),
     }))) }),
     ...(channel.userMessageResponses === undefined ? {} : { userMessageResponses: Object.freeze(channel.userMessageResponses.map(item => Object.freeze({ ...item }))) }),
+    ...(channel.interruptedInput === undefined ? {} : { interruptedInput: Object.freeze({
+      ...channel.interruptedInput,
+      ...(channel.interruptedInput.images === undefined ? {} : { images: Object.freeze(channel.interruptedInput.images.map(image => Object.freeze({ ...image }))) }),
+    }) }),
     ...(channel.pluginScene === undefined ? {} : { pluginScene: asRecord(channel.pluginScene) }),
     mode: asRecord(channel.mode) ?? Object.freeze({}),
     ...(channel.agentPreset === undefined ? {} : { agentPreset: channel.agentPreset }),

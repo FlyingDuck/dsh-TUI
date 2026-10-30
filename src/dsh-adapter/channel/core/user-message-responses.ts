@@ -1,10 +1,12 @@
 /** Live response presentation, deliberately separate from durable rows and input receipts. */
 import type { ChatRow, UserMessageResponseState } from '../../../adapter/ports/channel-view.js'
-import type { AgentEvent, AgentEventMeta, AgentEventOf } from '../../../agent/events.js'
+import type { AgentEvent, AgentEventMeta, AgentEventOf, TurnEndReason } from '../../../agent/events.js'
+import type { InterruptedInputTarget } from './interrupted-input.js'
 
 type Position = { readonly turn: number; readonly step: number }
 type Claim = { readonly after: number; readonly minimumSteps: ReadonlyMap<number, number> }
 type Response = {
+  readonly id: string
   readonly after: number
   readonly claim?: Claim
   turn: number | undefined
@@ -22,6 +24,11 @@ type Attempt = {
   child: boolean
 }
 type ModelTurn = { highestStep: number; readonly steps: Map<number, number> }
+
+function hasMessageContent(event: AgentEventOf<'assistant.message'>): boolean {
+  return (event.images?.length ?? 0) > 0 || event.blocks.some(block => block.type === 'tool-call'
+    || ((block.type === 'text' || block.type === 'reasoning') && (block.text?.length ?? 0) > 0))
+}
 
 function hasDeltaContent(delta: AgentEventOf<'assistant.delta'>['delta']): boolean {
   switch (delta.kind) {
@@ -53,6 +60,14 @@ export function createUserMessageResponses(state: {
   userMessageResponses: readonly UserMessageResponseState[]
   /** Only for retiring closed, receipt-less links; never written here. */
   readonly outgoing?: readonly { readonly id: string }[]
+}, recovery?: {
+  firstOutput(id: string): void
+  stopped(id: string): void
+  turnEnded(turn: number, reason: TurnEndReason, unanswered: readonly string[]): void
+  target?(): InterruptedInputTarget | undefined
+  watchClosedTurn?(id: string, minimumStep: number, attemptIds: readonly string[]): void
+  lateAttempt?(attemptId: string, position: Position): void
+  lateOutput?(position: Position | undefined, attemptId?: string): void
 }) {
   const responses = new Map<string, Response>()
   const waiting = new Set<Response>()
@@ -81,6 +96,7 @@ export function createUserMessageResponses(state: {
       const firstSeen = turns.get(position.turn)?.steps.get(position.step) ?? attempt.firstSeen
       if (position.step < response.minimumStep || firstSeen <= response.after) continue
       response.phase = 'responded'
+      recovery?.firstOutput(response.id)
       waiting.delete(response)
       displayDirty = true
       break
@@ -91,7 +107,7 @@ export function createUserMessageResponses(state: {
     let response = responses.get(id)
     if (response === undefined) {
       const claim = claims.get(id)
-      response = { after: claim?.after ?? clock, ...(claim === undefined ? {} : { claim }), turn, minimumStep: claimedMinimumStep(claim, turn), phase: turn !== undefined && turn <= closedThrough ? 'stopped' : 'waiting' }
+      response = { id, after: claim?.after ?? clock, ...(claim === undefined ? {} : { claim }), turn, minimumStep: claimedMinimumStep(claim, turn), phase: turn !== undefined && turn <= closedThrough ? 'stopped' : 'waiting' }
       responses.set(id, response)
       if (response.phase === 'waiting') waiting.add(response)
     } else if (response.turn === undefined && turn !== undefined) {
@@ -99,6 +115,7 @@ export function createUserMessageResponses(state: {
       response.minimumStep = claimedMinimumStep(response.claim, turn)
       if (turn <= closedThrough && response.phase === 'waiting') {
         response.phase = 'stopped'
+        recovery?.stopped(response.id)
         waiting.delete(response)
         displayDirty = true
       }
@@ -125,6 +142,7 @@ export function createUserMessageResponses(state: {
       if (response.turn !== position.turn) continue
       if (position.step < response.minimumStep || firstSeen <= response.after) continue
       response.phase = 'responded'
+      recovery?.firstOutput(response.id)
       waiting.delete(response)
       displayDirty = true
     }
@@ -137,11 +155,39 @@ export function createUserMessageResponses(state: {
     }
   }
 
-  const closeTurn = (turn: number): void => {
+  // A main stream with content but no causal position cannot prove silence.
+  // Check only at stop/cancel boundaries, never once per token or historical row.
+  const provablyUnanswered = (response: Response): boolean => {
+    for (const attempt of attempts.values()) {
+      if (!attempt.child && attempt.signal !== undefined && attempt.position === undefined && attempt.signal > response.after) return false
+    }
+    return true
+  }
+
+  const closeTurn = (turn: number, reason?: TurnEndReason): void => {
+    const target = recovery?.target?.()
+    const response = target?.turn === turn ? responses.get(target.id) : undefined
+    if (reason !== undefined && response?.phase === 'waiting' && provablyUnanswered(response)) {
+      // Retain only the current recovery's known main attempts, not the old
+      // turn's whole stream ledger. Late buffered frames can outlive turn.end.
+      const ids: string[] = []
+      for (const [id, attempt] of attempts) {
+        const position = attempt.position
+        if (attempt.child || position?.turn !== turn || position.step < response.minimumStep) continue
+        const first = turns.get(turn)?.steps.get(position.step) ?? attempt.firstSeen
+        if (first <= response.after) continue
+        ids.push(id)
+        if (ids.length > 64) break
+      }
+      recovery?.watchClosedTurn?.(response.id, response.minimumStep, ids)
+    }
+    if (reason !== undefined) recovery?.turnEnded(turn, reason, [...waiting]
+      .filter(response => response.turn === turn && provablyUnanswered(response)).map(response => response.id))
     closedThrough = Math.max(closedThrough, turn)
     for (const response of waiting) {
       if (response.turn !== undefined && response.turn <= closedThrough) {
         response.phase = 'stopped'
+        recovery?.stopped(response.id)
         waiting.delete(response)
         displayDirty = true
       }
@@ -155,6 +201,7 @@ export function createUserMessageResponses(state: {
   const stopWaiting = (): void => {
     for (const response of waiting) {
       response.phase = 'stopped'
+      recovery?.stopped(response.id)
       if (response.turn !== undefined) closedThrough = Math.max(closedThrough, response.turn)
     }
     waiting.clear()
@@ -168,8 +215,42 @@ export function createUserMessageResponses(state: {
     displayDirty = true
   }
 
+  const observeClosedOutput = (event: AgentEvent): void => {
+    const target = recovery?.target?.()
+    if (target === undefined || target.turn > closedThrough) return
+    switch (event.type) {
+      case 'assistant.attempt.start': {
+        if (event.parentCallId !== undefined || attempts.get(event.attemptId)?.child === true) return
+        const position = { turn: event.turn, step: event.step }
+        recovery?.lateAttempt?.(event.attemptId, position)
+        // Its own late start can now position a buffered orphan signal; no
+        // other open/current step is ever used to guess this association.
+        if (attempts.get(event.attemptId)?.signal !== undefined) recovery?.lateOutput?.(position, event.attemptId)
+        return
+      }
+      case 'assistant.delta':
+      case 'assistant.message': {
+        const attempt = attempts.get(event.attemptId)
+        if (event.parentCallId !== undefined || attempt?.child === true) return
+        if (event.turn !== undefined && event.turn !== target.turn) return
+        if (!(event.type === 'assistant.delta' ? hasDeltaContent(event.delta) : hasMessageContent(event))) return
+        const position = event.turn !== undefined && event.step !== undefined ? { turn: event.turn, step: event.step } : attempt?.position
+        recovery?.lateOutput?.(position, event.attemptId)
+        return
+      }
+      case 'tool.call':
+        if (event.parentCallId === undefined && event.agentId === undefined) recovery?.lateOutput?.({ turn: event.turn, step: event.step })
+        return
+      default:
+        return
+    }
+  }
+
   const applyEvent = (event: AgentEvent): void => {
     clock += 1
+    // This is recovery-only evidence. The closed-turn presentation and durable
+    // projection keep their existing late-event policy unchanged.
+    observeClosedOutput(event)
     switch (event.type) {
       case 'turn.start':
         if (event.turn <= closedThrough) return
@@ -207,6 +288,10 @@ export function createUserMessageResponses(state: {
           return
         }
         const response = remember(event.id, event.turn ?? openStep?.turn)
+        // Confirmation may have retained a capsule just before this late
+        // durable receipt catches up with output/termination already observed.
+        if (response.phase === 'responded') recovery?.firstOutput(event.id)
+        else if (response.phase === 'stopped') recovery?.stopped(event.id)
         claims.delete(event.id)
         response.receipt = { seq: event.seq, anchor: event.anchor === '' ? String(event.seq) : event.anchor }
         if (response.rowId === undefined) unmapped.add(response)
@@ -262,10 +347,17 @@ export function createUserMessageResponses(state: {
         if (event.parentCallId !== undefined || attempt?.child === true) return
         const position = event.turn !== undefined && event.step !== undefined
           ? { turn: event.turn, step: event.step } : attempt?.position
-        if (position === undefined || position.turn <= closedThrough) return
+        const content = hasMessageContent(event)
+        if (position === undefined) {
+          if (content) {
+            const unresolved: Attempt = attempt ?? { firstSeen: clock, confirmed: false, ended: false, child: false }
+            unresolved.signal ??= clock
+            attempts.set(event.attemptId, unresolved)
+          }
+          return
+        }
+        if (position.turn <= closedThrough) return
         const first = notePosition(position, attempt?.firstSeen)
-        const content = (event.images?.length ?? 0) > 0 || event.blocks.some(block => block.type === 'tool-call'
-          || ((block.type === 'text' || block.type === 'reasoning') && (block.text?.length ?? 0) > 0))
         if (content) {
           const settled: Attempt = attempt ?? { firstSeen: first, position, confirmed: true, ended: true, child: false }
           settled.position ??= position
@@ -287,7 +379,7 @@ export function createUserMessageResponses(state: {
         return
       }
       case 'turn.end':
-        closeTurn(event.turn)
+        closeTurn(event.turn, event.reason)
         return
       case 'session.status':
         if (event.status === 'idle' || event.status === 'disposed') stopWaiting()
@@ -339,15 +431,24 @@ export function createUserMessageResponses(state: {
           continue
         }
       }
-      if (response.rowId !== undefined && response.phase !== 'responded') next.push({ rowId: response.rowId, phase: response.phase })
+      if (response.rowId !== undefined && response.phase !== 'responded') next.push({ rowId: response.rowId, messageId: id, phase: response.phase })
     }
     const previous = state.userMessageResponses ?? []
-    if (next.length === previous.length && next.every((item, index) => item.rowId === previous[index]?.rowId && item.phase === previous[index]?.phase)) return false
+    if (next.length === previous.length && next.every((item, index) => item.rowId === previous[index]?.rowId && item.messageId === previous[index]?.messageId && item.phase === previous[index]?.phase)) return false
     state.userMessageResponses = next
     return true
   }
 
   return {
+    /** Only the tracker can name a live, real row and its causally linked turn. */
+    latestWaiting(owned: (id: string) => boolean): InterruptedInputTarget | undefined {
+      let latest: Response | undefined
+      for (const response of waiting) {
+        if (response.phase !== 'waiting' || response.rowId === undefined || response.turn === undefined || response.receipt === undefined || !owned(response.id) || !provablyUnanswered(response)) continue
+        if (latest === undefined || response.receipt.seq > latest.receipt!.seq) latest = response
+      }
+      return latest === undefined ? undefined : { id: latest.id, rowId: latest.rowId!, turn: latest.turn! }
+    },
     /** Call after the same segment's durable facts have been projected. */
     apply(events: readonly AgentEvent[], meta: AgentEventMeta): boolean {
       if (meta.replay) return false

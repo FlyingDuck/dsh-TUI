@@ -90,6 +90,16 @@ interface OutgoingDraftSnapshot {
   readonly block: { readonly start: number; readonly end: number } | null
 }
 
+/** Original edit state is useful after the temporary outgoing preview is gone. */
+const OUTGOING_DRAFT_LIMIT = 64
+
+interface InterruptedRecoveryLease extends DraftImageLease {
+  readonly ownerAgentId: string
+  readonly bindingGeneration: number
+  readonly editSequence: number
+  readonly messageIds: ReadonlySet<string>
+}
+
 /**
  * One prompt-draft undo step: the state BEFORE a discrete edit (or edit run),
  * plus the tracking the grouping rule needs. `Ctrl+Z` pops it back, and it is
@@ -430,6 +440,8 @@ export interface PromptController {
   text(): string
   /** Current capability-backed draft images in token order, without reads. */
   previewImages?(): readonly { image: TranscriptImage; title: string }[]
+  /** Capture composer ownership immediately before an explicit user stop. */
+  prepareInterruptedRecovery?(): void
   /** Recover a confirmed failure only when doing so cannot replace a draft. */
   recoverFailedOutgoing?(id: string): void
   clear(): void
@@ -840,6 +852,13 @@ export function PromptInput({
    * restored without this map can never bind to a later image by accident. */
   const draftImagesRef = React.useRef(new Map<string, string>())
   const outgoingDraftsRef = React.useRef(new Map<string, OutgoingDraftSnapshot>())
+  const outgoingDraftCaptureSequenceRef = React.useRef(0)
+  const interruptedRecoveryLeaseRef = React.useRef<InterruptedRecoveryLease | null>(null)
+  const lastInterruptedInputRef = React.useRef<{
+    readonly id: string
+    readonly ownerAgentId: string
+    readonly bindingGeneration: number
+  } | null>(null)
   const draftImagesGenerationRef = React.useRef(channel.stagedImageGeneration?.() ?? 0)
   /** Session generation fences one agent transcript; revision fences one
    * logical composer draft inside that session. Ordinary typing deliberately
@@ -867,6 +886,7 @@ export function PromptInput({
   const draftInputWorkRef = React.useRef(new Map<symbol, DraftImageLease>())
   const [, refreshDraftInputWork] = React.useState(0)
   const advanceDraftRevision = (): void => {
+    interruptedRecoveryLeaseRef.current = null
     draftRevisionRef.current += 1
     imageStageChainRef.current = Promise.resolve()
     draftInputWorkRef.current.clear()
@@ -887,6 +907,7 @@ export function PromptInput({
       || historyDraft.current.images.some(image => image.stageId === stageId)
       || channel.pending.some(item => item.images?.some(image => image.stageId === stageId) === true)
       || channel.outgoing?.some(item => item.images?.some(image => image.stageId === stageId) === true) === true
+      || channel.interruptedInput?.images?.some(image => image.stageId === stageId) === true
   }
   const discardUnretainedImages = (stageIds: Iterable<string>): void => {
     for (const stageId of new Set(stageIds)) {
@@ -1057,6 +1078,8 @@ export function PromptInput({
   const draftInputWorkIsPending = (): boolean =>
     [...draftInputWorkRef.current.values()].some(draftImageLeaseIsCurrent)
   const beginDraftInputWork = (lease: DraftImageLease): (() => void) => {
+    // Even a paste/editor that eventually returns no text owns the new draft.
+    interruptedRecoveryLeaseRef.current = null
     const token = Symbol('draft-input-work')
     draftInputWorkRef.current.set(token, lease)
     return () => {
@@ -1112,6 +1135,7 @@ export function PromptInput({
     controllerRef.current = {
       hasText: () => valueRef.current.length > 0,
       text: () => valueRef.current,
+      prepareInterruptedRecovery,
       recoverFailedOutgoing: id => { recoverFailedOutgoing(id) },
       previewImages: () => composerImageRefsForText(valueRef.current, draftImagesRef.current).flatMap(ref => {
         const image = channel.stagedImage(ref.stageId)
@@ -1138,6 +1162,7 @@ export function PromptInput({
         setCursor(0)
       },
       append: (text: string) => {
+        interruptedRecoveryLeaseRef.current = null
         const previous = valueRef.current
         const next = sanitizeEditableText(previous + text)
         if (next !== previous) inputEditSequenceRef.current += 1
@@ -1721,9 +1746,10 @@ export function PromptInput({
     clearVimUndo()
   }
 
-  /** Capture BEFORE dispatch; the synchronous outgoing ID then owns this edit
-   * state even when React batches admission and draft clearing together. */
+  /** Capture BEFORE dispatch; retain after the action admits its outgoing ID,
+   * even when React batches admission and draft clearing together. */
   const captureOutgoingDraft = (text: string): (() => void) => {
+    const sequence = ++outgoingDraftCaptureSequenceRef.current
     if (channel.outgoing === undefined) return () => {}
     const before = new Set(channel.outgoing.map(item => item.id))
     const isDraft = text === valueRef.current
@@ -1735,11 +1761,80 @@ export function PromptInput({
       block: isDraft ? foldBlockRef.current : null,
     }
     return () => {
+      // A newer capture may have superseded a deferred interrupt delivery.
+      if (sequence !== outgoingDraftCaptureSequenceRef.current
+        || snapshot.ownerAgentId !== String(channel.agentId)
+        || snapshot.bindingGeneration !== resolveBindingGeneration(channel)) return
       // Interrupt delivery may also re-admit earlier queue entries. The fresh
       // draft is its last entry; never assign this snapshot to those copies.
       const admitted = channel.outgoing?.filter(item => !before.has(item.id)).at(-1)
-      if (admitted !== undefined) outgoingDraftsRef.current.set(admitted.id, snapshot)
+      if (admitted === undefined) return
+      outgoingDraftsRef.current.set(admitted.id, snapshot)
+      while (outgoingDraftsRef.current.size > OUTGOING_DRAFT_LIMIT) {
+        const oldest = outgoingDraftsRef.current.keys().next().value
+        if (oldest === undefined) break
+        outgoingDraftsRef.current.delete(oldest)
+      }
     }
+  }
+
+  /** Only a real UI stop can grant automatic recovery. Bind it to the inputs
+   * visible at that stop, so an unrelated later cancel cannot reuse the lease. */
+  const prepareInterruptedRecovery = (): void => {
+    if (channel.cancelPending) return
+    interruptedRecoveryLeaseRef.current = null
+    if (suspended || valueRef.current !== '' || draftInputWorkIsPending() || expandedRef.current) return
+    const messageIds = [
+      ...(channel.outgoing ?? []).map(item => item.id),
+      ...(channel.userMessageResponses ?? []).flatMap(item => item.phase === 'waiting' && item.messageId !== undefined
+        ? [item.messageId]
+        : []),
+    ].filter(id => id !== channel.interruptedInput?.id).slice(-OUTGOING_DRAFT_LIMIT)
+    if (messageIds.length === 0) return
+    interruptedRecoveryLeaseRef.current = {
+      ...captureDraftImageLease(),
+      ownerAgentId: String(channel.agentId),
+      bindingGeneration: resolveBindingGeneration(channel),
+      editSequence: inputEditSequenceRef.current,
+      messageIds: new Set(messageIds),
+    }
+  }
+
+  const restoreOutgoingDraft = (id: string, submission: ComposerSubmission): void => {
+    const snapshot = outgoingDraftsRef.current.get(id)
+    outgoingDraftsRef.current.delete(id)
+    const usable = snapshot !== undefined
+      && snapshot.ownerAgentId === String(channel.agentId)
+      && snapshot.bindingGeneration === resolveBindingGeneration(channel)
+    const text = usable ? snapshot.text : submission.text
+    restoreDraftImages({ text, images: submission.images ?? [] })
+    updateFoldBlock(null)
+    setInput(text, usable ? snapshot.cursor : text.length, 'silent')
+    const block = usable ? snapshot.block : null
+    if (block !== null && block.start >= 0 && block.start < block.end && block.end <= text.length) {
+      updateFoldBlock(block)
+    }
+    historyIndex.current = -1
+    setSelectedCommand(0)
+    setFileSelected(0)
+  }
+
+  const recoverInterruptedInput = (id: string): boolean => {
+    if (suspended || channel.recoverInterruptedInput === undefined || channel.interruptedInput?.id !== id) return false
+    if (valueRef.current !== '' || draftInputWorkIsPending()) {
+      channel.notify(t('input-interrupted-draft-not-empty'), { color: 'warning', timeoutMs: 4000 })
+      return false
+    }
+    let submission: ComposerSubmission | undefined
+    try {
+      submission = channel.recoverInterruptedInput(id)
+    } catch (error) {
+      reportSendFailure(error)
+      return false
+    }
+    if (submission === undefined) return false
+    restoreOutgoingDraft(id, submission)
+    return true
   }
 
   const recoverFailedOutgoing = (id: string): void => {
@@ -1759,37 +1854,50 @@ export function PromptInput({
       return
     }
     if (submission === undefined) return
-    const snapshot = outgoingDraftsRef.current.get(id)
-    outgoingDraftsRef.current.delete(id)
-    const usable = snapshot !== undefined
-      && snapshot.ownerAgentId === String(channel.agentId)
-      && snapshot.bindingGeneration === resolveBindingGeneration(channel)
-    const text = usable ? snapshot.text : submission.text
-    restoreDraftImages({ text, images: submission.images ?? [] })
-    updateFoldBlock(null)
-    setInput(text, usable ? snapshot.cursor : text.length, 'silent')
-    const block = usable ? snapshot.block : null
-    if (block !== null && block.start >= 0 && block.start < block.end && block.end <= text.length) {
-      updateFoldBlock(block)
-    }
-    historyIndex.current = -1
-    setSelectedCommand(0)
-    setFileSelected(0)
+    restoreOutgoingDraft(id, submission)
   }
 
   React.useEffect(() => {
-    const outgoing = channel.outgoing ?? []
+    const ownerAgentId = String(channel.agentId)
+    const bindingGeneration = resolveBindingGeneration(channel)
     for (const [id, snapshot] of outgoingDraftsRef.current) {
-      if (snapshot.ownerAgentId !== String(channel.agentId)
-        || snapshot.bindingGeneration !== resolveBindingGeneration(channel)
-        || !outgoing.some(item => item.id === id)) {
+      // A recorded preview disappearing is not the end of recovery: the real
+      // user row may still await its first response. Keep at most 64 snapshots
+      // for this binding, including during the terminal/receipt hand-off.
+      if (snapshot.ownerAgentId !== ownerAgentId || snapshot.bindingGeneration !== bindingGeneration) {
         outgoingDraftsRef.current.delete(id)
       }
     }
-    // Mount-time draft adoption runs first, so a returning screen's draft is
-    // already in valueRef. When suspended, leave the failure in the channel.
-    if (suspended || valueRef.current !== '' || draftInputWorkIsPending()) return
-    const failed = outgoing.find(item => item.phase === 'failed')
+    const lease = interruptedRecoveryLeaseRef.current
+    if (lease !== null && (lease.ownerAgentId !== ownerAgentId || lease.bindingGeneration !== bindingGeneration)) {
+      interruptedRecoveryLeaseRef.current = null
+    }
+    // Adoption runs first. A hidden composer must not consume a ready capsule.
+    if (suspended) return
+    const interrupted = channel.interruptedInput
+    const previous = lastInterruptedInputRef.current
+    if (interrupted !== undefined && (previous === null || previous.id !== interrupted.id
+      || previous.ownerAgentId !== ownerAgentId || previous.bindingGeneration !== bindingGeneration)) {
+      // Consume the UI lease BEFORE recovery can synchronously publish another
+      // channel snapshot. A refused/late recovery never gets a second auto try.
+      lastInterruptedInputRef.current = { id: interrupted.id, ownerAgentId, bindingGeneration }
+      const recoveryLease = interruptedRecoveryLeaseRef.current
+      interruptedRecoveryLeaseRef.current = null
+      const canRestore = recoveryLease !== null
+        && recoveryLease.ownerAgentId === ownerAgentId
+        && recoveryLease.bindingGeneration === bindingGeneration
+        && recoveryLease.messageIds.has(interrupted.id)
+        && draftImageLeaseIsCurrent(recoveryLease)
+        && recoveryLease.editSequence === inputEditSequenceRef.current
+        && valueRef.current === ''
+        && !draftInputWorkIsPending()
+        && !expandedRef.current
+      if (canRestore && recoverInterruptedInput(interrupted.id)) return
+      channel.notify(t('input-interrupted-recoverable'), { color: 'warning', timeoutMs: 5000 })
+    }
+    // Failed receipts keep their existing independent auto-recovery behavior.
+    if (valueRef.current !== '' || draftInputWorkIsPending()) return
+    const failed = channel.outgoing?.find(item => item.phase === 'failed')
     if (failed !== undefined) recoverFailedOutgoing(failed.id)
   })
 
@@ -1918,14 +2026,17 @@ export function PromptInput({
   }
 
   /**
-   * Alt+Up: recover a confirmed failure first, or pull the last pending
-   * message back for editing (never interrupts the running turn). Pending
-   * withdrawal can be refused by a backend without the inbox API.
+   * Alt+Up: interrupted input, confirmed failure, then the last real pending
+   * message. Recovery protects newer drafts; explicit pending recall keeps
+   * its existing replacement/undo-reset behavior. Never interrupts a turn.
    */
   const pullBackLast = () => {
-    // A retained failure takes priority without replacing a newer draft.
-    // Otherwise Alt+↑ keeps its direct last-pending meaning with the dock open.
     setDockSelected(null)
+    const interrupted = channel.interruptedInput
+    if (interrupted !== undefined && channel.recoverInterruptedInput !== undefined) {
+      recoverInterruptedInput(interrupted.id)
+      return
+    }
     const failed = channel.outgoing?.find(item => item.phase === 'failed')
     if (failed !== undefined && channel.recoverFailedOutgoing !== undefined) {
       recoverFailedOutgoing(failed.id)
@@ -2100,7 +2211,9 @@ export function PromptInput({
       }
     })()
     if (count === 0) return
-    retainOutgoingDraft()
+    // Core queues delivery first; bind its admitted ID in the following
+    // microtask, before any asynchronous input-decision/submit work settles.
+    queueMicrotask(retainOutgoingDraft)
     // This request owns the queue's re-delivery from here on — including the
     // fresh draft, whose preview enters `pending` as a followup. A later
     // Ctrl+Enter during the same convergence must not list that preview again
@@ -2308,6 +2421,7 @@ export function PromptInput({
     expandedRef.current = next
     setExpanded(next)
     if (next) {
+      interruptedRecoveryLeaseRef.current = null
       expandedScrollRef.current = 0
       if (foldBlockRef.current) updateFoldBlock(null)
     }
@@ -2623,6 +2737,7 @@ export function PromptInput({
     // Newlines remain data — they are NOT Enter — so this branch runs before
     // the whole-line submit rule.
     if (event?.isPasted && input.length > 0) {
+      interruptedRecoveryLeaseRef.current = null
       const text = sanitizePastedText(input.replace(/\r\n/g, '\n').replace(/\r/g, '\n'))
       // Desktop drops reach the TUI as pasted text (Ghostty forwards
       // Shell.escape(path) through the PTY with no drop boundary). Only a
@@ -3044,7 +3159,7 @@ export function PromptInput({
       }
     }
     if (key.meta && key.upArrow) {
-      // Alt+Up: pull the last pending message back for editing (pi/Codex).
+      // Alt+Up: interrupted input, failed receipt, then the last queued input.
       pullBackLast()
       return
     }
@@ -3604,7 +3719,8 @@ export function PromptInput({
       // auto-sends. A queue already fully docked docks nothing new; the
       // turn still needs its plain abort.
       if (channel.working && channel.pending.length > 0) {
-        if (channel.interruptAndDock() === 0) channel.cancel()
+        prepareInterruptedRecovery()
+        if (channel.interruptAndDock({ restoreUnanswered: true }) === 0) channel.cancel({ restoreUnanswered: true })
         return
       }
       // A single Esc clears the current input (if any); the double-tap

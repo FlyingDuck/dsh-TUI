@@ -668,7 +668,17 @@ export interface LoadedContextTool {
 /** Display-only response state of a durable human row; never a delivery receipt. */
 export interface UserMessageResponseState {
   readonly rowId: number
+  /** Known durable input identity, never inferred from its text. */
+  readonly messageId?: string
   readonly phase: 'waiting' | 'stopped'
+}
+
+/** One explicitly interrupted, recorded input whose model never produced output. */
+export interface InterruptedInput {
+  readonly id: string
+  readonly rowId: number
+  readonly text: string
+  readonly images?: readonly ComposerImageRef[]
 }
 
 /** @internal */

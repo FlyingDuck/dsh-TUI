@@ -15,6 +15,7 @@ import { attachIdeSelection } from './ide-selection.js'
 import { mentionAttachments, mentionFs } from './mentions.js'
 import type { ChannelHost } from './channel-host.js'
 import type { LocalImageStore } from './core/local-images.js'
+import type { InterruptedInputRecovery } from './core/interrupted-input.js'
 import type { ChannelOwner } from './owner.js'
 import { sessionWorkingDirectory } from '../../channel/working-directory.js'
 import type { AttachedContext, ChannelSelection, SelectionAttachment } from '../../adapter/ports/channel-view.js'
@@ -80,6 +81,7 @@ export function createInputDelivery(
   */
  consumeAttachedContexts?: () => readonly AttachedContext[],
  outgoingState?: () => Pick<ChannelState, 'outgoing' | 'pending' | 'attachedContexts' | 'emit'>,
+ interrupted?: Pick<InterruptedInputRecovery, 'retain' | 'reset'>,
 ) {
   /**
    * `@` file mentions (issue #15): expansion reads files asynchronously, so
@@ -94,6 +96,8 @@ export function createInputDelivery(
   const submissions = new Map<string, {
     readonly origin: UserTextOrigin
     readonly attach?: UserMessage
+    /** Only a composer action owns an editable original, not internal relay/skill text. */
+    readonly draft?: ComposerSubmission
     submitted: boolean
   }>()
   const transferring = new Set<string>()
@@ -508,6 +512,7 @@ export function createInputDelivery(
     attach?: UserMessage,
     previousId?: string,
     presentation?: 'immediate',
+    recoverable = false,
   ): void => {
     assertCapacity(1, previousId === undefined ? [] : [previousId])
     // Capture before the async FIFO: later turn changes cannot move this preview.
@@ -518,7 +523,9 @@ export function createInputDelivery(
     const message = createUserMessage({ content: [{ type: 'text', text: text.trim() }], source: { kind: 'user' } })
     if (previousId !== undefined) forgetOutgoing(previousId)
     const companion = attach ?? previous?.attach
-    submissions.set(message.id, { origin, attach: companion, submitted: false })
+    submissions.set(message.id, { origin, attach: companion, submitted: false,
+      ...(recoverable ? { draft: { text, images: capturedImages } } : {}),
+    })
     const view = outgoingState?.()
     if (view !== undefined) {
       view.outgoing = [...view.outgoing, {
@@ -556,6 +563,7 @@ export function createInputDelivery(
    *  a task parked on the replaced session cannot wedge the new one, and drop
    *  every pending-decision indicator owned by the session being replaced. */
   const resetOutgoing = (): void => {
+    interrupted?.reset()
     submissions.clear()
     transferring.clear()
     discardedDuringTransfer.clear()
@@ -598,7 +606,13 @@ export function createInputDelivery(
     recoverFailedOutgoing,
     resetOutgoing,
     /** Event routing owns the single wake after confirmation + projection. */
-    confirmOutgoing: (id: string): boolean => forgetOutgoing(id),
+    confirmOutgoing: (id: string, human = true): boolean => {
+      const entry = submissions.get(id)
+      if (human && entry?.draft !== undefined && current(entry.origin)) {
+        interrupted?.retain(id, { ...entry.draft, session: entry.origin.session, generation: entry.origin.generation })
+      }
+      return forgetOutgoing(id)
+    },
     /** A successful explicit retraction transfers contexts back to the draft. */
     retractOutgoing: (id: string): void => { forgetOutgoing(id, true); attachedByMessageId.delete(id) },
     /** Inputs dispatched so far, and whether any is still in the FIFO (a

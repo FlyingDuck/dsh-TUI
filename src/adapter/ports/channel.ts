@@ -22,7 +22,7 @@
 
 import type { ChannelUi } from './channel-ui.js'
 import type { LocalizedDescriptions } from './channel-catalog.js'
-import type { ComposerSubmission, GitStatusSummary, OutgoingMessage, UserMessageResponseState } from './channel-view.js'
+import type { ComposerSubmission, GitStatusSummary, OutgoingMessage, UserMessageResponseState, InterruptedInput } from './channel-view.js'
 import type { HostDisposer } from './owner.js'
 
 // ── projection ────────────────────────────────────────────────────────────
@@ -82,7 +82,7 @@ export interface HostChannelProjectionPort {
 export interface HostChannelActionsPort {
   submit(text: string): void
   steer(text: string): void
-  cancel(): void
+  cancel(options?: { readonly restoreUnanswered?: true }): void
   interruptAndDeliver(inputs: readonly (string | ComposerSubmission)[]): number
   clear(): void
   loadOlder(): number
@@ -125,6 +125,7 @@ export interface HostChannelStateSnapshot {
   readonly pending: readonly Readonly<Record<string, unknown>>[]
   readonly outgoing?: readonly OutgoingMessage[]
   readonly userMessageResponses?: readonly UserMessageResponseState[]
+  readonly interruptedInput?: InterruptedInput
   readonly pluginScene?: Readonly<Record<string, unknown>>
   readonly mode: Readonly<Record<string, unknown>>
   readonly agentPreset?: string

@@ -328,7 +328,184 @@ async function mount(fullscreen: boolean, columns: number, launchpad = false) {
     close: async () => { app.unmount(); await new Promise<void>(resolve => stdout.write('', () => resolve())); f.close(); term.dispose() },
   }
 }
+type CancelReceipt = Awaited<ReturnType<AgentSession['cancel']>>
+async function mountUnanswered(fullscreen: boolean, columns: number, text: string, imagePath?: string) {
+  const rig = await mount(fullscreen, columns)
+  const cancellation = deferred<CancelReceipt>()
+  const cancelCalls: Parameters<AgentSession['cancel']>[0][] = []
+  rig.f.first.session.cancel = async cause => { cancelCalls.push(cause); return cancellation.promise }
+  try {
+    await wait('interrupt recovery composer mounts', () => rig.controller.current !== null)
+    rig.stdin.write(imagePath === undefined ? text : `\x1b[200~${imagePath}\x1b[201~`)
+    await wait('the to-be-interrupted draft is editable', () => imagePath === undefined
+      ? rig.controller.current?.text() === text : rig.controller.current?.previewImages?.().length === 1)
+    const original = rig.controller.current!.text()
+    await rig.enter()
+    await wait('the to-be-interrupted input reaches the backend', () => rig.f.first.submits.length === 1)
+    const id = rig.f.first.submits[0]!.input.clientMessageId
+    const stageId = outgoing(rig.f)[0]?.images?.[0]?.stageId
+    rig.f.first.emit(
+      { type: 'turn.start', turn: 1, origin: 'user', userMessageId: id, time: Date.now() },
+      { type: 'step.start', turn: 1, step: 1 },
+    )
+    rig.f.first.confirm(0)
+    rig.f.first.emit({ type: 'assistant.attempt.start', attemptId: 'unanswered-attempt', turn: 1, step: 1 })
+    rig.f.first.submits[0]!.receipt.resolve({ accepted: true })
+    await wait('the input is recorded and waiting without an outgoing receipt', () => outgoing(rig.f).length === 0
+      && rig.f.raw.userMessageResponses.some(item => item.phase === 'waiting') && rig.controller.current?.text() === '')
+    return { ...rig, original, id, stageId, cancellation, cancelCalls,
+      async requestStop() {
+        rig.stdin.write('\x1b')
+        await wait('the real Escape path requests cancellation', () => cancelCalls.length === 1)
+      },
+      terminal() { rig.f.first.emit({ type: 'turn.end', turn: 1, reason: { kind: 'aborted' }, time: Date.now() }) },
+      output() { rig.f.first.emit({ type: 'assistant.delta', attemptId: 'unanswered-attempt', index: 0, time: Date.now(), delta: { kind: 'reasoning', text: 'FIRST_THOUGHT' } }) },
+      async close() { cancellation.resolve({ stillQueued: [], outcome: 'unknown' }); await rig.close() },
+    }
+  } catch (error) {
+    cancellation.resolve({ stillQueued: [], outcome: 'unknown' })
+    await rig.close()
+    throw error
+  }
+}
+async function expectNoInterruptedRestore(rig: Awaited<ReturnType<typeof mountUnanswered>>, label: string) {
+  // 固定窗:探针 cancellation/recovery effects must not invent a restored draft.
+  await sleep(150)
+  check(label, rig.controller.current?.text() === '' && rig.f.channel.interruptedInput === undefined)
+}
 if (process.env.VERIFY_OUTGOING_CORE_ONLY !== '1') {
+// A persisted zero-output input returns only after BOTH confirmed cancellation
+// and an interrupted terminal event. The two proof orders must agree.
+for (const fullscreen of [false, true]) for (const columns of [40, 100]) {
+  const rig = await mountUnanswered(fullscreen, columns, `INTERRUPTED_${columns}`)
+  const label = `${fullscreen ? 'fullscreen' : 'inline'} ${columns} interrupted input`
+  try {
+    await rig.requestStop()
+    if (columns === 40) {
+      rig.terminal()
+      check(`${label}: terminal alone cannot restore input`, rig.f.channel.interruptedInput === undefined && rig.controller.current?.text() === '')
+      rig.cancellation.resolve({ stillQueued: [], outcome: 'confirmed' })
+    } else {
+      rig.cancellation.resolve({ stillQueued: [], outcome: 'confirmed' })
+      await new Promise<void>(resolve => setImmediate(resolve))
+      check(`${label}: cancellation receipt alone cannot restore input`, rig.f.raw.working && rig.f.channel.interruptedInput === undefined && rig.controller.current?.text() === '')
+      rig.terminal()
+    }
+    await wait(`${label}: actual Escape restores the original draft`, () => rig.controller.current?.text() === rig.original)
+    check(`${label}: recovery consumes its ready capability once`, rig.f.channel.interruptedInput === undefined)
+    check(`${label}: restoration is not automatic resubmission`, rig.f.first.submits.length === 1 && outgoing(rig.f).length === 0)
+    check(`${label}: the real persisted user record is retained`, rig.f.raw.rows.filter(row => row.kind === 'user' && row.text === rig.original).length === 1)
+    rig.controller.current!.append('_KEEP')
+    rig.terminal()
+    await wait(`${label}: a later terminal event does not restore twice`, () => rig.controller.current?.text() === `${rig.original}_KEEP`)
+  } finally { await rig.close() }
+}
+for (const outcome of ['unknown', 'failed'] as const) {
+  const rig = await mountUnanswered(true, 80, `CANCEL_${outcome}`)
+  try {
+    await rig.requestStop()
+    rig.terminal()
+    rig.cancellation.resolve({ stillQueued: [], outcome })
+    await expectNoInterruptedRestore(rig, `${outcome} cancellation never creates a retry draft`)
+  } finally { await rig.close() }
+}
+for (const unknownAfterTerminal of [false, true]) {
+  const rig = await mountUnanswered(true, 80, 'BUFFERED_OUTPUT_AFTER_TERMINAL')
+  try {
+    await rig.requestStop()
+    rig.terminal()
+    if (unknownAfterTerminal) rig.f.first.emit({ type: 'assistant.delta', attemptId: 'unknown-buffered-main', index: 0, time: Date.now(), delta: { kind: 'text', text: 'UNLOCATED_LATE_OUTPUT' } })
+    else rig.output()
+    rig.cancellation.resolve({ stillQueued: [], outcome: 'confirmed' })
+    await expectNoInterruptedRestore(rig, `buffered ${unknownAfterTerminal ? 'unknown' : 'target'} output after terminal but before receipt blocks restoration`)
+  } finally { await rig.close() }
+}
+for (const outputBeforeStop of [true, false]) {
+  const rig = await mountUnanswered(true, 80, 'MODEL_ALREADY_OUTPUT')
+  try {
+    if (outputBeforeStop) rig.output()
+    await rig.requestStop()
+    if (!outputBeforeStop) rig.output()
+    rig.terminal()
+    rig.cancellation.resolve({ stillQueued: [], outcome: 'confirmed' })
+    await expectNoInterruptedRestore(rig, `model output ${outputBeforeStop ? 'before' : 'during'} stop revokes restoration`)
+  } finally { await rig.close() }
+}
+{
+  const rig = await mountUnanswered(true, 80, 'NON_UI_STOP')
+  try {
+    rig.f.channel.cancel()
+    await wait('default programmatic cancel reaches the session', () => rig.cancelCalls.length === 1)
+    rig.terminal()
+    rig.cancellation.resolve({ stillQueued: [], outcome: 'confirmed' })
+    await expectNoInterruptedRestore(rig, 'default programmatic cancellation does not restore a recorded input')
+  } finally { await rig.close() }
+}
+{
+  const rig = await mountUnanswered(true, 80, 'COMPLETED_NOT_ABORTED')
+  try {
+    await rig.requestStop()
+    rig.f.first.emit({ type: 'turn.end', turn: 1, reason: { kind: 'completed' }, time: Date.now() })
+    rig.cancellation.resolve({ stillQueued: [], outcome: 'confirmed' })
+    await expectNoInterruptedRestore(rig, 'a normally completed turn cannot become an interrupted draft')
+  } finally { await rig.close() }
+}
+// A ready draft blocked by newer edits stays manual, even if those edits are
+// later cleared. Alt+Up must consume it safely instead of auto-resending it.
+{
+  const rig = await mountUnanswered(true, 80, 'MANUAL_INTERRUPTED')
+  try {
+    await rig.requestStop()
+    rig.stdin.write('NEWER_DRAFT')
+    await wait('a newer draft owns the cancelled composer', () => rig.controller.current?.text() === 'NEWER_DRAFT')
+    rig.terminal()
+    rig.cancellation.resolve({ stillQueued: [], outcome: 'confirmed' })
+    await wait('the interrupted input remains explicitly recoverable', () => rig.f.channel.interruptedInput?.id === rig.id)
+    check('a ready interrupted draft never overwrites newer text', rig.controller.current?.text() === 'NEWER_DRAFT')
+    rig.controller.current!.clear()
+    // 固定窗:探针 clearing a newer edit lineage must not revive a stale automatic lease.
+    await sleep(150)
+    check('a newer edit then clear does not silently restore old input', rig.controller.current?.text() === '' && rig.f.channel.interruptedInput?.id === rig.id)
+    rig.stdin.write('\x1b[1;3A')
+    await wait('Alt+Up explicitly restores the interrupted input', () => rig.controller.current?.text() === rig.original)
+    check('manual interrupted recovery consumes once without delivery', rig.f.channel.interruptedInput === undefined && rig.f.first.submits.length === 1)
+  } finally { await rig.close() }
+}
+{
+  const rig = await mountUnanswered(true, 80, 'OLD_SESSION_INTERRUPTED')
+  try {
+    await rig.requestStop()
+    rig.terminal()
+    check('a stopped session can be replaced before its cancel receipt', await rig.f.channel.newSession())
+    await wait('the replacement binding finishes its UI handoff', () => rig.controller.current !== null && !rig.lines().some(line => line.includes(rig.original)))
+    rig.stdin.write('NEW_SESSION_DRAFT')
+    await wait('the replacement draft paints', () => rig.controller.current?.text() === 'NEW_SESSION_DRAFT' && rig.lines().some(line => line.includes('NEW_SESSION_DRAFT')))
+    rig.cancellation.resolve({ stillQueued: [], outcome: 'confirmed' })
+    // 固定窗:探针 an old cancellation receipt must not offer a draft in the new binding.
+    await sleep(150)
+    check('late cancelled-session recovery cannot cross binding generation', rig.controller.current?.text() === 'NEW_SESSION_DRAFT' && rig.f.channel.interruptedInput === undefined)
+  } finally { await rig.close() }
+}
+// Durable confirmation must not evict image capabilities still needed by an
+// unanswered interruption, and taking the draft must transfer them intact.
+{
+  const path = join(home, 'interrupted-image.png')
+  writeFileSync(path, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64'))
+  const rig = await mountUnanswered(true, 80, '', path)
+  try {
+    check('an unanswered image submission has a staged identity', rig.stageId !== undefined)
+    rig.f.raw.discardStagedImage(rig.stageId!)
+    check('confirmed but unanswered input keeps its recovery image pinned', rig.f.raw.hasStagedImage(rig.stageId!))
+    await rig.requestStop()
+    rig.terminal()
+    rig.cancellation.resolve({ stillQueued: [], outcome: 'confirmed' })
+    await wait('a zero-output interrupted image restores text and preview', () => rig.controller.current?.text() === rig.original && rig.controller.current?.previewImages?.().length === 1)
+    check('image recovery itself never submits again', rig.f.first.submits.length === 1)
+    await rig.enter()
+    await wait('the user can explicitly retry the recovered image', () => rig.f.first.submits.length === 2)
+    check('explicit retry has a fresh ID and actual image bytes', rig.f.first.submits[1]!.input.clientMessageId !== rig.id && rig.f.first.submits[1]!.input.images?.length === 1)
+  } finally { await rig.close() }
+}
 for (const fullscreen of [false, true]) for (const columns of [40, 100]) {
   const rig = await mount(fullscreen, columns)
   const label = `${fullscreen ? 'fullscreen' : 'inline'} ${columns} columns`
@@ -574,6 +751,98 @@ for (const uncertain of [false, true]) {
     check('manual recovery also refuses to overwrite the newly staged image', rig.controller.current?.previewImages?.().length === 1 && outgoing(rig.f).some(item => item.id === id))
     rig.controller.current!.clear()
     await wait('old failed input becomes recoverable after the new image draft is cleared', () => rig.controller.current?.text() === 'FAILED_BEFORE_IMAGE')
+  } finally { stageGate.resolve(); await rig.close() }
+}
+
+// Unpositioned output cannot prove silence; explicitly older positioned
+// output must not be attributed to this input's model call.
+{
+  const rig = await mountUnanswered(true, 80, 'UNKNOWN_STREAM_SAFETY')
+  try {
+    await rig.requestStop()
+    rig.f.first.emit({ type: 'assistant.delta', attemptId: 'unpositioned-main', index: 0, time: Date.now(), delta: { kind: 'text', text: 'UNLOCATED_OUTPUT' } })
+    rig.terminal()
+    rig.cancellation.resolve({ stillQueued: [], outcome: 'confirmed' })
+    await expectNoInterruptedRestore(rig, 'unknown main output conservatively blocks automatic recovery')
+  } finally { await rig.close() }
+}
+{
+  const rig = await mountUnanswered(true, 80, 'KNOWN_OLDER_STREAM')
+  try {
+    await rig.requestStop()
+    rig.f.first.emit({ type: 'assistant.delta', attemptId: 'known-older-turn', turn: 0, step: 1, index: 0, time: Date.now(), delta: { kind: 'text', text: 'OLDER_TURN_OUTPUT' } })
+    rig.terminal()
+    rig.cancellation.resolve({ stillQueued: [], outcome: 'confirmed' })
+    await wait('explicitly older output does not block this unanswered recovery', () => rig.controller.current?.text() === rig.original)
+  } finally { await rig.close() }
+}
+{
+  const rig = await mountUnanswered(true, 80, 'NO_LOCAL_STOP_LEASE')
+  try {
+    rig.f.channel.cancel({ restoreUnanswered: true })
+    await wait('an explicit non-UI opt-in reaches the backend', () => rig.cancelCalls.length === 1)
+    rig.terminal()
+    rig.cancellation.resolve({ stillQueued: [], outcome: 'confirmed' })
+    await wait('a non-UI stop can offer only manual recovery', () => rig.f.channel.interruptedInput?.id === rig.id)
+    // 固定窗:探针 a core offer without the UI's stop lease cannot auto-fill the composer.
+    await sleep(150)
+    check('missing UI stop lease never silently restores text', rig.controller.current?.text() === '' && rig.f.channel.interruptedInput?.id === rig.id)
+  } finally { await rig.close() }
+}
+{
+  const rig = await mountUnanswered(true, 80, 'EMPTY_INPUT_WORK')
+  try {
+    await rig.requestStop()
+    rig.controller.current!.append('')
+    rig.terminal()
+    rig.cancellation.resolve({ stillQueued: [], outcome: 'confirmed' })
+    await wait('even empty newer input work keeps interruption manual', () => rig.f.channel.interruptedInput?.id === rig.id)
+    // 固定窗:探针 an empty append still revokes the old automatic draft lease.
+    await sleep(150)
+    check('empty input work cannot revive an older auto-restore lease', rig.controller.current?.text() === '' && rig.f.channel.interruptedInput?.id === rig.id)
+  } finally { await rig.close() }
+}
+// Recovery does not own an image exclusively: ↑ can recall it into a newer
+// live draft before the original model produces its first output.
+{
+  const path = join(home, 'shared-interruption-image.png')
+  writeFileSync(path, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64'))
+  const rig = await mountUnanswered(true, 80, '', path)
+  try {
+    rig.stdin.write('\x1b[A')
+    // History stores submitted (trimmed) text; the image paste's trailing
+    // space is preserved only by the interruption snapshot, not by history.
+    check('history recalls the unanswered image into a new draft', await settled(() => rig.controller.current?.previewImages?.().length === 1 && rig.controller.current?.text() === rig.original.trim(), { timeoutMs: 8000 }), { text: rig.controller.current?.text(), images: rig.controller.current?.previewImages?.(), original: rig.original, stageLive: rig.stageId === undefined ? false : rig.f.raw.hasStagedImage(rig.stageId), lines: rig.lines() })
+    rig.output()
+    await wait('the original model output retires only its response state', () => !rig.f.raw.userMessageResponses.some(item => item.phase === 'waiting'))
+    check('releasing the recovery capsule never discards a newer draft image', rig.stageId !== undefined && rig.f.raw.hasStagedImage(rig.stageId))
+    await rig.enter()
+    await wait('the recalled image draft can still really send', () => rig.f.first.submits.length === 2)
+    check('shared image ownership retains actual retry bytes', rig.f.first.submits[1]!.input.images?.length === 1)
+  } finally { await rig.close() }
+}
+{
+  const path = join(home, 'pending-input-image.png')
+  writeFileSync(path, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64'))
+  const rig = await mountUnanswered(true, 80, 'BEFORE_NEW_IMAGE_WORK')
+  const stageGate = deferred<void>()
+  let stageEntered = false
+  const stageImage = rig.f.raw.stageComposerImage.bind(rig.f.raw)
+  rig.f.raw.stageComposerImage = async (...args) => { stageEntered = true; await stageGate.promise; return stageImage(...args) }
+  try {
+    await rig.requestStop()
+    rig.stdin.write(`\x1b[200~${path}\x1b[201~`)
+    await wait('new empty image staging owns the draft before its token exists', () => stageEntered)
+    rig.terminal()
+    rig.cancellation.resolve({ stillQueued: [], outcome: 'confirmed' })
+    await wait('interrupted text remains manual during newer input work', () => rig.f.channel.interruptedInput?.id === rig.id)
+    check('recovery does not overwrite the pending empty image draft', rig.controller.current?.text() === '')
+    stageGate.resolve()
+    await wait('newer image staging survives old interrupted recovery', () => rig.controller.current?.previewImages?.().length === 1)
+    rig.stdin.write('\x1b[1;3A')
+    // 固定窗:探针 manual interrupted recovery must also refuse a live newer image draft.
+    await sleep(150)
+    check('Alt+Up does not overwrite a newer staged image', rig.controller.current?.previewImages?.().length === 1 && rig.f.channel.interruptedInput?.id === rig.id)
   } finally { stageGate.resolve(); await rig.close() }
 }
 

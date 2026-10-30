@@ -49,6 +49,10 @@ export function createInputActions(
     hasOutgoing(id: string): boolean
     parkDraft(id: string, previousId: string): void
   },
+  interrupted?: {
+    begin(restore: boolean): (outcome: CancelOutcome) => void
+    invalidate(): void
+  },
 ): Pick<ChannelState, 'submit' | 'steer' | 'removePending' | 'cancel' | 'interruptAndDeliver' | 'interruptAndDock' | 'deliverDocked' | 'swapDockedForDraft'> {
   return {
     submit(text, images = []) {
@@ -133,7 +137,7 @@ export function createInputActions(
       return true
     },
 
-    cancel() {
+    cancel(options) {
       owner.assertActive()
       const state = getState()
       const session = getSession()
@@ -143,6 +147,7 @@ export function createInputActions(
       // until the aborted turn has produced its terminal event. `cancelPending`
       // mirrors that window for the UI, where a repeated press force-exits.
       if (input.cancelInFlight) return
+      const settleRecovery = interrupted?.begin(options?.restoreUnanswered === true)
       input.cancelInFlight = true
       input.cancelCause = 'user'
       state.cancelPending = true
@@ -150,7 +155,12 @@ export function createInputActions(
       // received (and its watchdog needs the state change) even when the
       // abort never converges and no backend event follows.
       state.emit()
-      void session.cancel('user')
+      try {
+        void session.cancel('user').then(receipt => { settleRecovery?.(receipt.outcome) }, () => { settleRecovery?.('failed') })
+      } catch (error) {
+        settleRecovery?.('failed')
+        throw error
+      }
     },
 
     /** Esc with queued input while a turn runs (Claude Code parity: "Press
@@ -164,7 +174,7 @@ export function createInputActions(
      *  un-dock with a notice so the still-live backend copy is not sent
      *  twice. Returns the count docked; 0 means nothing new was parked
      *  (already-docked rows stay put; the caller may still plain-cancel). */
-    interruptAndDock(): number {
+    interruptAndDock(options): number {
       owner.assertActive()
       const state = getState()
       const session = getSession()
@@ -209,10 +219,12 @@ export function createInputActions(
       // back), and this one's later queue snapshot vouches for them too.
       const provisional: string[] = [...input.provisionalDockIds ?? [], ...dockedNow]
       input.provisionalDockIds = provisional
+      const settleRecovery = interrupted?.begin(options?.restoreUnanswered === true)
       let settled = false
       const settle = (outcome: CancelOutcome, stillQueued: readonly string[]): void => {
         if (settled) return
         settled = true
+        settleRecovery?.(outcome)
         // A newer request owns the bookkeeping once it replaced ours.
         if (input.uncoveredDockIds === uncovered) {
           input.uncoveredDockIds = undefined
@@ -257,11 +269,16 @@ export function createInputActions(
           : t('interrupt-unconfirmed')
         if (notice !== undefined) state.notify(notice, { color: 'warning', timeoutMs: 6000 })
       }
-      void session.cancel('interrupt')
-        .then(receipt => { settle(receipt.outcome, receipt.stillQueued) })
-        // A backend that breaks the receipt contract by throwing gets the
-        // same revocation; the catch must not keep the dock.
-        .catch(() => { settle('failed', dockedNow) })
+      try {
+        void session.cancel('interrupt')
+          .then(receipt => { settle(receipt.outcome, receipt.stillQueued) })
+          // A backend that breaks the receipt contract by throwing gets the
+          // same revocation; the catch must not keep the dock.
+          .catch(() => { settle('failed', dockedNow) })
+      } catch (error) {
+        settle('failed', dockedNow)
+        throw error
+      }
       return dockable.length
     },
 
@@ -342,6 +359,8 @@ export function createInputActions(
           : { text: input.text, images: [...(input.images ?? [])], previousId: input.pendingId })
         .filter(input => input.text.trim() !== '')
       if (queued.length === 0) return 0
+      // Ctrl+Enter replaces the old prompt; it is never a recovery gesture.
+      interrupted?.invalidate()
       const readyDock = state.pending.filter(item => item.docked === true && input.provisionalDockIds?.includes(item.id) !== true)
       const replacementIds = queued.flatMap(entry => entry.previousId === undefined ? [] : [entry.previousId])
       const releaseCapacity = outgoing?.reserveCapacity(queued.length + readyDock.length, [...readyDock.map(item => item.id), ...replacementIds])

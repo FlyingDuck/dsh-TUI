@@ -56,6 +56,18 @@ function deferred() {
   return { promise, resolve }
 }
 
+function waitForGate(promise: Promise<void>, signal?: AbortSignal): Promise<void> {
+  if (signal === undefined) return promise
+  signal.throwIfAborted()
+  return new Promise((resolve, reject) => {
+    const abort = () => { reject(signal.reason ?? new DOMException('Cancelled', 'AbortError')) }
+    signal.addEventListener('abort', abort, { once: true })
+    promise.then(() => { signal.removeEventListener('abort', abort); resolve() }, error => {
+      signal.removeEventListener('abort', abort)
+      reject(error)
+    })
+  })
+}
 class GatedAdapter extends LlmAdapter {
   readonly headers = deferred()
   readonly content = deferred()
@@ -68,7 +80,7 @@ class GatedAdapter extends LlmAdapter {
     assert.equal(selectedProvider, provider)
     return { provider: selectedProvider, id: model, name: model }
   }
-  async *stream() {
+  async *stream(options: Parameters<InstanceType<typeof LlmAdapter>['stream']>[0]) {
     if (!this.historyStarted) {
       this.historyStarted = true
       yield { type: 'block-start' as const, index: 0, blockType: 'text' as const }
@@ -78,16 +90,16 @@ class GatedAdapter extends LlmAdapter {
       return
     }
     this.requests += 1
-    await this.headers.promise
+    await waitForGate(this.headers.promise, options.signal)
     const reasoning = this.mode === 'reasoning'
     yield { type: 'block-start' as const, index: 0, blockType: reasoning ? 'reasoning' as const : 'text' as const }
     this.headersConsumed = true
-    await this.content.promise
+    await waitForGate(this.content.promise, options.signal)
     if (this.mode === 'error') throw new Error('fixture failed before model content')
     const text = reasoning ? 'FIRST_MODEL_THOUGHT' : 'FIRST_MODEL_TEXT'
     if (reasoning) yield { type: 'reasoning-delta' as const, index: 0, text }
     else yield { type: 'text-delta' as const, index: 0, text }
-    await this.finish.promise
+    await waitForGate(this.finish.promise, options.signal)
     yield { type: 'block-end' as const, index: 0, block: { type: reasoning ? 'reasoning' as const : 'text' as const, text } }
     yield { type: 'finish' as const, reason: { kind: 'stop' as const } }
   }
@@ -239,6 +251,41 @@ await verify(true, 80, 'error')
     rig.adapter.finish.resolve()
     await wait('real DSH queue: the primary turn settles', () => !rig.raw.working)
     check('real DSH queue: the withdrawn steer never starts a second model request', rig.adapter.requests === 1 && !rig.raw.rows.some(row => row.kind === 'user' && row.text === queued.text))
+  } finally { await rig.close() }
+}
+// The screenshot's exact path through the real native abort signal: no
+// provider output is released, so Escape must restore rather than lose input.
+for (const fullscreen of [false, true]) for (const columns of [40, 100]) {
+  const rig = await mount(fullscreen, columns, 'text')
+  const text = `NATIVE_CANCEL_${columns}`
+  try {
+    await wait('native cancel: composer mounts', () => rig.controller.current !== null)
+    rig.stdin.write(text)
+    await wait('native cancel: the draft is editable', () => rig.controller.current?.text() === text)
+    await rig.enter()
+    await wait('native cancel: the real model is waiting before output', () => rig.adapter.requests === 1 && rig.raw.rows.some(row => row.kind === 'user' && row.text === text))
+    rig.stdin.write('\x1b')
+    await wait(`${fullscreen ? 'fullscreen' : 'inline'} ${columns}: native zero-output stop restores its draft`, () => !rig.raw.working && rig.controller.current?.text() === text)
+    check('native cancel: the recorded user line is not withdrawn', rig.raw.rows.filter(row => row.kind === 'user' && row.text === text).length === 1)
+    check('native cancel: recovery consumes once and never starts a second request', rig.channel.interruptedInput === undefined && rig.adapter.requests === 1 && rig.channel.outgoing?.length === 0)
+  } finally { await rig.close() }
+}
+{
+  const rig = await mount(true, 80, 'text')
+  try {
+    await wait('native dock stop: composer mounts', () => rig.controller.current !== null)
+    rig.stdin.write('UNANSWERED_PRIMARY')
+    await wait('native dock stop: primary draft is ready', () => rig.controller.current?.text() === 'UNANSWERED_PRIMARY')
+    await rig.enter()
+    await wait('native dock stop: primary model is gated', () => rig.adapter.requests === 1 && rig.raw.rows.some(row => row.text === 'UNANSWERED_PRIMARY'))
+    rig.stdin.write('UNCLAIMED_QUEUE')
+    await wait('native dock stop: queued draft is ready', () => rig.controller.current?.text() === 'UNCLAIMED_QUEUE')
+    await rig.enter()
+    await wait('native dock stop: the native queue owns the later input', () => rig.raw.pending.some(item => item.text === 'UNCLAIMED_QUEUE'))
+    rig.stdin.write('\x1b')
+    await wait('native dock stop: current unanswered prompt returns to the composer', () => !rig.raw.working && rig.controller.current?.text() === 'UNANSWERED_PRIMARY')
+    check('native dock stop: the unrelated queue stays docked rather than restored or sent', rig.raw.pending.some(item => item.text === 'UNCLAIMED_QUEUE' && item.docked === true) && rig.adapter.requests === 1)
+    check('native dock stop: no fake user row is created for the queued copy', !rig.raw.rows.some(row => row.kind === 'user' && row.text === 'UNCLAIMED_QUEUE'))
   } finally { await rig.close() }
 }
 console.log(`verify-user-response-start OK (${checks} checks)`)

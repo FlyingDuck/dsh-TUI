@@ -30,6 +30,7 @@ import { createTaskCompletion } from '../task-completion.js'
 import type { ChannelState } from '../types.js'
 import type { SessionControls } from './session-controls.js'
 import { createUserMessageResponses } from './user-message-responses.js'
+import type { InterruptedInputRecovery } from './interrupted-input.js'
 
 /** What one bind hands an extension's per-binding listeners. */
 export interface BindingScope {
@@ -73,7 +74,8 @@ export function createSessionBatchRouter(deps: {
    *  attachments); absent where nothing is ever attached. */
   retireAttachment?(messageId: string): void
   /** Retire the receipt without waking before its durable row paints. */
-  confirmOutgoing?(messageId: string): boolean
+  confirmOutgoing?(messageId: string, human?: boolean): boolean
+  interrupted?: Pick<InterruptedInputRecovery, 'firstOutput' | 'stopped' | 'turnEnded' | 'reset' | 'target' | 'watchClosedTurn' | 'lateAttempt' | 'lateOutput'>
   /** The backend reset the conversation in place (`session.reset`, live):
    *  the events before it in the batch are projected first, those after it
    *  land on the cleared view. Absent = the event is projected (ignored). */
@@ -85,7 +87,7 @@ export function createSessionBatchRouter(deps: {
   *  git facts it cannot otherwise notice while the directory stays put. */
   onTurnSettled?(): void
 }) {
-  const responses = createUserMessageResponses(deps.state)
+  const responses = createUserMessageResponses(deps.state, deps.interrupted)
   const settleRetiredProjection = (status: 'idle' | 'disposed'): void => {
     if (!deps.state.working) return
     deps.warn(`dsh-tui: agent became ${status} while the channel still projected an open turn; releasing volatile UI gates`)
@@ -145,7 +147,7 @@ export function createSessionBatchRouter(deps: {
     // not emit until the shared projector has painted the durable user row.
     for (const event of batch) {
       if (meta.replay || event.type !== 'user.message') continue
-      receiptChanged = (deps.confirmOutgoing?.(event.id) ?? false) || receiptChanged
+      receiptChanged = (deps.confirmOutgoing?.(event.id, event.source === 'user') ?? false) || receiptChanged
       const pending = deps.state.pending.filter(item => item.id !== event.id)
       if (pending.length !== deps.state.pending.length) {
         deps.state.pending = pending
@@ -205,6 +207,7 @@ export function createSessionBatchRouter(deps: {
         if (index > start) project(events.slice(start, index))
         responseChanged = deps.state.userMessageResponses.length > 0 || responseChanged
         responses.reset()
+        deps.interrupted?.reset()
         if (deps.onReset === undefined) deps.projector.apply([event], meta)
         else deps.onReset(event)
         start = index + 1
@@ -225,7 +228,8 @@ export function createSessionBatchRouter(deps: {
       if (deps.batch === undefined) applyBatch(batch, meta, current)
       else deps.batch(() => applyBatch(batch, meta, current))
     },
-    resetResponses: responses.reset,
+    resetResponses(): void { responses.reset(); deps.interrupted?.reset() },
+    latestWaiting: responses.latestWaiting,
     reconcileRetiredProjection(status: 'idle' | 'disposed'): void {
       settleRetiredProjection(status)
       responses.stop()
@@ -340,7 +344,8 @@ export function createBindingFeed(ctx: { readonly logger: ChannelHostLogger }, d
    *  stay writable until the channel starts (`configureProjection`). */
   projection: Omit<ChannelProjectionDeps, 'inputConvergence'>
   retireAttachment(messageId: string): void
-  confirmOutgoing?(messageId: string): boolean
+  confirmOutgoing?(messageId: string, human?: boolean): boolean
+  interrupted?: Pick<InterruptedInputRecovery, 'firstOutput' | 'stopped' | 'turnEnded' | 'reset' | 'target' | 'watchClosedTurn' | 'lateAttempt' | 'lateOutput'>
   controls: SessionControls
   hooks(): BindingFeedHooks
   /** A live `session.reset` (see createSessionBatchRouter). */
@@ -365,6 +370,7 @@ export function createBindingFeed(ctx: { readonly logger: ChannelHostLogger }, d
     batch: deps.batch,
     retireAttachment: deps.retireAttachment,
     confirmOutgoing: deps.confirmOutgoing,
+    interrupted: deps.interrupted,
     ownsCompactionProgress: () => deps.hooks().ownsCompactionProgress?.() ?? false,
     ...(deps.onReset === undefined ? {} : { onReset: deps.onReset }),
     warn: message => ctx.logger.warn(message),

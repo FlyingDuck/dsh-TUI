@@ -58,6 +58,7 @@ import { createCoreFiles, NO_COMPLETION_CATALOG, type CompletionCatalog } from '
 import { createGitBranchRefresher, resolveCoreHost, startHostSubscriptions, type CoreHost } from './host.js'
 import { createCoreLocalActions } from './local-actions.js'
 import { createLocalImageStore, type LocalImageStore } from './local-images.js'
+import { createInterruptedInput } from './interrupted-input.js'
 import { createCoreReports } from './reports.js'
 import { createSessionControls, localCommandsFor } from './session-controls.js'
 import { createCoreSessionActions } from './sessions.js'
@@ -315,8 +316,14 @@ export function createCoreChannel(
    * held in memory by the core (local-images.ts), under the bound session's
    * limits; a DSH session keeps the attachments service.
    */
+  const interruptedInput = createInterruptedInput({
+    state: () => state,
+    current: (session, generation) => owner.current() && binding.session === session && state.agentBindingGeneration === generation,
+    hasImage: stageId => composer.hasStagedImage(stageId),
+  })
   const imageIsRetained = (stageId: string): boolean =>
-    state.outgoing.some(item => item.images?.some(image => image.stageId === stageId) === true)
+    interruptedInput.isRetained(stageId)
+    || state.outgoing.some(item => item.images?.some(image => image.stageId === stageId) === true)
     || state.pending.some(item => item.images.some(image => image.stageId === stageId))
   let localImageStore: LocalImageStore | undefined
   const localImages = (): LocalImageStore | undefined => {
@@ -345,7 +352,7 @@ export function createCoreChannel(
   const inputDelivery = createInputDelivery(ctx, owner, binding, () => state,
     (...args) => notify(...args), trackPending, untrackPending, composer,
     () => currentSelection, (messageId, info) => selectionAttachments.remember(messageId, info),
-    files.fallbackFs, localImages, () => contextRegistry.consume(), () => state)
+    files.fallbackFs, localImages, () => contextRegistry.consume(), () => state, interruptedInput)
   const { dispatchUserText, withDecisionPending, clearStagedImages } = inputDelivery
   /** Monotonic token: only the latest `interruptAndDeliver` re-queues, so a
    *  second interrupt while the abort settles cannot double-deliver. */
@@ -463,10 +470,14 @@ export function createCoreChannel(
   const state: ChannelState = {
     ...createInputActions(() => state, () => binding.session, owner, inputConvergence,
       composer,
-      (text, placement, images, previousId, presentation) => dispatchUserText(text, placement, images, undefined, previousId, presentation),
+      (text, placement, images, previousId, presentation) => dispatchUserText(text, placement, images, undefined, previousId, presentation, true),
       (command, includeInContext) => getReadyActions().runLocalCommand(command, includeInContext),
-      sessionId => { extension.touchSession?.(sessionId) }, inputDelivery),
+      sessionId => { extension.touchSession?.(sessionId) }, inputDelivery, {
+        begin: restore => interruptedInput.begin(restore ? feed.router.latestWaiting(interruptedInput.has) : undefined),
+        invalidate: interruptedInput.invalidate,
+      }),
     recoverFailedOutgoing: id => { owner.assertActive(); return inputDelivery.recoverFailedOutgoing(id) },
+    recoverInterruptedInput: id => { owner.assertActive(); return interruptedInput.recover(id) },
     subscribe: emitter.subscribe,
     // Filled by the git refresher: on a cwd change, then once per settled turn.
     gitStatus: undefined,
@@ -818,6 +829,7 @@ export function createCoreChannel(
     resetTrajectory: () => { if (trajectoryOwned()) agentTrajectory.reset() },
     retireAttachment: inputDelivery.retireAttachment,
     confirmOutgoing: inputDelivery.confirmOutgoing,
+    interrupted: interruptedInput,
     resetInput: inputDelivery.resetOutgoing,
     // The footer cannot poll: a turn that edits files is the moment its git
     // facts changed, and the cwd did not move. Deferred so the const below can
