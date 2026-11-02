@@ -1,6 +1,6 @@
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 import { rankFileCandidates, type FileCandidate } from '../../utils/fileSuggestions.js'
-import { homeDir, resolveHomePath } from '../../utils/paths.js'
+import { expandHomePrefix, homeDir } from '../../utils/paths.js'
 import type { FileSuggestionFs } from './types.js'
 
 /** Trailing path segment (`C:/a/b` → `b`). */
@@ -79,10 +79,15 @@ export async function listPathCandidates(fs: FileSuggestionFs, cwd: string, quer
   const displayDirectoryPart = rawSlash < 0 ? (bareDir ? `${query}/` : '') : query.slice(0, rawSlash + 1)
   const displaySeparator = displayDirectoryPart.endsWith('\\') ? '\\' : '/'
   const nameQuery = slash < 0 || bareDir ? '' : normalized.slice(slash + 1)
-  // `~/` and everything under it expands against the host home (matches the
-  // cwd resolution rules); the same helper serves submitted `@` mentions, so
-  // a directory accepted from the menu and the eventual attachment agree.
-  const expanded = resolveHomePath(directoryPart || '.', cwd)
+  // A leading literal `~/` (or `~\`) expands against the host home at ANY
+  // depth — issue #1706: after picking `~/Downloads/` the next level used to be
+  // joined onto the workspace and the menu silently vanished. Drive-letter and
+  // POSIX-absolute prefixes still pass through untouched; `isAbsolute` also
+  // keeps a UNC home (`\\server\share\user`) off the workspace join.
+  const homeExpanded = expandHomePrefix(directoryPart)
+  const expanded = isAbsolute(homeExpanded) || /^[A-Za-z]:[\\/]/.test(homeExpanded)
+    ? homeExpanded
+    : join(cwd, homeExpanded || '.')
   try {
     if (signal?.aborted) return []
     const target = await fs.resolve(expanded)

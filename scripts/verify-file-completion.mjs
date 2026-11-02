@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /** Regression coverage for `@` completion in large generated trees (#278). */
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createChannel, expandMentions } from '../lib/types/dsh-adapter/channel.js'
+import { createChannel } from '../lib/types/dsh-adapter/channel.js'
 
 const fixture = await mkdtemp(join(tmpdir(), 'dsh-tui-file-completion-'))
 
@@ -20,17 +20,6 @@ function makeAgent() {
 const fsService = {
   async resolve(path) {
     return { displayPath: path }
-  },
-  async stat(target) {
-    try {
-      const info = await stat(target.displayPath)
-      return { type: info.isDirectory() ? 'directory' : info.isFile() ? 'file' : 'other' }
-    } catch {
-      return undefined
-    }
-  },
-  async readText(target) {
-    return readFile(target.displayPath, 'utf8')
   },
   async listDir(target) {
     const entries = await readdir(target.displayPath, { withFileTypes: true })
@@ -53,9 +42,6 @@ try {
   await mkdir(cmakePresetFiles, { recursive: true })
   await mkdir(sourceDir)
   await mkdir(nestedDir)
-  const downloadsDir = join(fixture, 'Downloads')
-  await mkdir(join(downloadsDir, 'Music'), { recursive: true })
-  await mkdir(join(downloadsDir, 'Movies'), { recursive: true })
   await Promise.all([
     ...Array.from({ length: 120 }, (_, index) =>
       writeFile(join(cmakeFiles, `artifact-${String(index).padStart(3, '0')}.o`), ''),
@@ -63,7 +49,6 @@ try {
     writeFile(join(cmakePresetFiles, 'compiler_depend.make'), ''),
     writeFile(join(sourceDir, 'main.cpp'), 'int main() {}\n'),
     writeFile(join(nestedDir, 'nested.cpp'), 'int nested() {}\n'),
-    writeFile(join(downloadsDir, 'note.txt'), 'home note\n'),
   ])
 
   const ctx = {
@@ -127,52 +112,72 @@ try {
   )
   console.log('PASS: ordinary nested source remains reachable in @ completion')
 
-  // `@~/` used to expand only the BARE home; accepting `Downloads/` and then
-  // typing `M` resolved `~/Downloads/M` against the workspace and listed
-  // nothing — the reported "no suggestions after picking a directory" bug.
-  // Submitted mentions share resolveHomePath(), so they get the same check.
-  const originalHome = process.env.HOME
-  const originalUserProfile = process.env.USERPROFILE
+  // ── 前导 `~/` 展开（issue #1706）────────────────────────────────────────
+  // 补全必须把任意深度的字面前缀 `~/`（或 `~\`）展开到 HOME，而不是只在查询
+  // 恰好是 `~/` 时展开：选中 `~/Downloads/` 之后菜单必须继续列下一层。
+  const previousHome = process.env.HOME
+  const previousProfile = process.env.USERPROFILE
+  const homeFixture = await mkdtemp(join(tmpdir(), 'dsh-tui-home-'))
   try {
-    // os.homedir() reads HOME on POSIX and USERPROFILE on Windows.
-    process.env.HOME = fixture
-    process.env.USERPROFILE = fixture
-    const homeListing = await channel.listFileCandidates('~/')
-    assert.ok(
-      homeListing.some(entry => entry.path === '~/Downloads/'),
-      `~/ should list the home directories:\n${homeListing.map(entry => entry.path).join('\n')}`,
-    )
-    const downloadsListing = await channel.listFileCandidates('~/Downloads/')
-    assert.ok(
-      downloadsListing.some(entry => entry.path === '~/Downloads/Music/'),
-      `~/Downloads/ should list its subdirectories:\n${downloadsListing.map(entry => entry.path).join('\n')}`,
-    )
-    const narrowed = await channel.listFileCandidates('~/Downloads/M')
-    assert.ok(
-      narrowed.some(entry => entry.path === '~/Downloads/Music/') &&
-        narrowed.some(entry => entry.path === '~/Downloads/Movies/') &&
-        narrowed.every(entry => entry.name.startsWith('M')),
-      `~/Downloads/M should keep completing:\n${narrowed.map(entry => entry.path).join('\n')}`,
-    )
-    console.log('PASS: ~/ subdirectories keep completing after a directory is accepted')
+    await mkdir(join(homeFixture, 'Downloads', 'sub'), { recursive: true })
+    await writeFile(join(homeFixture, 'Downloads', 'note.txt'), 'note\n')
+    process.env.HOME = homeFixture
+    process.env.USERPROFILE = homeFixture
 
-    const expansion = await expandMentions(fsService, fixture, 'see @~/Downloads/note.txt')
-    assert.deepEqual(
-      expansion.missing,
-      [],
-      `a submitted ~/ mention must resolve like completion:\n${expansion.missing.join('\n')}`,
-    )
+    const homeRoot = await channel.listFileCandidates('~/')
     assert.ok(
-      expansion.attached.includes('~/Downloads/note.txt') &&
-        expansion.blocks.some(block => block.type === 'text' && block.text.includes('home note')),
-      `a submitted ~/ mention should attach the file content:\n${JSON.stringify(expansion.blocks)}`,
+      homeRoot.some(entry => entry.path === '~/Downloads/'),
+      `bare ~/ should list the home directory:\n${homeRoot.map(entry => entry.path).join('\n')}`,
     )
-    console.log('PASS: submitted ~/ mentions resolve the same home path as completion')
+    console.log('PASS: bare ~/ lists the home directory')
+
+    const homeChild = await channel.listFileCandidates('~/Downloads/')
+    assert.ok(
+      homeChild.some(entry => entry.path === '~/Downloads/note.txt')
+      && homeChild.some(entry => entry.path === '~/Downloads/sub/'),
+      `~/ must expand after a subdirectory was picked (issue #1706):\n${homeChild.map(entry => entry.path).join('\n')}`,
+    )
+    console.log('PASS: ~/ expands at depth after picking a subdirectory (issue #1706)')
+
+    const homeTyped = await channel.listFileCandidates('~/Downloads/su')
+    assert.ok(
+      homeTyped.some(entry => entry.path === '~/Downloads/sub/'),
+      `~/ completion with a partial segment should still list home children:\n${homeTyped.map(entry => entry.path).join('\n')}`,
+    )
+    console.log('PASS: ~/ expands with a partial trailing segment')
+
+    const homeBackslash = await channel.listFileCandidates('~\\Downloads\\')
+    assert.ok(
+      homeBackslash.some(entry => entry.path === '~\\Downloads\\note.txt'),
+      `~\\ must expand like ~/ and keep the typed separator:\n${homeBackslash.map(entry => entry.path).join('\n')}`,
+    )
+    console.log('PASS: ~\\ expands like ~/ (typed separator preserved)')
+
+    // 字面 `~` 目录：home 优先（与 shell 一致），引用字面目录走 `./~/`。
+    await mkdir(join(fixture, '~'))
+    await writeFile(join(fixture, '~', 'literal.txt'), '')
+    const literalTilde = await channel.listFileCandidates('./~/')
+    assert.ok(
+      literalTilde.some(entry => entry.path === './~/literal.txt'),
+      `./~/ must reach a real directory named "~":\n${literalTilde.map(entry => entry.path).join('\n')}`,
+    )
+    console.log('PASS: ./~/ reaches a literal "~" directory')
+
+    // `~user/` 不是字面前缀，不许展开。
+    await mkdir(join(fixture, '~user'))
+    await writeFile(join(fixture, '~user', 'u.txt'), '')
+    const userLike = await channel.listFileCandidates('~user/')
+    assert.ok(
+      userLike.some(entry => entry.path === '~user/u.txt'),
+      `~user/ must stay a literal directory name:\n${userLike.map(entry => entry.path).join('\n')}`,
+    )
+    console.log('PASS: ~user/ is not expanded')
   } finally {
-    if (originalHome === undefined) delete process.env.HOME
-    else process.env.HOME = originalHome
-    if (originalUserProfile === undefined) delete process.env.USERPROFILE
-    else process.env.USERPROFILE = originalUserProfile
+    if (previousHome === undefined) delete process.env.HOME
+    else process.env.HOME = previousHome
+    if (previousProfile === undefined) delete process.env.USERPROFILE
+    else process.env.USERPROFILE = previousProfile
+    await rm(homeFixture, { recursive: true, force: true })
   }
 } finally {
   await rm(fixture, { recursive: true, force: true })

@@ -4701,7 +4701,7 @@ export function PromptInput({
             )}
             {dockCount > 0 && (
               <Box flexDirection="column">
-                <Text dimColor>⏸ {t('input-pending-dock-label')}</Text>
+                <Text dimColor>⏸ {t(dockedPending.every(item => item.orphaned === true) ? 'input-pending-orphan-label' : 'input-pending-dock-label')}</Text>
                 {dockedPending.slice(dockStart, dockEnd).map((item, index) => {
                   // The window maps to absolute dock indices: the click and
                   // the highlight name the same row the user sees.
@@ -4722,11 +4722,11 @@ export function PromptInput({
                   // 点击提示行 = 全部发送（与空输入 ⏎ 同路径）
                   onClick={() => { sendDocked() }}
                 >
-                  <Text dimColor>{' '}{t(channel.working ? 'input-pending-dock-hint-working' : 'input-pending-dock-hint')}</Text>
+                  <Text dimColor>{' '}{t(channel.status === 'disposed' ? 'input-pending-dock-hint-disposed' : channel.working ? 'input-pending-dock-hint-working' : 'input-pending-dock-hint')}</Text>
                 </Box>
               </Box>
             )}
-            {showPendingActions && <Text dimColor>Alt+↑ {t('input-pending-actions-hint')}</Text>}
+            {showPendingActions && <Text dimColor>Alt+↑ {t(channel.status === 'disposed' ? 'input-pending-actions-hint-disposed' : 'input-pending-actions-hint')}</Text>}
           </Box>
         )}
         {fileOverlayOpen && (

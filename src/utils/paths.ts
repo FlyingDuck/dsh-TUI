@@ -7,7 +7,7 @@
  */
 
 import { homedir } from 'node:os'
-import { isAbsolute, join } from 'node:path'
+import { join } from 'node:path'
 
 /**
  * The user's home directory. `os.homedir()` first; the USERPROFILE/HOME
@@ -18,28 +18,33 @@ export function homeDir(): string {
   return homedir() || process.env.USERPROFILE || process.env.HOME || ''
 }
 
-/**
- * Resolve one user-typed path against the host: a leading `~` / `~/` expands
- * against {@link homeDir} INCLUDING subdirectories, absolute paths pass
- * through, and everything else joins `cwd`. Backslashes are normalized only
- * for the `~` test, so Windows spellings (`~\Downloads\a.txt`) expand too
- * while the joined tail uses the platform separator.
- *
- * Completion and submitted `@` mentions share this: `~/Downloads/` selected
- * from the menu then narrowed by typing must resolve the same way the sent
- * mention does, or the overlay and the attachment disagree.
- */
-export function resolveHomePath(path: string, cwd: string): string {
-  const normalized = path.replaceAll('\\', '/')
-  if (normalized === '~' || normalized.startsWith('~/')) {
-    const rest = normalized.slice(2)
-    return rest === '' ? homeDir() : join(homeDir(), rest)
-  }
-  return isAbsolute(path) || /^[A-Za-z]:[\\/]/.test(path) ? path : join(cwd, path)
-}
-
 /** Data directory all preferences/history live in (`~/.dsh-tui`). */
 export const DATA_DIR = join(homeDir(), '.dsh-tui')
+
+/**
+ * Expand a leading literal `~/` or `~\` to the user's home directory.
+ *
+ * Only the literal prefix is expanded: `~user/`, a bare `~` and environment
+ * variables are left alone (the shell semantics users expect from `@` paths).
+ * Both separators are recognized on every platform — whether the prefix
+ * expands must not depend on `path.sep`, because typed input can carry either
+ * spelling. `@` completion and `@` mention resolution both go through here, so
+ * `~/…` means the same thing in the menu and in the attachment it produces
+ * (issue #1706).
+ *
+ * @param path - User-typed path, possibly starting with `~/` or `~\`.
+ * @returns Absolute home path when the prefix was `~/`/`~\`; `path` otherwise.
+ */
+export function expandHomePrefix(path: string): string {
+  if (!path.startsWith('~/') && !path.startsWith('~\\')) return path
+  // The remainder keeps the user's spelling, separators aside: once the prefix
+  // has declared a home path, `~\Downloads\note.txt` names the same file as
+  // `~/Downloads/note.txt` on every host (`@` completion already normalizes
+  // backslashes this way), so the rest is normalized to `/` and `join` applies
+  // the platform separator. A bare `~`, `~user/` and env vars are still left
+  // alone.
+  return join(homeDir(), path.slice(2).replaceAll('\\', '/'))
+}
 
 /**
  * Where one backend keeps its own files: `<dataRoot>/backends/<id>`, keyed by

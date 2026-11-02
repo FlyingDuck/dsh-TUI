@@ -339,6 +339,7 @@ export function createCoreChannel(
     sessionId: () => state.agentId,
     localImages,
     isRetained: imageIsRetained,
+    retainedStageIds: () => new Set(state.pending.filter(item => item.orphaned === true).flatMap(item => item.images.map(image => image.stageId))),
   })
   const files = createCoreFiles(ctx, {
     owner,
@@ -825,8 +826,13 @@ export function createCoreChannel(
       selectionAttached: messageId => selectionAttachments.take(messageId),
     },
     resetTrajectory: () => { if (trajectoryOwned()) agentTrajectory.reset() },
+    // The image store follows the swap now, while the held rows that keep
+    // their images are still listed (#1651): delivering or editing one
+    // later must not be what notices the swap.
+    rebound: () => { composer.stagedImageGeneration() },
     retireAttachment: inputDelivery.retireAttachment,
     confirmOutgoing: inputDelivery.confirmOutgoing,
+    releaseOutgoing: inputDelivery.releaseOutgoing,
     interrupted: interruptedInput,
     resetInput: inputDelivery.resetOutgoing,
     // Refresh immediately at semantic boundaries; background status polling

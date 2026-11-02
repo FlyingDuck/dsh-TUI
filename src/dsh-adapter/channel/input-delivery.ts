@@ -63,7 +63,7 @@ export function createInputDelivery(
  state: () => Pick<ChannelState, 'cwd' | 'workingDirectory' | 'agentId' | 'agentBindingGeneration' | 'working'>,
  notify: ChannelState['notify'],
  trackPending: (message: { id: string; text: string; images?: readonly ComposerImageRef[] }, placement: PendingMessage['placement']) => void,
- untrackPending: (id: string) => void,
+ untrackPending: (id: string, hold?: boolean) => void,
  composer: ComposerImages,
  selection: () => ChannelSelection | undefined,
  rememberSelection: (messageId: string, info: SelectionAttachment) => void,
@@ -328,14 +328,24 @@ export function createInputDelivery(
       if (!current(origin) || !submissions.has(message.id)) return
       // A backend refusal need not emit pending.changed. Retire its preview
       // and attached context here, and show the refusal instead of queuing it.
+      // An ended session refuses every retry: its text stays as a held dock
+      // row instead (#1651), sent only when the user sends the dock.
       if (!result.accepted) {
         if (attach !== undefined) attachedByMessageId.delete(message.id)
-        untrackPending(message.id)
-        transition(message.id, 'failed', result.reason || t('input-not-accepted'))
+        const hold = origin.session.status === 'disposed'
+        untrackPending(message.id, hold)
         // A refusal with no reason is still a refusal: say so, or the send
         // looks successful while nothing was queued.
-        if (result.reason !== undefined && result.reason !== '') notify(result.reason, { color: 'warning', timeoutMs: 4000 })
-        else notify(t('input-not-accepted'), { color: 'warning', timeoutMs: 4000 })
+        const reason = result.reason !== undefined && result.reason !== '' ? result.reason : t('input-not-accepted')
+        if (hold) {
+          // The held row owns the text now; a failed receipt beside it would
+          // offer a second copy to recover.
+          if (forgetOutgoing(message.id)) outgoingState?.().emit()
+          notify(t('input-refused-held', { reason }), { color: 'warning', timeoutMs: 6000 })
+        } else {
+          transition(message.id, 'failed', reason)
+          notify(reason, { color: 'warning', timeoutMs: 4000 })
+        }
         return
       }
       if (result.handled === true) {
@@ -613,6 +623,8 @@ export function createInputDelivery(
       }
       return forgetOutgoing(id)
     },
+    /** A held dock row took over this input: no receipt, no context restore. */
+    releaseOutgoing: (id: string): boolean => forgetOutgoing(id),
     /** A successful explicit retraction transfers contexts back to the draft. */
     retractOutgoing: (id: string): void => { forgetOutgoing(id, true); attachedByMessageId.delete(id) },
     /** Inputs dispatched so far, and whether any is still in the FIFO (a
