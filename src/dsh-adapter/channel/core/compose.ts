@@ -471,7 +471,7 @@ export function createCoreChannel(
   const state: ChannelState = {
     ...createInputActions(() => state, () => binding.session, owner, inputConvergence,
       composer,
-      (text, placement, images, previousId, presentation) => dispatchUserText(text, placement, images, undefined, previousId, presentation, true),
+      (text, placement, images, previousId, presentation, contexts) => dispatchUserText(text, placement, images, undefined, previousId, presentation, true, contexts),
       (command, includeInContext) => getReadyActions().runLocalCommand(command, includeInContext),
       sessionId => { extension.touchSession?.(sessionId) }, inputDelivery, {
         begin: restore => interruptedInput.begin(restore ? feed.router.latestWaiting(interruptedInput.has) : undefined),

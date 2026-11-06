@@ -38,6 +38,11 @@ export interface SubmitResult {
   /** Accepted and handled locally, with no user.message echo to follow.
    * Queue acceptance alone must never set this flag. */
   readonly handled?: true
+  /** A refusal may also say `dropped`: the backend is certain it never ran
+   *  the input, so the channel keeps the text as a held row instead of losing
+   *  it (#1651). Absent means the usual refusal handling (a preview retired
+   *  with a notice). */
+  readonly dropped?: boolean
 }
 
 /** Lifecycle state of a session handle. */

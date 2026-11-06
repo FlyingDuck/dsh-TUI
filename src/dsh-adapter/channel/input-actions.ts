@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import type { AgentSession, CancelOutcome } from '../../agent/session.js'
 import { t } from '../../i18n.js'
 import { touchSession } from '../../sessionHistory.js'
-import type { ChannelState, ComposerImageRef, ComposerSubmission, PendingMessage } from './types.js'
+import type { AttachedContext, ChannelState, ComposerImageRef, ComposerSubmission, PendingMessage } from './types.js'
 
 export interface InputConvergence {
   cancelInFlight: boolean
@@ -36,7 +36,7 @@ export function createInputActions(
   owner: { assertActive(): void },
   input: InputConvergence,
   composer: { includeLegacyImageRefs(text: string, images: readonly ComposerImageRef[]): readonly ComposerImageRef[] },
-  dispatchUserText: (text: string, placement: 'steer' | 'followup', images?: readonly ComposerImageRef[], previousId?: string, presentation?: 'immediate') => void,
+  dispatchUserText: (text: string, placement: 'steer' | 'followup', images?: readonly ComposerImageRef[], previousId?: string, presentation?: 'immediate', contexts?: readonly AttachedContext[]) => void,
   runLocalCommand: (command: string, includeInContext: boolean) => Promise<void>,
   /** Move the used session to the front of the `/resume` MRU (DSH session
    *  history); a backend whose sessions that list cannot open passes a no-op. */
@@ -315,8 +315,10 @@ export function createInputActions(
       for (const entry of ready) {
         touch(state.agentId)
         // Transfer this dock's origin/context; do not consume newer chips.
+        // A row with no outgoing record (held across /restart) carries its
+        // "send to Chat" snapshot instead.
         state.pending = state.pending.filter(item => item.id !== entry.id)
-        dispatchUserText(entry.text, 'followup', entry.images, entry.id)
+        dispatchUserText(entry.text, 'followup', entry.images, entry.id, undefined, entry.contexts)
       }
       state.emit()
       return ready.length
@@ -346,6 +348,10 @@ export function createInputActions(
       // when that row was (its own session ended), so `/new` keeps it too.
       const orphaned = state.pending[index]!.orphaned === true
       // A docked retract is purely local on every backend (see removePending).
+      // The swap row carries the DRAFT's text, so it must not inherit the
+      // retracted row's contexts: the caller re-stages those into the composer
+      // (PromptInput's restageContexts), and keeping a copy here would send the
+      // same panel body with this draft's later dock delivery.
       const draftId = `dock-swap-${randomUUID()}`
       outgoing?.parkDraft(draftId, id)
       state.pending = [
@@ -363,18 +369,34 @@ export function createInputActions(
       return true
     },
 
-    holdInputs(texts: readonly string[]): number {
+    holdInputs(inputs: readonly (string | ComposerSubmission)[]): number {
       owner.assertActive()
       const state = getState()
       // Local ids like the swap's: no backend copy exists, so no inbox event
       // can match these rows and no interrupt receipt covers them.
-      const held = texts.filter(text => text.trim() !== '').map((text): PendingMessage => ({
-        id: `dock-held-${randomUUID()}`, text, images: [], placement: 'followup', docked: true, orphaned: true,
-      }))
+      const held = inputs
+        .map(input => typeof input === 'string' ? { text: input } : input)
+        .filter(input => input.text.trim() !== '')
+        .map((input): PendingMessage => ({
+          id: `dock-held-${randomUUID()}`,
+          text: input.text,
+          images: [...(input.images ?? [])],
+          ...(input.contexts === undefined || input.contexts.length === 0 ? {} : { contexts: [...input.contexts] }),
+          placement: 'followup',
+          docked: true,
+          orphaned: true,
+        }))
       if (held.length === 0) return 0
       state.pending = [...state.pending, ...held]
-      state.emit()
-      state.notify(t('input-orphans-held', { count: held.length }), { color: 'warning', timeoutMs: 8000 })
+      // The rows are on the pending list now: a listener throwing out of the
+      // emit (or a disposed owner in notify) must not read as "nothing was
+      // held", or the caller releases the claim and another pass holds the
+      // same inputs a second time.
+      try {
+        state.emit()
+        state.notify(t('input-orphans-held', { count: held.length }), { color: 'warning', timeoutMs: 8000 })
+      } catch {
+      }
       return held.length
     },
 
@@ -384,8 +406,8 @@ export function createInputActions(
       const session = getSession()
       const queued = inputs
         .map(input => typeof input === 'string'
-          ? { text: input, images: [] as readonly ComposerImageRef[], previousId: undefined }
-          : { text: input.text, images: [...(input.images ?? [])], previousId: input.pendingId })
+          ? { text: input, images: [] as readonly ComposerImageRef[], previousId: undefined, contexts: undefined }
+          : { text: input.text, images: [...(input.images ?? [])], previousId: input.pendingId, contexts: undefined })
         .filter(input => input.text.trim() !== '')
       if (queued.length === 0) return 0
       // Ctrl+Enter replaces the old prompt; it is never a recovery gesture.
@@ -435,8 +457,10 @@ export function createInputActions(
             if (!entry.local && entry.previousId !== undefined && outgoing !== undefined && !outgoing.hasOutgoing(entry.previousId)) continue
             touch(state.agentId)
             state.pending = state.pending.filter(item => item.id !== entry.previousId)
-            // This is an explicit send-now action even before turn.end clears working.
-            dispatchUserText(entry.text, 'followup', entry.images, entry.previousId, 'immediate')
+            // This is an explicit send-now action even before turn.end clears
+            // working. A docked row's "send to Chat" snapshot rides along for
+            // rows with no outgoing record to transfer it from.
+            dispatchUserText(entry.text, 'followup', entry.images, entry.previousId, 'immediate', entry.contexts)
           }
         } finally {
           endTransfer?.()

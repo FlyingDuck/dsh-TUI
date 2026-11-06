@@ -26,7 +26,7 @@ delete process.env.NO_COLOR
 const [React, xterm, ui, { Context }, { default: AgentRegistry },
   { default: AgentLoop }, { default: LlmRuntime, LlmAdapter, createUserMessage },
   { default: SessionStore, SessionId }, { default: SessionProjectionRegistry },
-  { default: SystemPrompt }, { default: ToolRuntime }, { createChannel },
+  { default: SystemPrompt }, { default: ToolRuntime }, NativeToolExecutor, { createChannel },
   { mountChannelUi }, { registerTuiChannel }, { Chat }, { QuestionStore },
   { settled, findText, viewportLines, sleep },
 ] = await Promise.all([
@@ -34,7 +34,7 @@ const [React, xterm, ui, { Context }, { default: AgentRegistry },
   import('@deepseek-ai/dsh-agent'), import('@deepseek-ai/dsh-agent-loop'),
   import('@deepseek-ai/dsh-llm'), import('@deepseek-ai/dsh-session'),
   import('@deepseek-ai/dsh-session-projection'), import('@deepseek-ai/dsh-system-prompt'),
-  import('@deepseek-ai/dsh-tools'), import('../src/dsh-adapter/channel.js'),
+  import('@deepseek-ai/dsh-tools'), import('@deepseek-ai/dsh-tool-executor-native'), import('../src/dsh-adapter/channel.js'),
   import('../src/dsh-adapter/channel-ui.js'), import('../src/adapter/channel/host-registry.js'),
   import('../src/screens/Chat.js'), import('../src/channel/questions.js'), import('./lib/term-test.mjs'),
 ])
@@ -114,7 +114,7 @@ class Input extends PassThrough {
 
 async function mount(fullscreen: boolean, columns: number, mode: 'text' | 'reasoning' | 'error') {
   const ctx = new Context()
-  for (const plugin of [LlmRuntime, SessionStore, SessionProjectionRegistry, SystemPrompt, ToolRuntime, AgentRegistry]) {
+  for (const plugin of [LlmRuntime, SessionStore, SessionProjectionRegistry, SystemPrompt, ToolRuntime, NativeToolExecutor, AgentRegistry]) {
     await ctx.plugin(plugin)
   }
   await ctx.plugin(AgentLoop, { agents: [] })

@@ -36,6 +36,7 @@ import type {
   StagedImageHandle,
 } from '../dsh-adapter/channel.js'
 import type { TranscriptImage } from '../dsh-adapter/transcript-images.js'
+import type { AttachedContext } from '../adapter/ports/channel-view.js'
 import { isBootSafeCommand, isHiddenCommandName, isLocalCommandName, isUnavailableLocalCommand, parseCommandName, workingHoldOf } from '../commands.js'
 import { appendHistory, HISTORY_LIMIT, historyProjectKey, loadHistoryOldestFirst } from '../history.js'
 import { mentionAtCaret } from '../utils/mentions.js'
@@ -2026,6 +2027,26 @@ export function PromptInput({
   }
 
   /**
+   * Take a retracted row's staged contexts back into the composer. The
+   * submission spent their chips (`consumeAttachedContexts()`), so only the
+   * row's snapshot still has them: without this a row retracted for editing
+   * would re-send without its panel bodies. `truncated` rides along — the
+   * snapshot's body is already capped, and re-deriving the flag from it would
+   * hand the model a cut body with no `[… truncated]` marker.
+   */
+  const restageContexts = (contexts: readonly AttachedContext[] | undefined): void => {
+    for (const context of contexts ?? []) {
+      channel.attachContext({
+        source: context.source,
+        sourceId: context.sourceId,
+        title: context.title,
+        content: context.content,
+        truncated: context.truncated,
+      })
+    }
+  }
+
+  /**
    * Alt+Up: interrupted input, confirmed failure, then the last real pending
    * message. Recovery protects newer drafts; explicit pending recall keeps
    * its existing replacement/undo-reset behavior. Never interrupts a turn.
@@ -2048,6 +2069,7 @@ export function PromptInput({
       channel.notify(t('input-cannot-retract'), { color: 'warning', timeoutMs: 2500 })
       return
     }
+    restageContexts(item.contexts)
     restoreDraftImages({
       text: item.text,
       images: item.images ?? [],
@@ -2075,6 +2097,9 @@ export function PromptInput({
     }
     if (target === undefined) return
     if (channel.removePending(target.id)) {
+      // The text is back in the composer; its "send to Chat" contexts belong
+      // there too, or editing and resending drops the panel bodies.
+      restageContexts(target.contexts)
       channel.notify(t('input-retracted'), { timeoutMs: 2000 })
     } else {
       channel.notify(t('input-cannot-retract'), { color: 'warning', timeoutMs: 2500 })
@@ -2139,6 +2164,7 @@ export function PromptInput({
       // already retains every capability (nothing is discarded).
       const beforeBlock = foldBlockRef.current
       updateFoldBlock(null)
+      restageContexts(item.contexts)
       setInput(item.text, item.text.length, 'step', beforeBlock)
       replaceDraftImages(item.images ?? [])
       setSelectedCommand(0)
@@ -2150,6 +2176,7 @@ export function PromptInput({
       channel.notify(t('input-cannot-retract'), { color: 'warning', timeoutMs: 2500 })
       return
     }
+    restageContexts(item.contexts)
     restoreDraftImages({
       text: item.text,
       images: item.images ?? [],
@@ -2340,6 +2367,28 @@ export function PromptInput({
   }
 
   /**
+   * Run one completion row. The screen's own (and registry) commands consume
+   * it; a backend command (`/usage`, `/diff`) or backend skill answers through
+   * the session, so its line goes out through the ordinary submit path.
+   * Enter, the mouse pick and the batched-stdin line all share this: returning
+   * on `tryRunCommand`'s false is what used to leave them dead.
+   */
+  const dispatchCompletion = (line: string, placement: 'steer' | 'submit' = 'steer'): void => {
+    if (tryRunCommand(line)) return
+    // A backend command (Codex `/usage`, `/diff`, a backend skill) answers
+    // through the session. Interactive entry points take the typed placement
+    // while a turn runs; a piped whole line keeps the legacy direct submit
+    // (nobody is watching a steer notice there).
+    if (placement === 'steer' && channel.working) {
+      // Same placement as a typed line; the notice is kept because the UI
+      // cannot tell a self-answering command from a real skill here.
+      steerSend(line)
+      return
+    }
+    submitText(line)
+  }
+
+  /**
    * The Enter main path, shared by the inline prompt, the expanded
    * editor's Ctrl+Enter, and its Send button:
    * - command menu open → run the SELECTED command (never send `/mo`);
@@ -2369,8 +2418,8 @@ export function PromptInput({
     // draft through the ordinary path instead of accepting a stale row.
     if (overlayOpen && value === completionInput) {
       const command = suggestions[selectedCommand]
-      if (command) {
-        tryRunCommand(command.commandLine)
+      if (command !== undefined) {
+        dispatchCompletion(command.commandLine)
         return
       }
     }
@@ -3016,7 +3065,7 @@ export function PromptInput({
       if (line.startsWith('/')) {
         const matches = channel.commandCompletions(line)
         if (matches.length === 1) {
-          tryRunCommand(matches[0]!.commandLine)
+          dispatchCompletion(matches[0]!.commandLine, 'submit')
           return
         }
       }
@@ -4755,10 +4804,18 @@ export function PromptInput({
             query={value}
             accent={promptAccent}
             holdFrom={suggestionsHoldFrom}
-            // 点击行 = 运行该命令（与 Enter 同路径）
+            // 点击行 = 运行该命令（选中行与 Enter 共用派遣）
             onPick={(index) => {
               const command = suggestions[index]
-              if (command) tryRunCommand(valueRef.current === completionInput ? command.commandLine : valueRef.current)
+              if (command === undefined) return
+              // A stale row (the draft moved on while it was showing) does not
+              // own the click: only run what the screen can dispatch, never
+              // send the half-typed draft to the model.
+              if (valueRef.current !== completionInput) {
+                tryRunCommand(valueRef.current)
+                return
+              }
+              dispatchCompletion(command.commandLine)
             }}
             // 滚轮 = 移动选中行（与 ↑/↓ 同路径，窗口跟随）
             onWheelStep={(step) => {
