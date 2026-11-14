@@ -28,7 +28,7 @@
 ## 版本与标签
 
 - `package.json` 的 `version` 保持与上游一致，不改。
-- 自用里程碑打带注释的标签 `<上游版本>+bean.<N>`（如 `0.16.1+bean.5`），推到 `origin`。
+- 经用户授权发布后，自用里程碑打带注释的标签 `<上游版本>+bean.<N>`（如 `0.16.1+bean.5`），推到 `origin`。
 - **不要打 `v*` 标签**：`.github/workflows/publish.yml` 由 `v*` 触发 npm 发布。
 - 构建身份由 `git describe --tags --dirty` 写入 `lib/build-info.json`，`/version` 显示；
   未提交的工作区会带 `-dirty`。
@@ -38,4 +38,8 @@
 profile `~/.dsh/profiles/dsh-tui` 以 `file:` 依赖本地打包的 tarball，构建产物放在
 `~/.local/share/dsh-tui/builds/<git describe>[-local-<hash>]/`。
 
-<!-- TODO: 补上实际执行的打包/安装命令 -->
+统一发布目标与安装流程以 `~/oh-my-work/macbase/docs/dsh-tui-management.md` 为准，管理入口是
+`~/oh-my-work/macbase/config/dsh/manage-dsh-tui.py`。源码合并不等于发布：经用户授权后走
+新 tag 推送 → `pin` → 专用工具 `sync` / `check` → 重开后的 `/version` 验收 → 提交传播清单。
+构建与 profile 安装使用管理器各自的专用工具环境；不要用主 checkout 手工打包加
+`dsh plugin add` 代替受管 `sync`，也不要把临时试装冒称多 Mac 统一发布。
