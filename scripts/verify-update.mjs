@@ -190,7 +190,8 @@ check(
   `got ${compiled}`,
 )
 
-const scratch = mkdtempSync(join(tmpdir(), 'verify-update-'))
+// Host/launcher discovery returns real paths; macOS tmpdir() can be a symlink.
+const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'verify-update-')))
 try {
   // The copied module imports `semver`; point its root at this repo's deps.
   symlinkSync(join(repoRoot, 'node_modules'), join(scratch, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir')
@@ -2138,7 +2139,7 @@ check(
   )
 
   // Layout fixtures: detection only classifies, it never invents a prefix.
-  const hostRoot = mkdtempSync(join(tmpdir(), 'update-host-layout-'))
+  const hostRoot = realpathSync(mkdtempSync(join(tmpdir(), 'update-host-layout-')))
   const makeHost = (dir, version = '0.2.1-rc.4') => {
     mkdirSync(dir, { recursive: true })
     writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', version }))
