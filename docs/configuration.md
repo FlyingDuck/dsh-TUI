@@ -427,6 +427,13 @@ Claude（`anthropic`）、Grok（`xai`）订阅账号登录。宿主 pi-ai catal
 问卷中提供授权链接与手动粘贴回调 URL/代码的输入；设备码流程在轮询期间显示可复制的
 短码。无交互问卷服务的宿主会明确拒绝登录。
 
+`openai-codex` 路由会补齐安装目录缺少的 `gpt-6.2-astra` 与 `gpt-6.2-sol`。
+能力和价格来自 2026-11-20 核对的 Pi 官方 [Astra](https://pi.dev/models/openai-codex/gpt-6-2-astra)
+与 [Sol](https://pi.dev/models/openai-codex/gpt-6-2-sol) 目录快照；不是启动时联网刷新。
+宿主已有同名模型时完整保留宿主条目，容量覆盖在补齐后应用。此兼容补充只作用于
+Codex OAuth 路由，不修改 pi-ai 安装包、其他 provider 或现有凭据，也不改变默认模型。
+更新本包并重启后可在 `/model` 选择；显示条目不保证账号已获服务端权限。
+
 `dsh-tui-auth` 行可配置 `providers`（默认安装版 pi-ai catalog 中所有受支持的流程；
 显式指定时必须是其中的非空子集）、`credentialsFile`（自定义凭据文件）和
 `modelOverrides.<provider>.<model>`（可选的 `contextWindow`、`maxTokens`）。

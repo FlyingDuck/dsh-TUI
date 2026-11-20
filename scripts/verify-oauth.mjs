@@ -336,6 +336,71 @@ try {
   }
   ok(unknownProvider.includes('not an OAuth provider'), 'building an unmounted provider fails loudly')
 
+  // ── Codex catalog supplement ────────────────────────────────────────────
+  // These checks fail if the fallback is missing, leaks into another provider,
+  // overwrites a future upstream entry, mutates shared data, or is only listed
+  // without being accepted by the real adapter's model resolution.
+  console.log('Codex catalog supplement')
+  const { withCodexModelSupplement } = await import('../lib/types/dsh-adapter/oauth/codex-models.js')
+  const { adapterBuiltinProviders } = await import('../lib/types/dsh-adapter/oauth/pi-ai.js')
+  const nativeCodex = adapterBuiltinProviders().find(provider => provider.id === 'openai-codex')
+  const newIds = ['gpt-6.2-astra', 'gpt-6.2-sol']
+  const oldModels = nativeCodex.getModels().filter(model => !newIds.includes(model.id))
+  const legacyProvider = { ...nativeCodex, getModels: () => oldModels }
+  delete legacyProvider.getAllModels
+  const supplemented = withCodexModelSupplement(legacyProvider)
+  const newModels = newIds.map(id => supplemented.getModels().find(model => model.id === id))
+  ok(supplemented.getModels().length === oldModels.length + 2 && newModels.every(Boolean),
+    'an older catalog gains exactly the two GPT-6.2 models')
+  ok(supplemented.getModels().slice(0, oldModels.length).every((model, index) => model === oldModels[index]),
+    'existing models keep their order and object identity')
+  ok(legacyProvider.getModels().length === oldModels.length && legacyProvider.getAllModels === undefined,
+    'the original provider is not mutated and older hosts need no typed catalog method')
+  ok(supplemented.auth === nativeCodex.auth && supplemented.stream === nativeCodex.stream
+    && supplemented.streamSimple === nativeCodex.streamSimple,
+  'the original OAuth and streaming implementations are retained')
+  ok(newModels.every(model => model.provider === 'openai-codex'
+    && model.api === 'openai-codex-responses' && model.baseUrl === 'https://chatgpt.com/backend-api'),
+  'supplemented models stay on the official Codex subscription endpoint')
+  ok(newModels[0].contextWindow === 272000 && newModels[1].contextWindow === 500000
+    && newModels.every(model => model.maxTokens === 128000 && model.reasoning
+      && JSON.stringify(model.input) === JSON.stringify(['text', 'image'])),
+  'exact context, output and input capabilities match the official Codex snapshot')
+  ok(newModels.every(model => JSON.stringify(model.thinkingLevelMap) === JSON.stringify({
+    off: null, minimal: 'low', low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max',
+  })), 'reasoning levels match the official snapshot, including unavailable off')
+  ok(newModels.every(model => model.compat.supportsOpenAIGrammarTools
+    && model.compat.supportsAdditionalTools && model.compat.supportsToolSearch
+    && model.compat.supportsMidConvoSystemMessages), 'wire compatibility follows the official snapshot')
+  ok(JSON.stringify(newModels.map(model => model.cost)) === JSON.stringify([
+    { input: 8, output: 40, cacheRead: 0.4, cacheWrite: 10,
+      tiers: [{ inputTokensAbove: 272000, input: 16, output: 60, cacheRead: 0.8, cacheWrite: 20 }] },
+    { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5,
+      tiers: [{ inputTokensAbove: 272000, input: 4, output: 15, cacheRead: 0.2, cacheWrite: 5 }] },
+  ]), 'both base prices and long-context tiers match the official snapshot')
+  const futureSol = { ...newModels[1], name: 'Future native Sol', contextWindow: 777777 }
+  const partial = withCodexModelSupplement({ ...legacyProvider, getModels: () => [...oldModels, futureSol] })
+  ok(partial.getModels().find(model => model.id === futureSol.id) === futureSol,
+    'a future native entry wins in full even when the other model is missing')
+  ok(withCodexModelSupplement(partial) === partial, 'a complete catalog is returned unchanged without duplicates')
+  for (const id of ['openai', 'anthropic', 'xai', 'meta', 'custom-codex']) {
+    const other = { ...legacyProvider, id }
+    ok(withCodexModelSupplement(other) === other, `${id} is outside the Codex-only supplement`)
+  }
+  const imageModel = { type: 'image', id: 'image-fixture' }
+  const typedCatalog = withCodexModelSupplement({ ...legacyProvider, getAllModels: () => [...oldModels, imageModel] })
+  ok(typedCatalog.getAllModels().includes(imageModel)
+    && newIds.every(id => typedCatalog.getAllModels().some(model => model.id === id)),
+  'typed catalog reads see new chat models while preserving non-chat entries')
+  newModels[0].cost.input = 999
+  newModels[0].thinkingLevelMap.high = 'changed'
+  const fresh = withCodexModelSupplement(legacyProvider).getModels().find(model => model.id === newIds[0])
+  ok(fresh.cost.input === 8 && fresh.thinkingLevelMap.high === 'high',
+    'fallback metadata is isolated across profile instances')
+  const newOverride = buildOAuthProfile('openai-codex', { 'gpt-6.2-sol': { contextWindow: 600000 } })
+  ok(newOverride.piProvider.getModels().find(model => model.id === 'gpt-6.2-sol')?.contextWindow === 600000,
+    'explicit capacity overrides apply after supplementation')
+
   // ── per-model overrides ─────────────────────────────────────────────────
   console.log('model overrides')
   const solBase = profile.piProvider.getModels().find(model => model.id === 'gpt-5.6-sol')
@@ -393,6 +458,65 @@ try {
   const listed = await gated.listModels('openai-codex')
   ok(listed.length > 0 && listed.every(m => m.provider === 'openai-codex'), `signed-in provider lists its catalog (${listed.length} models)`)
   ok((await gated.listModels('anthropic')).length === 0, 'other unsigned providers stay hidden on the same store')
+  for (const id of newIds) {
+    ok(listed.some(model => model.id === id), `signed-in Codex lists ${id}`)
+    ok((await gated.resolveModel('openai-codex', id))?.id === id, `the real adapter resolves ${id}`)
+  }
+  const unknownModelRejected = await gated.resolveModel('openai-codex', 'gpt-6.2-not-a-model')
+    .then(() => false, error => error.code === 'UNKNOWN_MODEL')
+  ok(unknownModelRejected, 'supplementation does not accept arbitrary unknown model IDs')
+
+  // Exercise the real Codex wire with fake OAuth and a fetch that cannot reach
+  // the network. Listing-only regressions or an internal ID allow-list fail
+  // before this sentinel, so metadata checks cannot produce a false green.
+  const { PiAiAdapter } = await import('@deepseek-ai/dsh-llm-pi-ai')
+  const { zstdDecompressSync } = await import('node:zlib')
+  const fakeToken = `test.${Buffer.from(JSON.stringify({
+    'https://api.openai.com/auth': { chatgpt_account_id: 'offline-test' },
+  })).toString('base64url')}.test`
+  const wireProfile = { ...profile, transport: 'sse', piProvider: withCodexModelSupplement(legacyProvider) }
+  const wireAdapter = new PiAiAdapter({
+    profiles: () => new Map([['openai-codex', wireProfile]]),
+    resolveApiKey: async () => undefined,
+    auth: {
+      credentials: {
+        read: async () => ({ type: 'oauth', access: fakeToken, refresh: 'fake', expires: Date.now() + 3600000 }),
+        list: async () => [{ providerId: 'openai-codex', type: 'oauth' }],
+        modify: async () => { throw new Error('unexpected fake credential refresh') },
+        delete: async () => { throw new Error('unexpected fake credential deletion') },
+      },
+      authContext: { env: async () => undefined, fileExists: async () => false },
+    },
+  })
+  const originalFetch = globalThis.fetch
+  const wireRequests = []
+  try {
+    globalThis.fetch = async (url, init) => {
+      const headers = new Headers(init?.headers)
+      const payload = headers.get('content-encoding') === 'zstd'
+        ? zstdDecompressSync(init.body).toString('utf8') : String(init.body)
+      const body = JSON.parse(payload)
+      wireRequests.push({ url: String(url), model: body.model, effort: body.reasoning?.effort })
+      throw new Error('OFFLINE_CODEX_WIRE_SENTINEL')
+    }
+    for (const id of newIds) {
+      let finish
+      for await (const chunk of wireAdapter.stream({
+        provider: 'openai-codex', model: id, reasoningEffort: 'low',
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'Reply OK.' }] }],
+        tools: [], signal: AbortSignal.timeout(5000),
+      })) {
+        if (chunk.type === 'finish') finish = chunk.reason
+      }
+      ok(finish?.kind === 'error' && finish.failure?.message.includes('OFFLINE_CODEX_WIRE_SENTINEL'),
+        `${id} reaches the real wire implementation with fake credentials and no network`)
+    }
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+  ok(wireRequests.length === 2 && wireRequests.every((request, index) => request.model === newIds[index]
+    && request.effort === 'low' && new URL(request.url).origin === 'https://chatgpt.com'),
+  'the real wire sends each exact new ID once, with the requested reasoning level')
 
   // ── question bridge ──────────────────────────────────────────────────────
   console.log('question bridge')

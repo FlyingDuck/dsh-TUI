@@ -491,6 +491,16 @@ input on one question;
 device-code flows show a copyable code while polling. A host without an
 interactive question surface refuses sign-in explicitly.
 
+The `openai-codex` route fills missing `gpt-6.2-astra` and `gpt-6.2-sol` entries.
+Capabilities and prices come from the official Pi [Astra](https://pi.dev/models/openai-codex/gpt-6-2-astra)
+and [Sol](https://pi.dev/models/openai-codex/gpt-6-2-sol) catalog snapshot checked on
+2026-11-20, not a startup network refresh. Host entries always win in full;
+capacity overrides apply after the supplement. This compatibility supplement
+only affects the Codex OAuth route: it does not modify the pi-ai installation,
+other providers, existing credentials, or the default model. After updating this
+package and restarting, select them through `/model`; listing does not guarantee
+server-side access for your account.
+
 The `dsh-tui-auth` row accepts `providers` (default: all supported flows present
 in the installed pi-ai catalog; an explicit non-empty subset must exist in
 that catalog), `credentialsFile` (custom file path), and

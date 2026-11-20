@@ -1,7 +1,8 @@
 /**
  * Provider routes this plugin owns: the pi-ai catalog providers that ship an
- * OAuth flow, mounted with their catalog models, wire implementations, and
- * OAuth flow objects untouched. Credential resolution is not wrapped at all —
+ * OAuth flow, retaining their wire implementations and OAuth flow objects.
+ * Codex receives a small catalog gap-fill until the host ships GPT-6.2.
+ * Credential resolution is not wrapped at all —
  * the adapter's collection carries this plugin's `CredentialStore`
  * (`PiAiAuthInjection`), so requests resolve the stored OAuth credential
  * through the provider's own auth and refresh tokens under the store's lock.
@@ -18,6 +19,7 @@ import { resolveRetryPolicy } from '@deepseek-ai/dsh-llm'
 import type { ResolvedPiAiProviderProfile } from '@deepseek-ai/dsh-llm-pi-ai'
 import { UPSTREAM_RETRY_MAX_RETRIES, UPSTREAM_RETRYABLE_CODES } from '../channel/upstream-retry.js'
 import { adapterBuiltinProviders, type PiAiProvider } from './pi-ai.js'
+import { withCodexModelSupplement } from './codex-models.js'
 
 /** Subscription routes this build can mount, in picker order. */
 export const OAUTH_PROVIDER_IDS = ['openai', 'openai-codex', 'anthropic', 'xai', 'meta'] as const
@@ -122,7 +124,7 @@ function withModelOverrides(
  * absence as "provider defaults" exactly as an empty llm-pi-ai profile would.
  * @param id - the OAuth provider route to mount.
  * @param modelOverrides - optional per-model catalog overrides (see
- *   {@link ModelOverride}); `undefined` serves the installed catalog unchanged.
+ *   {@link ModelOverride}); applied after the Codex catalog gap-fill.
  */
 export function buildOAuthProfile(
   id: string,
@@ -131,7 +133,7 @@ export function buildOAuthProfile(
   if (!(OAUTH_PROVIDER_IDS as readonly string[]).includes(id)) {
     throw new Error(`dsh-auth: "${id}" is not an OAuth provider this build mounts (${OAUTH_PROVIDER_IDS.join(', ')})`)
   }
-  const catalog = withModelOverrides(catalogProviderOf(id), modelOverrides)
+  const catalog = withModelOverrides(withCodexModelSupplement(catalogProviderOf(id)), modelOverrides)
   // An older pi-ai catalog can know the route but not its newer OAuth flow
   // (notably `openai`). Explicit requests must fail at boot, not at /auth.
   oauthOf(catalog)
