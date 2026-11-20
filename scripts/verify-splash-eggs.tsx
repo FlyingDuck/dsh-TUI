@@ -15,6 +15,7 @@
  */
 // 终端能力必须在 supports-hyperlinks 之前钉死——它在模块初始化时读一次 env。
 process.env.FORCE_HYPERLINK = '1'
+process.env.DSH_TUI_LANG = 'zh'
 
 const [
   React,

@@ -43,7 +43,7 @@ import { applyPositionedHighlight, type MatchPosition, scanPositions } from './r
 import createRenderer, { type Renderer } from './renderer.js';
 import { CellWidth, CharPool, cellAt, createScreen, HyperlinkPool, isEmptyCellAt, migrateScreenPools, StylePool } from './screen.js';
 import { applySearchHighlight } from './transcript-highlight.js';
-import { applySelectionOverlay, captureScrolledRows, clearSelection, createSelectionState, extendSelection, type FocusMove, findPlainTextUrlAt, getSelectedText, getSelectionCursor, hasSelection, moveFocus, pickFollowForSelection, refreshSelectionFingerprint, refreshSelectionPane, type SelectionState, selectLineAt, selectWordAt, shiftAnchor, shiftSelection, shiftSelectionForFollow, shiftSelectionForViewportResize, shiftSelectionForViewportTranslation, startSelection, updateSelection } from './selection.js';
+import { applySelectionOverlay, captureScrolledRows, clearSelection, createSelectionState, extendSelection, type FocusMove, findPlainTextUrlAt, getSelectedText, getSelectionCursor, hasSelection, moveFocus, pickFollowForSelection, refreshSelectionFingerprint, refreshSelectionPane, type SelectionState, selectLineAt, selectWordAt, shiftSelection, shiftSelectionForViewportResize, shiftSelectionForViewportTranslation, startSelection, updateSelection } from './selection.js';
 import { isDecstbmSafe, SYNC_OUTPUT_SUPPORTED, serializeDiff, supportsCursorStyleReset, supportsDecrqmProbe, supportsExtendedKeys, supportsWin32InputMode, type Terminal, writeDiffToTerminal } from './terminal.js';
 import { CURSOR_HOME, cursorMove, cursorPosition, cursorStyle, DISABLE_KITTY_KEYBOARD, DISABLE_MODIFY_OTHER_KEYS, DISABLE_WIN32_INPUT_MODE, ENABLE_KITTY_KEYBOARD, ENABLE_MODIFY_OTHER_KEYS, ENABLE_WIN32_INPUT_MODE, ERASE_SCREEN, ERASE_SCROLLBACK, SGR_RESET } from './termio/csi.js';
 import { DBP, DFE, DISABLE_MOUSE_TRACKING, ENABLE_MOUSE_TRACKING, ENTER_ALT_SCREEN, ESU, EXIT_ALT_SCREEN, HIDE_CURSOR, SHOW_CURSOR } from './termio/dec.js';
@@ -195,7 +195,6 @@ export default class Ink {
     target: dom.DOMElement;
     col: number;
     row: number;
-    anchorCol: number;
     span: SelectionState['anchorSpan'];
     edge: boolean;
   } | null = null;
@@ -817,7 +816,7 @@ export default class Ink {
     // selection is marked stale so commit-time copy refuses (see
     // refreshSelectionFingerprint below the overlay block).
     let selectionCoordinated = false;
-    let selectionScreenRowOffset: number | undefined;
+    let repinSelectionEdge = false;
     this.maybeProbeKittyGraphics(frame.images ?? []);
 
     // Viewport-shrink translation (companion to the follow block below):
@@ -840,7 +839,7 @@ export default class Ink {
       const resize = pickFollowForSelection(
         viewportResizes,
         this.selection.anchor.row,
-        this.selection.anchor.col,
+        this.selection.virtualAnchorCol ?? this.selection.anchor.col,
       );
       // Terminal resize rebuilds the screen at new dimensions; the
       // selection's screen-buffer coords are stale against the previous
@@ -853,36 +852,23 @@ export default class Ink {
       ) {
         const hadSelection = hasSelection(this.selection);
         const drag = this.selectionScroll;
-        const dragRect = drag ? nodeCache.get(drag.target) : undefined;
-        if (drag?.edge && dragRect && this.selection.isDragging && drag.target.scrollViewportTop === resize.top &&
-            drag.target.scrollViewportHeight === resize.bottom - resize.top + 1 &&
-            Math.floor(dragRect.x) === resize.viewportLeft &&
-            Math.floor(dragRect.x + dragRect.width) - 1 === resize.viewportRight &&
-            (drag.row <= resize.top || drag.row >= resize.bottom)) {
-          // Moving the viewport top translates its content, even when its
-          // height changes too. Capture hidden rows from the OLD screen by
-          // undoing that translation, then pin focus to the current pointer.
-          const offset = resize.top - resize.prevTop;
-          selectionScreenRowOffset = offset;
-          shiftAnchor(this.selection, offset, resize.top, resize.prevBottom + offset);
-          if (drag.span) drag.span = {
-            ...drag.span,
-            lo: { ...drag.span.lo, row: drag.span.lo.row + offset },
-            hi: { ...drag.span.hi, row: drag.span.hi.row + offset },
-          };
-          if (this.selection.focus) {
-            this.selection.focus = { col: drag.col, row: Math.min(resize.bottom, Math.max(resize.top, drag.row)) };
+        if (drag && this.selection.isDragging && this.ownsSelectionViewport(
+          drag.target, resize.top, resize.bottom, resize.viewportLeft, resize.viewportRight,
+        )) {
+          const offset = resize.kind === 'translate' ? resize.rowDelta : resize.boxDeltaY ?? 0;
+          this.shiftSelectionDragSpan(offset);
+          const edge = drag.edge ? this.selectionScrollPosition() : null;
+          if (edge && edge.direction !== 0) {
+            // Capture against the pointer clamped to the new viewport, not
+            // the previous frame's edge. The shared resize path maps this
+            // focus back to the previous screen before capturing hidden rows.
+            this.selection.focus = { col: edge.col, row: edge.row };
             this.selection.virtualFocusRow = undefined;
+            this.selection.virtualFocusCol = undefined;
+            repinSelectionEdge = true;
           }
-          shiftSelectionForViewportResize(this.selection, this.frontFrame.screen,
-            resize.top, resize.prevBottom + offset, resize.top, resize.bottom, offset);
-          const position = this.selectionScrollPosition();
-          if (position) this.updateSelectionDrag(frame.screen, position.col, position.row);
-          selectionCoordinated = true;
-          if (hadSelection && !hasSelection(this.selection)) {
-            for (const cb of this.selectionListeners) cb();
-          }
-        } else if (resize.kind === 'translate') {
+        }
+        if (resize.kind === 'translate') {
           const cleared = shiftSelectionForViewportTranslation(
             this.selection,
             resize.rowDelta,
@@ -901,6 +887,7 @@ export default class Ink {
             resize.prevBottom,
             resize.top,
             resize.bottom,
+            resize.boxDeltaY ?? 0,
           );
           selectionCoordinated = true;
           // Both-ends-covered clear must notify React-land so useHasSelection
@@ -925,10 +912,14 @@ export default class Ink {
     // (screen-local) so only anchor shifts — selection grows toward the
     // mouse as the anchor walks up. After release, both ends are text-
     // anchored and move as a block.
+    const followEvents = consumeFollowScroll()
     const follow = pickFollowForSelection(
-      consumeFollowScroll(),
+      followEvents,
       this.selection.anchor?.row ?? null,
-      this.selection.anchor?.col,
+      // A pane anchor that scrolled above the viewport has its col clamped
+      // to 0; the virtual col is the pane-origin column and is what the
+      // viewport attribution must use on the next frame.
+      this.selection.virtualAnchorCol ?? this.selection.anchor?.col,
     );
     // pickFollowForSelection already checked anchor-in-viewport (that IS
     // the "selection is on scrollbox content" guard — footer/prompt
@@ -951,8 +942,8 @@ export default class Ink {
       // OPPOSITE direction so they track the text, not the screen.
       const rows = Math.abs(delta);
       const up = delta > 0;
-      const firstRow = up ? viewportTop : viewportBottom - rows + 1;
-      const lastRow = up ? viewportTop + rows - 1 : viewportBottom;
+      const firstRow = up ? viewportTop : Math.max(viewportTop, viewportBottom - rows + 1);
+      const lastRow = up ? Math.min(viewportBottom, viewportTop + rows - 1) : viewportBottom;
       const side: 'above' | 'below' = up ? 'above' : 'below';
       const shift = up ? -rows : rows;
       // captureScrolledRows and shift* are a pair: capture grabs rows about
@@ -964,8 +955,10 @@ export default class Ink {
       // each shift branch so the pairing can't be broken by a new guard.
       if (this.selection.isDragging) {
         if (hasSelection(this.selection)) {
-          captureScrolledRows(this.selection, this.frontFrame.screen, firstRow, lastRow, side,
-            selectionScreenRowOffset ?? follow.screenRowOffset);
+          captureScrolledRows(
+            this.selection, this.frontFrame.screen, firstRow, lastRow, side,
+            follow.screenRowOffset, -shift,
+          );
           // Record the viewport bounds for finishSelection's deferred
           // commit-time check: the in-flight drag never clears (a wheel
           // must not kill the gesture), so a drag that wheeled fully
@@ -973,70 +966,58 @@ export default class Ink {
           this.selection.dragBounds = { top: viewportTop, bottom: viewportBottom };
         }
         const drag = this.selectionScroll;
-        const edge = drag?.edge ? this.selectionScrollPosition() : null;
-        const target = drag?.target;
-        const targetRect = target ? nodeCache.get(target) : undefined;
-        const ownsFollow = targetRect !== undefined && target?.scrollViewportTop === viewportTop &&
-          (target.scrollViewportHeight ?? 0) === viewportBottom - viewportTop + 1 &&
-          Math.floor(targetRect.x) === follow.viewportLeft &&
-          Math.floor(targetRect.x + targetRect.width) - 1 === follow.viewportRight;
-        if (drag?.span && ownsFollow) {
-          drag.span = {
-            ...drag.span,
-            lo: { ...drag.span.lo, row: drag.span.lo.row + shift },
-            hi: { ...drag.span.hi, row: drag.span.hi.row + shift },
-          };
+        if (drag && this.ownsSelectionViewport(
+          drag.target, viewportTop, viewportBottom, follow.viewportLeft, follow.viewportRight,
+        )) {
+          this.shiftSelectionDragSpan(shift);
+          repinSelectionEdge ||= drag.edge;
         }
-        if (drag && edge && edge.direction !== 0 && ownsFollow) {
-          // Edge dragging grows toward a stationary pointer. Ordinary wheel
-          // drags keep BOTH ends text-anchored, as before.
-          const oldAnchor = this.selection.virtualAnchorRow ?? this.selection.anchor.row;
-          shiftAnchor(this.selection, shift, viewportTop, viewportBottom);
-          if (shift > 0 && oldAnchor < viewportTop) {
-            this.selection.scrolledOffAbove.splice(Math.max(0,
-              this.selection.scrolledOffAbove.length - Math.min(shift, viewportTop - oldAnchor)));
-          } else if (shift < 0 && oldAnchor > viewportBottom) {
-            this.selection.scrolledOffBelow.splice(0, Math.min(-shift, oldAnchor - viewportBottom));
-          }
-          if (!drag.span && this.selection.virtualAnchorRow === undefined) {
-            this.selection.anchor.col = Math.min(this.selection.fence?.colEnd ?? frame.screen.width - 1,
-              Math.max(this.selection.fence?.colStart ?? 0, drag.anchorCol));
-          }
-          this.updateSelectionDrag(frame.screen, edge.col, edge.row);
-        } else {
-          // allowClear=false: the gesture survives wheel input; the ghost
-          // guard runs at release via dragBounds above.
-          shiftSelectionForFollow(this.selection, shift, viewportTop, viewportBottom, false);
-        }
+        // A live drag keeps its focus at the mouse (screen-local); only the
+        // text anchor follows the scroll, so the selection grows toward the
+        // held pointer instead of collapsing inward. allowClear=false: the
+        // ghost guard runs at release via dragBounds.
+        shiftSelection(
+          this.selection,
+          shift,
+          viewportTop,
+          viewportBottom,
+          this.frontFrame.screen.width,
+          false,
+          false,
+        );
         selectionCoordinated = true;
       } else if (
-      // Flag-3 guard: the anchor check above only proves ONE endpoint is
-      // on scrollbox content. A drag from row 3 (scrollbox) into the
-      // footer at row 6, then release, leaves focus outside the viewport
-      // — shiftSelectionForFollow would clamp it to viewportBottom,
-      // teleporting the highlight from static footer into the scrollbox.
-      // Symmetric check: require BOTH ends inside to translate. A
-      // straddling selection falls through to NEITHER shift NOR capture:
-      // the footer endpoint pins the selection, text scrolls away under
-      // the highlight, and getSelectedText reads the CURRENT screen
-      // contents — no accumulation. Both endpoints are text-anchored in
-      // the active drag branch too, so a wheel cannot leave focus on the
-      // old screen row.
-      !this.selection.focus || this.selection.focus.row >= viewportTop && this.selection.focus.row <= viewportBottom) {
+        // Preserve the flag-3 guard: a selection that started in the
+        // scrollbox and ended in static chrome (footer/composer) must not
+        // be teleported into the scrollbox by a wheel. A text-anchored
+        // endpoint that scrolled off-screen has a virtual row and is
+        // different: it belongs to this viewport and keeps following.
+        !this.selection.focus ||
+        (this.selection.focus.row >= viewportTop &&
+          this.selection.focus.row <= viewportBottom) ||
+        this.selection.virtualFocusRow !== undefined
+      ) {
         if (hasSelection(this.selection)) {
           captureScrolledRows(this.selection, this.frontFrame.screen, firstRow, lastRow, side, follow.screenRowOffset);
         }
-        const cleared = shiftSelectionForFollow(this.selection, shift, viewportTop, viewportBottom);
+        // A released selection is text-anchored at BOTH ends. Keep it
+        // through the off-screen range (allowClear=false): the user can
+        // scroll back and still copy the captured rows.
+        shiftSelection(
+          this.selection,
+          shift,
+          viewportTop,
+          viewportBottom,
+          this.frontFrame.screen.width,
+          false,
+        );
         selectionCoordinated = true;
-        // Auto-clear (both ends overshot an edge — off the top via
-        // follow/wheel-down, off the bottom via wheel-up) must notify
-        // React-land so useHasSelection re-renders and the footer
-        // copy/escape hint disappears. notifySelectionChange() would
-        // recurse into onRender; fire the listeners directly — they
-        // schedule a React update for LATER, they don't re-enter this
-        // frame. (#185 self-heal guard: same as selection.notify.)
-        if (cleared) for (const cb of this.selectionListeners) callWithUpdateOverflowGuard('selection.notify', cb);
       }
+    }
+
+    if (repinSelectionEdge) {
+      const edge = this.selectionScrollPosition();
+      if (edge && edge.direction !== 0) this.updateSelectionDrag(frame.screen, edge.col, edge.row);
     }
 
     // Resolve pane geometry after scroll/viewport translations: the old row
@@ -2553,14 +2534,30 @@ export default class Ink {
       if (target.onSelectionScroll) {
         if (target.attributes['selectionAutoScroll'] === true) {
           this.selectionScroll = {
-            target, col, row, anchorCol: this.selection.anchor?.col ?? col,
-            span: this.selection.anchorSpan, edge: false,
+            target, col, row, span: this.selection.anchorSpan, edge: false,
           };
         }
         return;
       }
       target = target.parentNode ?? null;
     }
+  }
+
+  private ownsSelectionViewport(target: dom.DOMElement, top: number, bottom: number, left?: number, right?: number): boolean {
+    const rect = nodeCache.get(target);
+    return rect !== undefined && target.scrollViewportTop === top &&
+      target.scrollViewportHeight === bottom - top + 1 && Math.floor(rect.x) === left &&
+      Math.floor(rect.x + rect.width) - 1 === right;
+  }
+
+  private shiftSelectionDragSpan(dRow: number): void {
+    const drag = this.selectionScroll;
+    if (!drag?.span || dRow === 0) return;
+    drag.span = {
+      ...drag.span,
+      lo: { ...drag.span.lo, row: drag.span.lo.row + dRow },
+      hi: { ...drag.span.hi, row: drag.span.hi.row + dRow },
+    };
   }
 
   private updateSelectionDrag(screen: Frame['screen'], col: number, row: number): void {
@@ -2576,6 +2573,7 @@ export default class Ink {
       const bottom = top + (drag.target.scrollViewportHeight ?? 0) - 1;
       const raw = sel.anchor.row;
       sel.virtualAnchorRow = raw < top || raw > bottom ? raw : undefined;
+      sel.virtualAnchorCol = sel.virtualAnchorRow !== undefined ? sel.anchor.col : undefined;
       sel.anchor = {
         col: raw < top ? sel.fence?.colStart ?? 0
           : raw > bottom ? sel.fence?.colEnd ?? screen.width - 1 : sel.anchor.col,

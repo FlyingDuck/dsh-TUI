@@ -554,14 +554,16 @@ async function siblingIsolation(side: 'chat' | 'panel'): Promise<void> {
       'sibling follow and resize never translate the held anchor')
     expect(!f.ink.selection.stale && getSelectedText(f.ink.selection, f.ink.frontFrame.screen) === text,
       'sibling changes cannot alter or stale the copied source span')
-    f.scroll().scrollBy(-1)
-    expect(await settled(() => f.scroll().getScrollTop() === 19 && f.scroll().getPendingDelta() === 0), 'the owning pane still follows its own scroll')
-    expect(f.ink.selection.anchor?.row === anchor.row + 1, 'own follow translates the anchor exactly once')
+    f.scroll().scrollBy(1)
+    expect(await settled(() => f.scroll().getScrollTop() === 21 && f.scroll().getPendingDelta() === 0), 'the owning pane still follows its own scroll')
+    expect(f.ink.selection.anchor?.row === anchor.row - 1, 'own follow translates the anchor exactly once')
+    expect(f.ink.selection.focus?.row === top + 3, 'own follow keeps a held focus at the pointer')
     f.release(f.paneLeft + 9, top + 3)
     expect(await settled(() => f.copies().length === 1), 'the isolated drag releases one copy')
-    expect(f.copies()[0] === text, `sibling operations preserve exact clipboard bytes: ${JSON.stringify(f.copies()[0])}`)
+    const expected = `${text}\n${rowText(24)}`
+    expect(f.copies()[0] === expected, `only own scrolling extends the exact clipboard text: ${JSON.stringify(f.copies()[0])}`)
 
-    f.ink.shiftSelectionForScroll(-4, top, bottom)
+    f.ink.shiftSelectionForScroll(-2, top, bottom)
     expect(f.ink.selection.anchor?.col === f.paneLeft, 'keyboard scroll clamps the raw anchor to the pane start')
   } finally { await f.dispose() }
 }
@@ -572,18 +574,17 @@ async function ordinaryWheelResize(): Promise<void> {
     await f.seek(20)
     const { top } = f.bounds()
     f.press(2, top + 2) // Source row 22, starting inside the row text.
-    f.motion(11, top + 3) // Source row 23; neither point touched an edge.
+    f.motion(9, top + 3) // Source row 23; neither point touched an edge.
     expect(await settled(() => f.ink.selection.focus?.row === top + 3), 'ordinary drag is active without ever entering edge-scroll mode')
-    f.stdin.write(`\x1b[<64;12;${top + 4}M`)
-    expect(await settled(() => f.scroll().getScrollTop() === 17 && f.scroll().getPendingDelta() === 0), 'ordinary wheel-up moves three source rows')
+    f.stdin.write(`\x1b[<65;10;${top + 4}M`)
+    expect(await settled(() => f.scroll().getScrollTop() === 23 && f.scroll().getPendingDelta() === 0), 'ordinary wheel-down moves three source rows')
     await f.setHeight(8)
     expect(await settled(() => f.scroll().getViewportHeight() === 8), 'ordinary wheel selection viewport really widened from six to eight rows')
-    // No motion after the wheel or resize: both endpoints must remain
-    // text-anchored, not be pinned to the last mouse screen coordinate.
-    f.release(11, top + 3)
+    expect(f.ink.selection.focus?.row === top + 3, 'resize keeps the live focus under the stationary pointer')
+    f.release(9, top + 3)
     expect(await settled(() => f.copies().length === 1), 'ordinary wheel/resize selection copies once')
-    const expected = `${rowText(22).slice(2)}\n${rowText(23)}`
-    expect(f.copies()[0] === expected, `never-edge resize preserves the exact original source span: ${JSON.stringify(f.copies()[0])}`)
+    const expected = `${rowText(22).slice(2)}\n${selectedRows(23, 26)}`
+    expect(f.copies()[0] === expected, `resize keeps the captured anchor and the wheel-extended source span: ${JSON.stringify(f.copies()[0])}`)
   } finally { await f.dispose() }
 }
 
@@ -593,22 +594,24 @@ async function formerEdgeWheel(): Promise<void> {
     await f.seek(20)
     const { top, bottom } = f.bounds()
     f.press(2, top + 2)
-    f.motion(11, bottom)
+    f.motion(9, bottom)
     expect(await settled(() => f.ink.selection.focus?.row === bottom && f.scroll().getPendingDelta() === 0,
       { stepMs: 1 }), 'the held pointer actually entered the old bottom edge')
-    // Capture the source endpoint before growing the viewport. If a slow
-    // runner admitted an edge tick already, retain that legitimate extension.
-    const last = f.scroll().getScrollTop() + 5
     await f.setHeight(8)
     expect(await settled(() => f.scroll().getViewportHeight() === 8), 'the old edge became an interior row without another mouse motion')
     await f.pauseIsStable('growing past the parked pointer stops the edge timer')
     const beforeWheel = f.scroll().getScrollTop()
-    f.stdin.write(`\x1b[<64;12;${top + 4}M`)
+    f.stdin.write(`\x1b[<64;10;${top + 4}M`)
     expect(await settled(() => f.scroll().getScrollTop() === beforeWheel - 3 && f.scroll().getPendingDelta() === 0), 'wheel-up still scrolls after leaving edge mode through layout')
-    f.release(11, bottom)
+    await f.pauseIsStable('manual wheel input does not rearm the former edge timer')
+    expect(f.ink.selection.focus?.row === bottom, 'ordinary wheel keeps the live focus under the pointer')
+    f.release(9, bottom)
     expect(await settled(() => f.copies().length === 1), 'former-edge wheel selection copies once')
-    const expected = `${rowText(22).slice(2)}\n${selectedRows(23, last)}`
-    expect(f.copies()[0] === expected, `former edge cannot leave the wheel focus pinned: ${JSON.stringify(f.copies()[0])}`)
+    // A slow runner may admit a legitimate edge tick before the resize.
+    // The text under the stationary pointer depends on the actual scroll top.
+    const last = beforeWheel - 3 + bottom - top
+    const expected = rowText(22).slice(2) + (last > 22 ? `\n${selectedRows(23, last)}` : '')
+    expect(f.copies()[0] === expected, `former-edge wheel copies the exact new source span: ${JSON.stringify(f.copies()[0])}`)
   } finally { await f.dispose() }
 }
 
@@ -636,7 +639,7 @@ await verify('leaving a nested pane fence pauses the outer ScrollBox edge timer'
 for (const side of ['chat', 'panel'] as const) {
   await verify(`${side} held selection ignores sibling follow and resize`, () => siblingIsolation(side))
 }
-await verify('never-edge wheel selection stays text-anchored through viewport growth', ordinaryWheelResize)
+await verify('never-edge wheel keeps the source anchor and pointer through viewport growth', ordinaryWheelResize)
 await verify('a former edge becomes ordinary wheel selection after viewport growth', formerEdgeWheel)
 for (const kind of ['interior', 'release', 'escape', 'blur', 'owner-unmount', 'unmount', 'overlay'] as const) {
   await verify(`edge scroll stops on ${kind}`, () => stopGesture(kind))

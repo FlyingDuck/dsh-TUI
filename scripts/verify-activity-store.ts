@@ -33,6 +33,7 @@
  * @module dsh-tui/scripts/verify-activity-store
  */
 
+import './lib/default-lang-zh.mjs'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import {
@@ -407,7 +408,7 @@ function fakeRegistry(): ProjectionRegistryLike & {
   store.seed(session)
   const elapsed = (value: ActivityView | undefined): number => {
     const match = /总(\d+)s/u.exec(value?.line ?? '')
-    assert.ok(match !== undefined, `the line carries elapsed time (got: ${value?.line ?? 'none'})`)
+    assert.ok(match !== null, `the line carries elapsed time (got: ${value?.line ?? 'none'})`)
     assert.equal(value?.live, true, 'a running turn counts time')
     return Number(match[1])
   }

@@ -457,6 +457,9 @@ const GROUPS = {
     ['verify-copy-on-select', ['node', 'scripts/verify-copy-on-select.mjs']],
 // 转录区边缘拖选：静止指针跨屏滚动与完整复制，松手/取消/失焦停止，非转录与浮层隔离。
     ['verify-selection-auto-scroll', ['node', '--import', 'tsx/esm', 'scripts/verify-selection-auto-scroll.tsx']],
+// 跨页选区复制：拖拽中 PgUp/PgDn/滚轮按绘制位移扩展选区，松手后滚动
+// 双端跟随文本；复制行连续无重复，反向滚动恢复坐标，跨 footer 不被硬拉。
+    ['verify-selection-scroll-copy', ['node', '--import', 'tsx/esm', 'scripts/verify-selection-scroll-copy.tsx']],
 // hover 事件性能与健壮性回归：同批 motion 保留兴趣边界（tooltip dwell
 // 不提前）、无兴趣矩形快路径跳过全树 hit-test，且渲染提交/帧边界/
 // 多 root 失效；拖拽 motion 逐事件到达。
@@ -765,6 +768,7 @@ const GROUPS = {
 // 文件补全回归（issue #278）：CMake 构建目录与任意大型兄弟目录不得
 // 独占 100 条全局预算，普通深层源码也不能被固定深度静默截断。
     ["verify-file-completion", ['node', 'scripts/verify-file-completion.mjs']],
+    ['verify-file-candidate-cache', ['node', 'scripts/verify-file-candidate-cache.mjs']],
 // `~/` 补全与附加回归（issue #1706）：任意深度按 home 展开、`~\` 等价、cwd 里有
 // 字面 `~` 目录时 `~/` 仍指 home、模型侧拿到展开后的绝对路径。
     ["verify-tilde-home-completion-e2e", ['node', '--import', 'tsx/esm', 'scripts/verify-tilde-home-completion-e2e.mjs']],
@@ -831,6 +835,9 @@ const GROUPS = {
 // 工具卡完整度：非零退出码/信号行不被行预算折掉、折叠提示带被折字符数、verbose
 // 行窗口有界并注明、展开卡的截断说明、错误长文与输出共用行预算。
     ["verify-tool-card-completeness", ['node', '--import', 'tsx/esm', 'scripts/verify-tool-card-completeness.tsx']],
+// `present` 交付卡（issue #2046）：presenter 只在结果带 cwd 时取大小/时间；折叠态
+// 一行一个文件、展开态补目录与描述；Nerd Font 图标皮肤 opt-in，窄终端不溢出。
+    ["verify-present-card", ['node', '--import', 'tsx/esm', 'scripts/verify-present-card.tsx']],
 // 解码吞吐（真 channel + 会话事件）：多步回合剔除工具间隙、字符估算按脚本
 // 类加权（CJK ~1.4 字符/token）、真实 usage 结算覆盖估算、回放不复活 tps。
     ["verify-tps", ['node', 'scripts/verify-tps.mjs']],
@@ -884,6 +891,16 @@ const GROUPS = {
 // 崩溃诊断：serializeCrashDetail 逐层序列化 stack、cause 链、componentStack 与 digest；
 // crash.log 行格式；appendCrashLog 写失败不抛；plugin.ts 的崩溃分支确实接上了它。
     ["verify-crash-detail", ['node', '--import', 'tsx/esm', 'scripts/verify-crash-detail.ts']],
+// 启动诊断（issue #1842）：提供 Host 服务的行被禁用时，agent 创建或恢复失败要指名
+// 该行（同名行全列出）、已装版本（或读不到）与恢复路径；create 路径把诊断放在原因
+// 之前，单行 toast 才看得见；已挂载提供者、求值抛错的禁用表达式或无关错误都不得
+// 误报，也不得吞掉原始错误；恢复 hint 走 i18n 字典，出口在前、包名在后，在真实
+// Divider 的 80/60/40 列终端（默认页边距下 76/56/36 内容宽）渲染后仍保留 /kernel
+// 与 /quit（只看字典字符串会漏掉截断）；同时钉住 plugin.ts 两条启动路径的接线与诊断
+// 保留，删掉、行注释或丢弃诊断要让本脚本变红；上游把 “requires … in the Host
+// scope” 改指别的 specifier 时活体 oracle 变红。0.2.2-rc.1 已移除该 Host 服务
+// 要求（model selection 改走 session projection），诊断在该线休眠。
+    ["verify-host-service-diagnostics", ['node', 'scripts/verify-host-service-diagnostics.mjs']],
 // `/` 命令浮窗「影响当前对话」灰区回归（issue #1072）：回合运行中按对当前
 // 对话的影响分区（正常区在上、灰区沉底，不插标题行、不多占显示行），灰区整行
 // subtle 且不提亮查询命中，点击映射与命令索引一一对应，36 列不换行；浏览型

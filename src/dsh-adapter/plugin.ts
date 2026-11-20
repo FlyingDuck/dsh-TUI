@@ -31,6 +31,7 @@ import { mountChannelUi } from './channel-ui.js'
 import { bindChannelCommands } from './channel/commands.js'
 import { registerTuiChannel } from '../adapter/channel/host-registry.js'
 import { createChildStderrReporter, installChildStderrGuard } from './childStderr.js'
+import { describeMissingHostService } from './host-service-diagnostics.js'
 import { removeClipboardImageDir } from '../utils/clipboard.js'
 import { appendCrashLog, serializeCrashDetail, unserializableCrashDetail, type CrashDetail } from '../utils/crashDetail.js'
 import { pluginManagerOf, type PluginManagerView } from './plugin-manager.js'
@@ -72,7 +73,7 @@ import { shouldOfferOnboarding } from '../onboardingPrefs.js'
 import { resolveSessionCwd } from '../utils/workspaceRoot.js'
 import { LAUNCH_PROMPT_SENT_ENV, beginRestartAttempt, blockedUpdateMessages, checkForTuiUpdate, describeHostStepReason, describeLauncherStepReason, deliverEngineSkipReport, idleReportMessages, installedTuiVersion, isBootDeadlockTarget, isStandaloneRuntime, isVersionNewer, logRestartEvent, resolveDshProfileName, resolveUpdatePlan, restartTui, updatePlanLayers, updatePlanState, updatePlanSuite, updateTuiAndRestart, writeHandoffNotice, writeLastRunRecord, type TuiRestartOptions, type UpdatePlan } from '../update.js'
 import { getLang, isLang, resolveStartupLang, setLang, t, writeLangPref } from '../i18n.js'
-import { applyBtwContextBudget, applyBtwContextTurns, applyCodeFrameStyle, applyCompanionSkin, applyImageBacking, applyMathImageBacking, applyMathImageScale, applyMathRendering, applyMermaidDiagrams, applyPageMargin, applySidePanelOpen, applySidePanelPanels, applySidePanelRatio, applySidePanelSplitEnabled, ALL_SIDE_PANELS, BTW_CONTEXT_BUDGET_MAX, BTW_CONTEXT_BUDGET_MIN, BTW_CONTEXT_TURNS_MAX, BTW_CONTEXT_TURNS_MIN, DEFAULT_PAGE_MARGIN, DEFAULT_STATUS_BAR, isPageMarginMode, normalizeJobGroupFold, normalizePageMargin, normalizeScrollGutter, normalizeSidePanelPanels, normalizeSidePanelRatio, normalizePluginFieldsOrder, normalizeStatusBar, normalizeToolBackground, parsePageMarginSpec, parsePluginFieldsOrder, parseSidePanelPanels, resolveMathRendering, type CodeFrameStyle, type ImageBacking, type MathImageBacking, type MathImageScale, type MathRendering, type PageMarginSetting, type ScrollGutterMode, type StatusBarConfig, type ToolBackground } from '../tuiDisplayPrefs.js'
+import { applyBtwContextBudget, applyBtwContextTurns, applyCodeFrameStyle, applyCompanionSkin, applyImageBacking, applyMathImageBacking, applyMathImageScale, applyMathRendering, applyMermaidDiagrams, applyNerdFontIcons, applyPageMargin, applySidePanelOpen, applySidePanelPanels, applySidePanelRatio, applySidePanelSplitEnabled, ALL_SIDE_PANELS, BTW_CONTEXT_BUDGET_MAX, BTW_CONTEXT_BUDGET_MIN, BTW_CONTEXT_TURNS_MAX, BTW_CONTEXT_TURNS_MIN, DEFAULT_PAGE_MARGIN, DEFAULT_STATUS_BAR, isPageMarginMode, normalizeJobGroupFold, normalizePageMargin, normalizeScrollGutter, normalizeSidePanelPanels, normalizeSidePanelRatio, normalizePluginFieldsOrder, normalizeStatusBar, normalizeToolBackground, parsePageMarginSpec, parsePluginFieldsOrder, parseSidePanelPanels, resolveMathRendering, type CodeFrameStyle, type ImageBacking, type MathImageBacking, type MathImageScale, type MathRendering, type PageMarginSetting, type ScrollGutterMode, type StatusBarConfig, type ToolBackground } from '../tuiDisplayPrefs.js'
 import {
   draftComboConflicts,
   effectiveComboString,
@@ -1995,6 +1996,7 @@ export async function apply(ctx: Context, runtimeConfig: RuntimeConfig<Config>, 
   applyBtwContextTurns(config.btw?.contextTurns)
   applyBtwContextBudget(config.btw?.contextBudget)
   applyMermaidDiagrams(config.mermaidDiagrams)
+  applyNerdFontIcons(config.nerdFontIcons)
   applyCodeFrameStyle(config.codeFrameStyle)
   applyMathRendering(resolveMathRendering({}, config))
   applyMathImageScale(config.mathImageScale ?? 'auto')
@@ -2090,6 +2092,8 @@ export async function apply(ctx: Context, runtimeConfig: RuntimeConfig<Config>, 
         jumpBack: Schema.boolean(),
         // Same no-default rule: applyDisplay resolves `?? config.mermaidDiagrams ?? true`.
         mermaidDiagrams: Schema.boolean(),
+        // Same no-default rule: applyDisplay resolves `?? config.nerdFontIcons ?? false`.
+        nerdFontIcons: Schema.boolean(),
         // Code-frame shape; unset keeps the light rail frame.
         codeFrameStyle: Schema.union(['light', 'full']),
         // Same no-default rule: resolveMathRendering falls back to cordis.yml.
@@ -2230,6 +2234,7 @@ export async function apply(ctx: Context, runtimeConfig: RuntimeConfig<Config>, 
       notificationMethod?: NotificationMethod
       jumpBack?: boolean
       mermaidDiagrams?: boolean
+      nerdFontIcons?: boolean
       codeFrameStyle?: CodeFrameStyle
       mathRendering?: MathRendering
       mathImageScale?: MathImageScale
@@ -2338,6 +2343,7 @@ export async function apply(ctx: Context, runtimeConfig: RuntimeConfig<Config>, 
           if (process.platform === 'win32' && getJumpBackState().enabled) warmJumpBackHelper()
         })
       applyMermaidDiagrams(value.mermaidDiagrams ?? config.mermaidDiagrams)
+      applyNerdFontIcons(value.nerdFontIcons ?? config.nerdFontIcons)
       applyCodeFrameStyle(value.codeFrameStyle ?? config.codeFrameStyle)
       applyMathRendering(resolveMathRendering(value, config))
       applyMathImageScale(value.mathImageScale ?? config.mathImageScale ?? 'auto')
@@ -2621,6 +2627,13 @@ export async function apply(ctx: Context, runtimeConfig: RuntimeConfig<Config>, 
           format(value: unknown): string {
             // Unset in settings.yaml: the effective default is on.
             return String(typeof value === 'boolean' ? value : config.mermaidDiagrams !== false)
+          },
+        },
+        {
+          ...settingField('nerdFontIcons'),
+          format(value: unknown): string {
+            // Unset in settings.yaml: the effective default is off.
+            return String(typeof value === 'boolean' ? value : config.nerdFontIcons === true)
           },
         },
         {
@@ -3995,6 +4008,22 @@ async function resolveAgent(
       // terminal). Fail the boot loudly instead; the loader surfaces this to
       // stderr. The in-session /resume picker has its own error path.
       const reason = error instanceof Error ? error.message : String(error)
+      // The preset's setup also runs inside `agents.resume`, so the same disabled
+      // Host row fails here; name it instead of blaming the session log (#1842).
+      const hostService = describeMissingHostService(ctx, reason)
+      if (hostService !== undefined) {
+        // The diagnostic goes first: the startup notice (`onOpenFailed` in
+        // channel/core/compose.ts) keeps only the first line, so a diagnostic
+        // appended after the cause would never reach the TUI (issue #1842).
+        // The recovery hint rides the second notice row via StartupOpenError.
+        // It leads with both exits, so a narrow window truncates the package
+        // name instead of /kernel and /quit.
+        throw new StartupOpenError(
+          `${hostService.detail}\ndsh-tui: cannot resume session "${requestedSessionId}": ${reason}`,
+          t('startup-host-row-disabled-hint', { pkg: hostService.packageName }),
+          { cause: error },
+        )
+      }
       throw new Error(
         `dsh-tui: cannot resume session "${requestedSessionId}": ${reason} — ` +
         'the stored log is unreadable or corrupt; no fresh session was started instead. ' +
@@ -4063,10 +4092,24 @@ async function resolveAgent(
     // Fail loud with the reason on stderr — a dead TUI with no message is
     // the worst outcome for a misconfigured leaf (unknown provider/model).
     const message = error instanceof Error ? error.message : String(error)
-    throw new Error(
-      `dsh-tui: failed to create agent (provider=${route.provider}, model=${route.model}): ${message}`,
-      { cause: error },
-    )
+    // When the row providing a Host service is disabled, the preset fails here
+    // naming only the service; point at the disabled row and how to bring it
+    // back instead (issue #1842).
+    const hostService = describeMissingHostService(ctx, message)
+    const failure = `dsh-tui: failed to create agent (provider=${route.provider}, model=${route.model}): ${message}`
+    // The diagnostic goes first: the in-session `/new` path (openDshSession)
+    // surfaces this message in a one-line toast, which would otherwise show only
+    // the wrapped cause and drop the row name. `/new` never reads the hint; only
+    // the startup path renders `StartupOpenError.hint`, as the second notice row
+    // (`onOpenFailed` in channel/core/compose.ts). The hint leads with both
+    // exits, so a narrow window truncates the package name instead.
+    throw hostService === undefined
+      ? new Error(failure, { cause: error })
+      : new StartupOpenError(
+        `${hostService.detail}\n${failure}`,
+        t('startup-host-row-disabled-hint', { pkg: hostService.packageName }),
+        { cause: error },
+      )
   }
   bootReservation?.settle()
   return { agent: created.agent, handle: created, agentPreset: composed.agentPreset, route }
